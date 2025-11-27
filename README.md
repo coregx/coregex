@@ -1,6 +1,6 @@
 # coregex - Production-Grade Regex Engine for Go
 
-> **5-50x faster than stdlib through multi-engine architecture and SIMD optimizations**
+> **Up to 143x faster than stdlib through multi-engine architecture and SIMD optimizations**
 
 [![GitHub Release](https://img.shields.io/github/v/release/coregx/coregex?include_prereleases&style=flat-square&logo=github&color=blue)](https://github.com/coregx/coregex/releases/latest)
 [![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
@@ -13,12 +13,12 @@
 
 ---
 
-A **production-grade regex engine** for Go with dramatic performance improvements over the standard library. Inspired by Rust's regex crate, coregex uses a multi-engine architecture with SIMD-accelerated prefilters to achieve **5-50x speedup** on typical workloads.
+A **production-grade regex engine** for Go with dramatic performance improvements over the standard library. Inspired by Rust's regex crate, coregex uses a multi-engine architecture with SIMD-accelerated prefilters to achieve **up to 143x speedup** (especially on case-insensitive patterns).
 
 ## Features
 
 ⚡ **Performance**
-- 🚀 **5-50x faster** than Go's `regexp` package through intelligent prefiltering
+- 🚀 **Up to 143x faster** than Go's `regexp` package (case-insensitive patterns)
 - 🎯 **SIMD-accelerated** search with AVX2/SSSE3 assembly (10-15x faster substring search)
 - 📊 **Multi-pattern search** (Teddy SIMD algorithm for 2-8 literals)
 - 🔍 **Aho-Corasick** for many literals
@@ -428,9 +428,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Status**: ⚠️ **EXPERIMENTAL** - v0.1.0 released, API may change in 0.x versions
+**Status**: ⚠️ **EXPERIMENTAL** - v0.1.4 released, API may change in 0.x versions
 
-**Current Version**: v0.1.0 (2025-01-26)
+**Current Version**: v0.1.4 (2025-11-27)
 
 **Ready for:** Testing, benchmarking, feedback, and experimental use
 **Production readiness:** API stability expected in v1.0.0

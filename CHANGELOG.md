@@ -35,6 +35,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.4] - 2025-11-27
+
+### Fixed
+- Documentation: Fixed broken benchmark link in README (`benchmarks/` → `benchmark/`)
+- Documentation: Updated CHANGELOG with v0.1.2 and v0.1.3 release notes
+- Documentation: Updated current version references in README
+
+---
+
+## [0.1.3] - 2025-11-27
+
+### Fixed
+- **Critical DFA cache bug**: Start state ID was being overwritten by cache, causing every DFA search to fall back to slow NFA (200x performance regression)
+- **Leftmost-longest semantics**: Fixed DFA search to properly return first match position with greedy extension
+
+### Performance
+- DFA with prefilter: 887,129 ns → 4,375 ns (**202x faster**)
+- Case-insensitive patterns: **143x faster** than stdlib (5,883 ns vs 842,422 ns)
+
+---
+
+## [0.1.2] - 2025-11-27
+
+### Fixed
+- **Strategy selection order**: Patterns with good literals now correctly use DFA+prefilter instead of NFA
+- **Match bounds**: Complete prefilter matches now return correct bounds using PikeVM
+- **DFA match start position**: Fixed start position calculation for unanchored patterns
+
+### Changed
+- Removed unused `estimateMatchLength()` function
+- Converted if-else chains to switch statements (linter compliance)
+
+---
+
+## [0.1.1] - 2025-11-27
+
+### Fixed
+- **O(n²) complexity bug**: Fixed PikeVM unanchored search that caused quadratic performance
+- **Lazy DFA unanchored search**: Added dual start states for O(n) unanchored matching
+
+---
+
 ## [0.1.0] - 2025-01-26
 
 ### Added
