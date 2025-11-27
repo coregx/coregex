@@ -1,0 +1,238 @@
+# GolangCI-Lint v2.5 Configuration for coregex - High-Performance Regex Engine
+# Documentation: https://golangci-lint.run/docs/configuration/
+# AGGRESSIVE CONFIGURATION - Production-quality regex engine with SIMD optimizations
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  # Enable comprehensive set of linters for production-quality code
+  enable:
+    # Code quality and complexity
+    - gocyclo       # Check cyclomatic complexity
+    - gocognit      # Check cognitive complexity
+    - funlen        # Check function length
+    - maintidx      # Maintainability index
+    - cyclop        # Check cyclomatic complexity (alternative)
+    - nestif        # Reports deeply nested if statements
+
+    # Bug detection
+    - govet         # Standard Go vet (includes copylocks!)
+    - staticcheck   # Comprehensive static analysis
+    - errcheck      # Check that errors are handled
+    - errorlint     # Check error wrapping
+    - gosec         # Security issues
+    - nilnil        # Check that functions don't return nil both ways
+    - nilerr        # Check nil error returns
+    - nilnesserr    # Check nil error returns patterns
+    - ineffassign   # Detect ineffectual assignments
+
+    # Code style and consistency
+    - misspell      # Check for misspelled words
+    - whitespace    # Check for trailing whitespace
+    - unconvert     # Remove unnecessary type conversions
+    - unparam       # Detect unused function parameters
+
+    # Naming conventions
+    - errname       # Check error naming conventions
+    - revive        # Fast, configurable, extensible linter
+
+    # Performance (critical for regex engine)
+    - prealloc      # Find slice declarations that could be preallocated
+    - bodyclose     # Check HTTP response bodies are closed
+    - makezero      # Find slice declarations with non-zero initial length
+
+    # Code practices
+    - goconst       # Find repeated strings that could be constants
+    - gocritic      # Comprehensive code checker
+    - goprintffuncname  # Check printf-like function names
+    - nolintlint    # Check nolint directives are used correctly
+    - nakedret      # Checks for naked returns
+
+    # Comments and documentation
+    # godot disabled - too pedantic for internal comments
+    # godox disabled - TODO comments are acceptable during development
+
+    # Additional quality checkers
+    - dupl          # Detect duplicate code
+    - dogsled       # Check for assignments with too many blank identifiers
+    - durationcheck # Check for two durations multiplied together
+
+  settings:
+    govet:
+      # EXPLICITLY ENABLE copylocks to catch mutex copying issues
+      # Critical for DFA cache and concurrent regex matching
+      enable:
+        - copylocks
+      # Disable fieldalignment (memory optimization handled manually for hot paths)
+      disable:
+        - fieldalignment
+
+    gocyclo:
+      # Regex algorithms (DFA construction, NFA simulation) can be complex
+      # But keep it reasonable - refactor if exceeding this
+      min-complexity: 25
+
+    cyclop:
+      # Regex algorithms need higher threshold
+      max-complexity: 25
+
+    funlen:
+      # SIMD assembly wrappers and DFA search can be long
+      lines: 150
+      statements: 80
+
+    gocognit:
+      # Regex engine algorithms are complex but should be understandable
+      min-complexity: 40
+
+    misspell:
+      locale: US
+
+    nestif:
+      # Max nesting level - keep regex code readable
+      min-complexity: 4
+
+    revive:
+      # Enable important rules for code quality
+      rules:
+        - name: var-naming
+        - name: error-return
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+        - name: var-declaration
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: redefines-builtin-id
+        # Disabled: exported (stuttering OK for regex types like DFAState)
+        # Disabled: package-comments (internal packages don't need)
+        # Disabled: unused-parameter (regex funcs may have standard signatures)
+
+    gocritic:
+      # Enable important checks
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance  # Critical for regex engine performance
+
+      # Disable overly opinionated/experimental checks
+      disabled-checks:
+        - commentFormatting  # Too opinionated about comment style
+        - whyNoLint          # We document nolints when needed
+        - unnamedResult      # Named results can reduce readability
+        - commentedOutCode   # False positives on test data comments
+        - octalLiteral       # 0644 is clearer than 0o644 for file perms
+        - paramTypeCombine   # Explicit types clearer in regex code
+
+      settings:
+        hugeParam:
+          # Regex structs can be large (DFA states, cache, NFA)
+          sizeThreshold: 256
+
+  # Exclusions (v2 structure: linters.exclusions.rules)
+  exclusions:
+    rules:
+      # Test files - allow more flexibility
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - cyclop
+          - funlen
+          - maintidx
+          - errcheck
+          - gosec
+          - goconst
+          - dupl
+          - gocognit
+
+      # SIMD assembly wrappers - can be complex
+      - path: simd/memchr.*\.go
+        linters:
+          - gocyclo      # Assembly dispatch logic
+          - funlen       # SIMD wrappers can be long
+          - gocognit     # CPU feature detection complexity
+
+      # DFA lazy construction - inherently complex
+      - path: dfa/lazy/.*\.go
+        linters:
+          - gocyclo      # DFA construction is complex
+          - gocognit     # Determinization complexity
+          - nestif       # DFA logic has nested conditions
+
+      # Prefilter selection - strategy pattern
+      - path: prefilter/selector\.go
+        linters:
+          - gocyclo      # Strategy selection logic
+          - nestif       # Decision tree for prefilter
+
+      # Meta-engine orchestration
+      - path: meta/.*\.go
+        linters:
+          - gocyclo      # Engine selection complexity
+          - gocognit     # Strategy orchestration
+          - nestif       # Multi-engine decision logic
+
+      # Literal extraction - complex heuristics
+      - path: literal/.*\.go
+        linters:
+          - gocyclo      # Literal extraction heuristics
+          - gocognit     # Pattern analysis complexity
+
+      # Internal utilities
+      - path: internal/.*\.go
+        linters:
+          - revive       # Internal packages, skip naming rules
+        text: "var-naming: avoid meaningless package names"
+
+      # Generated files (if any)
+      - path: ".*\\.pb\\.go"
+        linters:
+          - revive
+          - gocritic
+
+      # Benchmark code - can be verbose
+      - path: benchmark/.*\.go
+        linters:
+          - funlen       # Benchmark setups can be long
+          - gocyclo      # Benchmark complexity acceptable
+          - errcheck     # Benchmarks may skip error handling
+          - gosec        # Benchmark file operations acceptable
+
+      # Example code - demonstration purposes
+      - path: examples?/.*\.go
+        linters:
+          - errcheck     # Examples may skip error handling for clarity
+          - errorlint    # Examples may use %v instead of %w
+          - funlen       # Example functions can be longer
+          - gocyclo      # Example complexity acceptable
+          - cyclop       # Example complexity acceptable
+          - gocognit     # Example complexity acceptable
+          - godot        # Example comments don't need periods
+          - revive       # Examples don't need full documentation
+          - gosec        # Examples may have security warnings
+          - gocritic     # Example patterns may differ
+
+      # Assembly files dispatcher - platform-specific
+      - path: .*_amd64\.go
+        linters:
+          - gocritic     # Platform-specific patterns
+        text: "ifElseChain"
+
+issues:
+  # Show all issues
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  # Don't hide new issues in existing files
+  new: false

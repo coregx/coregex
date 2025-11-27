@@ -1,0 +1,71 @@
+# CODEOWNERS for coregex
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# This file defines individuals or teams responsible for code in this repository.
+# Code owners are automatically requested for review when someone opens a pull request
+# that modifies code they own.
+
+# Default owner for everything in the repo
+* @kolkov
+
+# SIMD primitives - Critical performance code with assembly
+/simd/ @kolkov
+
+# Literal extraction - Pattern analysis
+/literal/ @kolkov
+
+# Prefilter system - SIMD multi-pattern matching
+/prefilter/ @kolkov
+
+# NFA engine - Thompson's construction and PikeVM
+/nfa/ @kolkov
+
+# DFA engines - Lazy DFA with on-demand determinization
+/dfa/ @kolkov
+
+# Meta engine - Strategy selection and orchestration
+/meta/ @kolkov
+
+# Internal utilities - Sparse sets and data structures
+/internal/ @kolkov
+
+# Public API files - Breaking changes require careful review
+/regex.go @kolkov
+
+# Examples and benchmarks
+/example_test.go @kolkov
+/benchmark/ @kolkov
+
+# Test data and test generators
+/testdata/ @kolkov
+
+# Documentation - Keep up to date with code changes
+*.md @kolkov
+/docs/ @kolkov
+
+# GitHub configuration and CI/CD
+/.github/ @kolkov
+
+# Code quality and linting configuration
+/.golangci.yml @kolkov
+/Makefile @kolkov
+
+# Tests - Ensure coverage and reliability
+*_test.go @kolkov
+
+# Release management - Version control and changelog
+/CHANGELOG.md @kolkov
+/STATUS.md @kolkov
+
+# Contributing guidelines
+/CONTRIBUTING.md @kolkov
+
+# Go module files - Dependency management
+/go.mod @kolkov
+/go.sum @kolkov
+
+# Scripts
+/scripts/ @kolkov
+
+# Development documentation - Architecture and kanban
+/docs/dev/ @kolkov

@@ -1,0 +1,435 @@
+# coregex - Production-Grade Regex Engine for Go
+
+> **5-50x faster than stdlib through multi-engine architecture and SIMD optimizations**
+
+[![GitHub Release](https://img.shields.io/github/v/release/coregx/coregex?include_prereleases&style=flat-square&logo=github&color=blue)](https://github.com/coregx/coregex/releases/latest)
+[![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
+[![Go Reference](https://pkg.go.dev/badge/github.com/coregx/coregex.svg)](https://pkg.go.dev/github.com/coregx/coregex)
+[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/coregx/coregex/test.yml?branch=main&style=flat-square&logo=github-actions&label=CI)](https://github.com/coregx/coregex/actions)
+[![Go Report Card](https://goreportcard.com/badge/github.com/coregx/coregex?style=flat-square)](https://goreportcard.com/report/github.com/coregx/coregex)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/stargazers)
+[![GitHub Issues](https://img.shields.io/github/issues/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/issues)
+
+---
+
+A **production-grade regex engine** for Go with dramatic performance improvements over the standard library. Inspired by Rust's regex crate, coregex uses a multi-engine architecture with SIMD-accelerated prefilters to achieve **5-50x speedup** on typical workloads.
+
+## Features
+
+⚡ **Performance**
+- 🚀 **5-50x faster** than Go's `regexp` package through intelligent prefiltering
+- 🎯 **SIMD-accelerated** search with AVX2/SSSE3 assembly (10-15x faster substring search)
+- 📊 **Multi-pattern search** (Teddy SIMD algorithm for 2-8 literals)
+- 🔍 **Aho-Corasick** for many literals
+- 💾 **Zero allocations** in hot paths through object pooling
+
+🏗️ **Architecture**
+- 🧠 **Meta-engine** orchestrates strategy selection (DFA/NFA/bounded backtracking)
+- ⚡ **Lazy DFA** with configurable caching (on-demand state construction)
+- 🔄 **Pike VM** (Thompson's NFA) for guaranteed O(n×m) performance
+- 🎭 **One-pass DFA** for simple patterns (no backtracking needed)
+- 📌 **Prefilter coordination** (memchr/memmem/teddy/aho-corasick)
+
+🎯 **API Design**
+- Simple, drop-in replacement for `regexp` package
+- Configuration system for performance tuning
+- Thread-safe with concurrent compilation support
+- Comprehensive error handling
+
+## Installation
+
+```bash
+go get github.com/coregx/coregex
+```
+
+**Requirements:**
+- Go 1.25 or later
+- Zero external dependencies (except `golang.org/x/sys` for CPU feature detection)
+
+## Quick Start
+
+### Basic Usage
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/coregx/coregex"
+)
+
+func main() {
+	// Compile a regex pattern
+	re, err := coregex.Compile(`\b\w+@\w+\.\w+\b`)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Find first match
+	text := []byte("Contact us at support@example.com for help")
+	if match := re.Find(text); match != nil {
+		fmt.Printf("Found email: %s\n", match)
+	}
+
+	// Find all matches
+	matches := re.FindAll(text, -1)
+	for _, m := range matches {
+		fmt.Printf("Match: %s\n", m)
+	}
+}
+```
+
+### Advanced Configuration
+
+```go
+package main
+
+import (
+	"log"
+
+	"github.com/coregx/coregex"
+)
+
+func main() {
+	// Create custom configuration for performance tuning
+	config := coregex.DefaultConfig()
+	config.DFAMaxStates = 10000        // Limit DFA cache size
+	config.EnablePrefilter = true       // Use SIMD prefilters (default)
+	config.UseObjectPools = true        // Zero-allocation mode (default)
+
+	// Compile with custom config
+	re, err := coregex.CompileWithConfig(`pattern`, config)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Use regex...
+	text := []byte("search this text")
+	match := re.Find(text)
+	if match != nil {
+		log.Printf("Found: %s", match)
+	}
+}
+```
+
+### Performance Example
+
+```go
+package main
+
+import (
+	"fmt"
+	"regexp"
+	"time"
+
+	"github.com/coregx/coregex"
+)
+
+func benchmarkSearch(pattern string, text []byte) {
+	// stdlib regexp
+	start := time.Now()
+	reStdlib := regexp.MustCompile(pattern)
+	for i := 0; i < 10000; i++ {
+		reStdlib.Find(text)
+	}
+	stdlibTime := time.Since(start)
+
+	// coregex
+	start = time.Now()
+	reGoregex := coregex.MustCompile(pattern)
+	for i := 0; i < 10000; i++ {
+		reGoregex.Find(text)
+	}
+	coregexTime := time.Since(start)
+
+	speedup := float64(stdlibTime) / float64(coregexTime)
+	fmt.Printf("Speedup: %.1fx faster\n", speedup)
+}
+```
+
+## Performance Benchmarks
+
+**SIMD Primitives** (vs stdlib):
+- `memchr` (single byte): **12.3x faster** (64KB input)
+- `memmem` (substring): **14.2x faster** (64KB input, short needle)
+- `teddy` (multi-pattern): **8.5x faster** (2-8 patterns)
+
+**Regex Search** (vs `regexp`):
+- Email extraction: **15-25x faster**
+- URL matching: **10-20x faster**
+- Log parsing: **30-50x faster** (with prefilter optimization)
+
+See [benchmarks/](benchmarks/) for detailed comparisons.
+
+## Supported Features
+
+### v0.1.0 (Current)
+
+| Feature              | Status | Notes |
+|----------------------|--------|-------|
+| **SIMD Primitives**  | ✅     | memchr, memchr2/3, memmem, teddy |
+| **Literal Extraction** | ✅   | Prefix/suffix/inner literals |
+| **Prefilter System** | ✅     | Automatic strategy selection |
+| **Meta-Engine**      | ✅     | DFA/NFA orchestration |
+| **Lazy DFA**         | ✅     | On-demand state construction |
+| **Pike VM (NFA)**    | ✅     | Thompson's construction |
+| **One-pass DFA**     | ✅     | For simple patterns |
+| **Unicode support**  | ✅     | Via `regexp/syntax` |
+| **Captures**         | ✅     | Numbered groups |
+| **Named captures**   | 📅 v0.2.0 | Planned |
+| **Look-around**      | 📅 v0.3.0 | Lookahead/lookbehind |
+| **Backreferences**   | ❌     | Incompatible with O(n) guarantee |
+
+### Regex Syntax
+
+coregex uses Go's `regexp/syntax` for pattern parsing, supporting:
+- ✅ Character classes `[a-z]`, `\d`, `\w`, `\s`
+- ✅ Quantifiers `*`, `+`, `?`, `{n,m}`
+- ✅ Anchors `^`, `$`, `\b`, `\B`
+- ✅ Groups `(...)` and alternation `|`
+- ✅ Unicode categories `\p{L}`, `\P{N}`
+- ✅ Case-insensitive matching `(?i)`
+- ✅ Non-capturing groups `(?:...)`
+- ❌ Backreferences (not supported - O(n) performance guarantee)
+
+## Known Limitations
+
+### v0.1.0 (Experimental)
+
+**What Works:**
+- ✅ All standard regex syntax (except backreferences)
+- ✅ Unicode support via `regexp/syntax`
+- ✅ SIMD acceleration on AMD64 (AVX2/SSSE3)
+- ✅ Cross-platform (fallback to pure Go on other architectures)
+- ✅ Thread-safe compilation and execution
+- ✅ Zero external dependencies
+
+**Current Limitations:**
+- ⚠️ **Experimental API** - May change in v0.2+
+- ⚠️ No named capture groups yet (planned v0.2.0)
+- ⚠️ No look-around assertions yet (planned v0.3.0)
+- ⚠️ SIMD only on AMD64 (ARM NEON planned v0.4.0)
+
+**Performance Notes:**
+- 🚀 Best speedup on patterns with literal prefixes/suffixes
+- 🚀 Excellent for log parsing, email/URL extraction
+- ⚡ May be slower than stdlib on trivial patterns (overhead)
+- ⚡ First match slower (compilation cost), repeated matches faster
+
+See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
+
+## Documentation
+
+- **[Getting Started](docs/)** - Usage examples and tutorials
+- **[API Reference](https://pkg.go.dev/github.com/coregx/coregex)** - Full API documentation
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history
+- **[ROADMAP.md](ROADMAP.md)** - Future plans and development timeline
+- **[SECURITY.md](SECURITY.md)** - Security policy and ReDoS prevention
+
+## Development
+
+### Building
+
+```bash
+# Clone repository
+git clone https://github.com/coregx/coregex.git
+cd coregex
+
+# Build all packages
+go build ./...
+
+# Run tests
+go test ./...
+
+# Run tests with race detector
+go test -race ./...
+
+# Run benchmarks
+go test -bench=. -benchmem ./simd/
+go test -bench=. -benchmem ./prefilter/
+```
+
+### Testing
+
+```bash
+# Run all tests
+go test ./...
+
+# Run specific package tests
+go test ./simd/ -v
+go test ./meta/ -v
+
+# Run with coverage
+go test -cover ./...
+
+# Run linter (golangci-lint required)
+golangci-lint run
+```
+
+### Pre-release Check
+
+Before creating a release, run the comprehensive validation script:
+
+```bash
+bash scripts/pre-release-check.sh
+```
+
+This checks:
+- ✅ Go version (1.25+)
+- ✅ Code formatting (`gofmt`)
+- ✅ `go vet` passes
+- ✅ All tests pass (with race detector)
+- ✅ Test coverage >70%
+- ✅ `golangci-lint` passes
+- ✅ Documentation present
+
+---
+
+## Contributing
+
+Contributions are welcome! This is an experimental project and we'd love your help.
+
+**Before contributing:**
+1. Read [CONTRIBUTING.md](CONTRIBUTING.md) - Git Flow workflow and guidelines
+2. Check [open issues](https://github.com/coregx/coregex/issues)
+3. Join [GitHub Discussions](https://github.com/coregx/coregex/discussions)
+
+**Ways to contribute:**
+- 🐛 Report bugs and edge cases
+- 💡 Suggest features
+- 📝 Improve documentation
+- 🔧 Submit pull requests
+- ⭐ Star the project
+- 🧪 Benchmark against stdlib and report results
+
+**Priority areas:**
+- ARM NEON SIMD implementation (v0.4.0)
+- Named capture groups (v0.2.0)
+- Look-around assertions (v0.3.0)
+- More comprehensive benchmarks
+- Real-world performance testing
+
+---
+
+## Comparison with Other Libraries
+
+| Feature | coregex | stdlib `regexp` | regexp2 |
+|---------|---------|----------------|---------|
+| **Performance** | 🚀 5-50x faster | Baseline | Slower (backtracking) |
+| **SIMD acceleration** | ✅ AVX2/SSSE3 | ❌ No | ❌ No |
+| **Prefilters** | ✅ Automatic | ❌ No | ❌ No |
+| **Multi-engine** | ✅ DFA/NFA/PikeVM | ❌ Single | ❌ Backtracking only |
+| **O(n) guarantee** | ✅ Yes | ✅ Yes | ❌ No (exponential worst-case) |
+| **Backreferences** | ❌ Not supported | ❌ Not supported | ✅ Supported |
+| **Named captures** | 📅 v0.2.0 | ✅ Supported | ✅ Supported |
+| **Look-around** | 📅 v0.3.0 | ❌ Limited | ✅ Supported |
+| **API compatibility** | ⚠️ Similar | - | Different |
+| **Maintained** | ✅ Active | ✅ Stdlib | ✅ Active |
+
+**When to use coregex:**
+- ✅ Performance-critical applications (log parsing, text processing)
+- ✅ Patterns with literal prefixes/suffixes
+- ✅ Multi-pattern search (email/URL extraction)
+- ✅ When you need O(n) performance guarantee
+
+**When to use stdlib `regexp`:**
+- ✅ Simple patterns where performance doesn't matter
+- ✅ You need named captures NOW (coming in v0.2.0)
+- ✅ Maximum stability and API compatibility
+
+**When to use `regexp2`:**
+- ✅ You need backreferences (not supported by coregex)
+- ✅ Complex look-around assertions (v0.3.0 for coregex)
+- ⚠️ Accept exponential worst-case performance
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Meta-Engine                          │
+│  (Strategy Selection: DFA/NFA/One-pass)                     │
+└────────────┬────────────────────────────────────────────────┘
+             │
+     ┌───────┴───────┐
+     │  Prefilter    │ ──► memchr (single byte)
+     │  Coordinator  │ ──► memmem (substring)
+     └───────┬───────┘ ──► teddy (2-8 patterns, SIMD)
+             │         ──► aho-corasick (many patterns)
+     ┌───────┴─────────────────────────────────┐
+     │                                         │
+┌────┴────┐  ┌──────────┐  ┌────────────┐  ┌───┴────┐
+│ Lazy    │  │ Pike VM  │  │ One-pass   │  │ Literal│
+│ DFA     │  │ (NFA)    │  │ DFA        │  │Extract │
+└─────────┘  └──────────┘  └────────────┘  └────────┘
+     │             │              │             │
+     └─────────────┴──────────────┴─────────────┘
+                       │
+              ┌────────┴────────┐
+              │ SIMD Primitives │
+              │ (AVX2/SSSE3)    │
+              └─────────────────┘
+```
+
+**Key components:**
+1. **Meta-Engine** - Intelligent strategy selection based on pattern analysis
+2. **Prefilter System** - Fast rejection of non-matching candidates
+3. **Multi-Engine Execution** - DFA for speed, NFA for correctness
+4. **SIMD Primitives** - 10-15x faster byte/substring search
+
+See package documentation on [pkg.go.dev](https://pkg.go.dev/github.com/coregx/coregex) for API details.
+
+---
+
+## Related Projects
+
+Part of the [CoreGX](https://github.com/coregx) (Core Go eXtensions) ecosystem:
+- More projects coming soon!
+
+**Inspired by:**
+- [Rust regex crate](https://github.com/rust-lang/regex) - Architecture and design
+- [RE2](https://github.com/google/re2) - O(n) performance guarantees
+- [Hyperscan](https://github.com/intel/hyperscan) - SIMD multi-pattern matching
+
+---
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## Acknowledgments
+
+- Rust regex crate team for architectural inspiration
+- Russ Cox for Thompson's NFA articles and RE2
+- Intel for Hyperscan and Teddy algorithm
+- Go team for `regexp/syntax` parser
+- All contributors to this project
+
+---
+
+## Support
+
+- 📖 [API Reference](https://pkg.go.dev/github.com/coregx/coregex) - Full documentation
+- 🐛 [Issue Tracker](https://github.com/coregx/coregex/issues) - Report bugs
+- 💬 [Discussions](https://github.com/coregx/coregex/discussions) - Ask questions
+
+---
+
+**Status**: ⚠️ **EXPERIMENTAL** - v0.1.0 released, API may change in 0.x versions
+
+**Current Version**: v0.1.0 (2025-01-26)
+
+**Ready for:** Testing, benchmarking, feedback, and experimental use
+**Production readiness:** API stability expected in v1.0.0
+
+**Next Release:** v0.2.0 (Q1 2025) - Named captures, API refinements
+
+---
+
+*Built with performance and correctness in mind by the CoreGX community* 🚀

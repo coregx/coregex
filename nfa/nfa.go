@@ -1,0 +1,273 @@
+package nfa
+
+import (
+	"fmt"
+)
+
+// StateID uniquely identifies an NFA state.
+// This is a 32-bit unsigned integer for compact representation.
+type StateID uint32
+
+// Special state constants
+const (
+	// InvalidState represents an invalid/uninitialized state ID
+	InvalidState StateID = 0xFFFFFFFF
+
+	// FailState represents a dead/failure state (no transitions)
+	FailState StateID = 0xFFFFFFFE
+)
+
+// StateKind identifies the type of NFA state and determines which transitions are valid.
+type StateKind uint8
+
+const (
+	// StateMatch represents a match state (accepting state)
+	StateMatch StateKind = iota
+
+	// StateByteRange represents a single byte or byte range transition [lo, hi]
+	StateByteRange
+
+	// StateSparse represents multiple byte transitions (character class)
+	// e.g., [a-zA-Z0-9] would use this with a list of byte ranges
+	StateSparse
+
+	// StateSplit represents an epsilon transition to 2 states (alternation)
+	// Used for alternation (a|b) and optional patterns (a?)
+	StateSplit
+
+	// StateEpsilon represents an epsilon transition to 1 state
+	// Used for sequencing without consuming input
+	StateEpsilon
+
+	// StateCapture represents a capture group boundary (future feature)
+	// Not implemented in MVP but reserved for future use
+	StateCapture
+
+	// StateFail represents a dead state (no valid transitions)
+	StateFail
+)
+
+// String returns a human-readable representation of the StateKind
+func (k StateKind) String() string {
+	switch k {
+	case StateMatch:
+		return "Match"
+	case StateByteRange:
+		return "ByteRange"
+	case StateSparse:
+		return "Sparse"
+	case StateSplit:
+		return "Split"
+	case StateEpsilon:
+		return "Epsilon"
+	case StateCapture:
+		return "Capture"
+	case StateFail:
+		return "Fail"
+	default:
+		return fmt.Sprintf("Unknown(%d)", k)
+	}
+}
+
+// State represents a single NFA state with its transitions.
+// The state's kind determines which fields are valid.
+type State struct {
+	id   StateID
+	kind StateKind
+
+	// For ByteRange: single byte or range [lo, hi]
+	lo, hi byte
+	next   StateID // target state for ByteRange/Epsilon
+
+	// For Sparse: multiple byte ranges with corresponding targets
+	// Pre-allocated to avoid heap allocations during search
+	transitions []Transition
+
+	// For Split: epsilon transitions to two states
+	left, right StateID
+
+	// For Capture: capture group index (future)
+	//nolint:unused // Reserved for future capture group implementation
+	captureIndex uint32
+}
+
+// Transition represents a byte range and target state for sparse transitions.
+// Used in character classes like [a-zA-Z0-9].
+type Transition struct {
+	Lo   byte    // inclusive lower bound
+	Hi   byte    // inclusive upper bound
+	Next StateID // target state
+}
+
+// ID returns the state's unique identifier
+func (s *State) ID() StateID {
+	return s.id
+}
+
+// Kind returns the state's type
+func (s *State) Kind() StateKind {
+	return s.kind
+}
+
+// IsMatch returns true if this is a match state
+func (s *State) IsMatch() bool {
+	return s.kind == StateMatch
+}
+
+// ByteRange returns the byte range for ByteRange states.
+// Returns (0, 0, InvalidState) for non-ByteRange states.
+func (s *State) ByteRange() (lo, hi byte, next StateID) {
+	if s.kind == StateByteRange {
+		return s.lo, s.hi, s.next
+	}
+	return 0, 0, InvalidState
+}
+
+// Split returns the two target states for Split states.
+// Returns (InvalidState, InvalidState) for non-Split states.
+func (s *State) Split() (left, right StateID) {
+	if s.kind == StateSplit {
+		return s.left, s.right
+	}
+	return InvalidState, InvalidState
+}
+
+// Epsilon returns the target state for Epsilon states.
+// Returns InvalidState for non-Epsilon states.
+func (s *State) Epsilon() StateID {
+	if s.kind == StateEpsilon {
+		return s.next
+	}
+	return InvalidState
+}
+
+// Transitions returns the list of transitions for Sparse states.
+// Returns nil for non-Sparse states.
+func (s *State) Transitions() []Transition {
+	if s.kind == StateSparse {
+		return s.transitions
+	}
+	return nil
+}
+
+// String returns a human-readable representation of the state
+func (s *State) String() string {
+	switch s.kind {
+	case StateMatch:
+		return fmt.Sprintf("State(%d, Match)", s.id)
+	case StateByteRange:
+		if s.lo == s.hi {
+			return fmt.Sprintf("State(%d, ByteRange '%c' -> %d)", s.id, s.lo, s.next)
+		}
+		return fmt.Sprintf("State(%d, ByteRange ['%c'-'%c'] -> %d)", s.id, s.lo, s.hi, s.next)
+	case StateSparse:
+		return fmt.Sprintf("State(%d, Sparse %d transitions)", s.id, len(s.transitions))
+	case StateSplit:
+		return fmt.Sprintf("State(%d, Split -> [%d, %d])", s.id, s.left, s.right)
+	case StateEpsilon:
+		return fmt.Sprintf("State(%d, Epsilon -> %d)", s.id, s.next)
+	case StateFail:
+		return fmt.Sprintf("State(%d, Fail)", s.id)
+	default:
+		return fmt.Sprintf("State(%d, Unknown)", s.id)
+	}
+}
+
+// NFA represents a compiled Thompson NFA.
+// It is the result of compiling a regexp/syntax.Regexp pattern.
+type NFA struct {
+	// states contains all NFA states indexed by StateID
+	states []State
+
+	// start is the starting state for the NFA
+	start StateID
+
+	// anchored indicates if the pattern must match at the start of input
+	anchored bool
+
+	// utf8 indicates if the NFA respects UTF-8 boundaries
+	// When true, matches won't split multi-byte UTF-8 sequences
+	utf8 bool
+
+	// patternCount is the number of patterns in a multi-pattern NFA
+	// For single patterns, this is 1
+	patternCount int
+}
+
+// Start returns the starting state ID of the NFA
+func (n *NFA) Start() StateID {
+	return n.start
+}
+
+// State returns the state with the given ID.
+// Returns nil if the ID is invalid.
+func (n *NFA) State(id StateID) *State {
+	if id == InvalidState || int(id) >= len(n.states) {
+		return nil
+	}
+	return &n.states[id]
+}
+
+// IsMatch returns true if the given state is a match state
+func (n *NFA) IsMatch(id StateID) bool {
+	if s := n.State(id); s != nil {
+		return s.IsMatch()
+	}
+	return false
+}
+
+// States returns the total number of states in the NFA
+func (n *NFA) States() int {
+	return len(n.states)
+}
+
+// IsAnchored returns true if the NFA requires anchored matching
+func (n *NFA) IsAnchored() bool {
+	return n.anchored
+}
+
+// IsUTF8 returns true if the NFA respects UTF-8 boundaries
+func (n *NFA) IsUTF8() bool {
+	return n.utf8
+}
+
+// PatternCount returns the number of patterns in the NFA
+func (n *NFA) PatternCount() int {
+	return n.patternCount
+}
+
+// Iter returns an iterator over all states in the NFA
+func (n *NFA) Iter() *StateIter {
+	return &StateIter{
+		nfa: n,
+		pos: 0,
+	}
+}
+
+// StateIter is an iterator over NFA states
+type StateIter struct {
+	nfa *NFA
+	pos int
+}
+
+// Next returns the next state in the iteration.
+// Returns nil when iteration is complete.
+func (it *StateIter) Next() *State {
+	if it.pos >= len(it.nfa.states) {
+		return nil
+	}
+	s := &it.nfa.states[it.pos]
+	it.pos++
+	return s
+}
+
+// HasNext returns true if there are more states to iterate
+func (it *StateIter) HasNext() bool {
+	return it.pos < len(it.nfa.states)
+}
+
+// String returns a human-readable representation of the NFA
+func (n *NFA) String() string {
+	return fmt.Sprintf("NFA{states: %d, start: %d, anchored: %v, utf8: %v}",
+		len(n.states), n.start, n.anchored, n.utf8)
+}

@@ -1,0 +1,148 @@
+name: Tests
+
+# Testing Strategy:
+# - Tests run on Linux, macOS, and Windows (cross-platform library)
+# - Regex engine with SIMD assembly - must work everywhere
+# - Go 1.25+ required (matches go.mod requirement)
+# - Zero external dependencies (except golang.org/x/sys for CPU detection)
+#
+# Branch Strategy (Git Flow):
+# - feature/** branches: Development work
+# - release/** branches: Pre-release testing (test here BEFORE merging to main)
+# - hotfix/** branches: Critical bug fixes
+# - develop branch: Integration branch
+# - main branch: Production-ready code only (protected)
+# - Pull requests: Must pass all tests before merge
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'feature/**'
+      - 'release/**'
+      - 'hotfix/**'
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  # Unit tests - Cross-platform
+  unit-tests:
+    name: Unit Tests - ${{ matrix.os }} - Go ${{ matrix.go-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go-version: ['1.25']  # Match go.mod requirement
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ matrix.go-version }}
+        cache: true
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Verify dependencies
+      run: go mod verify
+
+    - name: Run go vet
+      if: matrix.os == 'ubuntu-latest'
+      run: go vet ./...
+
+    - name: Run unit tests with race detector
+      shell: bash
+      run: go test -short -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+
+    - name: Upload coverage to Codecov
+      if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.25'
+      uses: codecov/codecov-action@v4
+      continue-on-error: true
+      with:
+        file: ./coverage.txt
+        flags: unittests
+        name: codecov-unit
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    continue-on-error: false  # Strict for production library
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+        cache: true
+
+    - name: Run golangci-lint
+      uses: golangci/golangci-lint-action@v8
+      with:
+        version: latest
+        args: --timeout=5m
+
+  # Formatting check
+  formatting:
+    name: Code Formatting
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+        cache: true
+
+    - name: Check formatting
+      run: |
+        if [ -n "$(gofmt -l .)" ]; then
+          echo "ERROR: The following files are not formatted:"
+          gofmt -l .
+          echo ""
+          echo "Run 'go fmt ./...' to fix formatting issues."
+          exit 1
+        fi
+        echo "All files are properly formatted ✓"
+
+  # Benchmarks (informational only)
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    continue-on-error: true  # Don't fail CI on benchmark failures
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+        cache: true
+
+    - name: Run benchmarks
+      run: |
+        echo "=== SIMD Benchmarks ==="
+        go test -bench=BenchmarkMemchr -benchmem ./simd/ || true
+        go test -bench=BenchmarkMemmem -benchmem ./simd/ || true
+
+        echo ""
+        echo "=== Prefilter Benchmarks ==="
+        go test -bench=Benchmark -benchmem ./prefilter/ || true
+
+        echo ""
+        echo "=== Meta Engine Benchmarks ==="
+        go test -bench=Benchmark -benchmem . || true
