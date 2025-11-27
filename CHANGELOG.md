@@ -7,15 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v0.2.0
-- Capture group support (DFA limitation workaround)
-- Submatch extraction API
-- Extended matching modes
-
 ### Planned for v0.3.0
 - Replace and ReplaceAll functions
 - Split function
 - Template-based replacement
+
+---
+
+## [0.2.0] - 2025-11-27
+
+### Added
+- **Capture groups support**: Full submatch extraction via PikeVM
+- `FindSubmatch()` / `FindStringSubmatch()` - returns all capture groups
+- `FindSubmatchIndex()` / `FindStringSubmatchIndex()` - returns group positions
+- `NumSubexp()` - returns number of capture groups
+- NFA `StateCapture` state type for group boundaries
+- Thread-local capture tracking in PikeVM with copy-on-write semantics
+
+### Performance
+- Case-insensitive 32KB: **263x faster** than stdlib
+- Case-insensitive 1KB: **92x faster** than stdlib
+- Case-sensitive 1KB: **3.5x faster** than stdlib
+- Small inputs (16B): ~4x overhead due to multi-engine architecture (acceptable trade-off)
+
+### Technical
+- Captures follow Thompson's construction as epsilon transitions
+- DFA path unchanged - captures only allocated when requested via FindSubmatch
+
+---
 
 ### Planned for v0.4.0
 - Case-insensitive matching flag
