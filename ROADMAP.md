@@ -2,7 +2,7 @@
 
 > **Strategic Approach**: Multi-engine regex with SIMD acceleration for 5-50x performance improvement
 
-**Last Updated**: 2025-01-26 | **Current Version**: v0.1.0 (Initial Release) | **Target**: v1.0.0 stable (Q2 2026)
+**Last Updated**: 2025-11-27 | **Current Version**: v0.3.0 | **Target**: v1.0.0 stable
 
 ---
 
@@ -38,22 +38,16 @@ Build a **production-ready, high-performance regex engine** for Go with **5-50x 
 
 ```
 v0.1.0 (2025-01-26) ✅ → Initial release (SIMD + Multi-engine)
-         ↓ (2-4 weeks)
-v0.2.0 → Capture groups support (DFA limitation workaround)
-         ↓ (2-4 weeks)
-v0.3.0 → Replace/Split functions + extended API
-         ↓ (1-2 months)
-v0.4.0 → Case-insensitive matching + flags support
-         ↓ (1-2 months)
-v0.5.0 → Unicode property classes (\p{Letter}, etc.)
-         ↓ (community testing, API refinement)
-v0.6.0 → Performance optimizations + advanced features
-         ↓ (2+ months)
+v0.2.0 (2025-11-27) ✅ → Capture groups support
+v0.3.0 (2025-11-27) ✅ → Replace/Split functions + extended API
+         ↓
+v0.4.0 → Named capture groups + Look-around
+         ↓
+v0.5.0 → ARM NEON SIMD + Performance optimizations
+         ↓
 v1.0.0-rc.1 → Feature freeze, API locked
-         ↓ (community feedback, 2+ months testing)
+         ↓ (community feedback)
 v1.0.0 STABLE → Production release with API stability guarantee
-         ↓ (maintenance mode, LTS)
-v2.0.0 → Only if breaking changes absolutely necessary
 ```
 
 **Important Notes**:
@@ -64,7 +58,7 @@ v2.0.0 → Only if breaking changes absolutely necessary
 
 ---
 
-## 📊 Current Status (v0.1.0 - INITIAL RELEASE ✅)
+## 📊 Current Status (v0.3.0 ✅)
 
 ### ✅ What's Working Now
 
@@ -110,12 +104,16 @@ v2.0.0 → Only if breaking changes absolutely necessary
 - ✅ Compile, MustCompile, CompileWithConfig
 - ✅ Match, MatchString
 - ✅ Find, FindString, FindIndex, FindStringIndex
-- ✅ FindAll, FindAllString
-- ✅ String() for pattern inspection
+- ✅ FindAll, FindAllString, FindAllIndex
+- ✅ FindSubmatch, FindStringSubmatch, FindSubmatchIndex
+- ✅ ReplaceAll, ReplaceAllString, ReplaceAllLiteral
+- ✅ ReplaceAllFunc, ReplaceAllStringFunc
+- ✅ Split
+- ✅ String(), NumSubexp()
 
-**Quality Metrics** (v0.1.0):
+**Quality Metrics** (v0.3.0):
 - ✅ **Grade: A (Excellent)** - Production Quality
-- ✅ Test coverage: 77.0% average (94.5% public API!)
+- ✅ Test coverage: 88.3% average
 - ✅ Tests: 400+ test cases, 100% passing
 - ✅ Linter: 0 errors, 0 warnings (13/13 tasks clean!)
 - ✅ Race detector: PASS (0 races detected)
@@ -123,11 +121,10 @@ v2.0.0 → Only if breaking changes absolutely necessary
 - ✅ Zero allocations in hot paths
 
 **Known Limitations** (documented in CHANGELOG):
-- ❌ No capture groups (DFA limitation)
-- ❌ No Replace/Split/ReplaceAll functions
-- ❌ No case-insensitive matching
-- ❌ No Unicode property classes
-- ❌ API may change in v0.2+ (experimental status)
+- ❌ No named capture groups (planned v0.4.0)
+- ❌ No look-around assertions (planned v0.4.0)
+- ❌ SIMD only AMD64 (ARM NEON planned v0.5.0)
+- ❌ API may change before v1.0 (experimental status)
 
 ---
 
@@ -481,5 +478,4 @@ These are outside the scope of a high-performance regex library focused on Go's 
 
 ---
 
-*Version 1.0*
-*Current: v0.1.0 (Released 2025-01-26) | Next: v0.2.0 (Capture Groups) | Target: v1.0.0 (Q1 2027)*
+*Current: v0.3.0 | Next: v0.4.0 (Named Captures, Look-around) | Target: v1.0.0*

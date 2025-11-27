@@ -7,10 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v0.3.0
-- Replace and ReplaceAll functions
-- Split function
-- Template-based replacement
+### Planned for v0.4.0
+- Named capture groups (`(?P<name>...)`)
+- ARM NEON SIMD support
+
+---
+
+## [0.3.0] - 2025-11-27
+
+### Added
+- **Replace functions**: Full stdlib-compatible replacement API
+  - `ReplaceAll()` / `ReplaceAllString()` - replace with template expansion
+  - `ReplaceAllLiteral()` / `ReplaceAllLiteralString()` - literal replacement (no $ expansion)
+  - `ReplaceAllFunc()` / `ReplaceAllStringFunc()` - replace with function callback
+- **Split function**: `Split(s string, n int)` - split string by regex
+- **Template expansion**: `$0`-`$9` backreference support in replacement templates
+- **FindAllIndex**: `FindAllIndex()` / `FindAllStringIndex()` for batch index retrieval
+
+### Technical
+- Pre-allocation optimization for replacement buffers
+- Proper `$$` escape handling (literal `$`)
+- Empty match handling to prevent infinite loops
 
 ---
 

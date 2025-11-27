@@ -393,3 +393,406 @@ func (r *Regex) FindSubmatchIndex(b []byte) []int {
 func (r *Regex) FindStringSubmatchIndex(s string) []int {
 	return r.FindSubmatchIndex([]byte(s))
 }
+
+// FindAllIndex returns a slice of all successive matches of the pattern in b,
+// as index pairs [start, end].
+// If n > 0, it returns at most n matches. If n <= 0, it returns all matches.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	indices := re.FindAllIndex([]byte("1 2 3"), -1)
+//	// indices = [[0,1], [2,3], [4,5]]
+func (r *Regex) FindAllIndex(b []byte, n int) [][]int {
+	if n == 0 {
+		return nil
+	}
+
+	var indices [][]int
+	pos := 0
+	for {
+		// Search from current position
+		match := r.engine.Find(b[pos:])
+		if match == nil {
+			break
+		}
+
+		// Adjust match positions to absolute offsets
+		absStart := pos + match.Start()
+		absEnd := pos + match.End()
+		indices = append(indices, []int{absStart, absEnd})
+
+		// Move position past this match
+		if absEnd > pos {
+			pos = absEnd
+		} else {
+			// Empty match: advance by 1 to avoid infinite loop
+			pos++
+		}
+
+		if pos > len(b) {
+			break
+		}
+
+		// Check limit
+		if n > 0 && len(indices) >= n {
+			break
+		}
+	}
+
+	return indices
+}
+
+// FindAllStringIndex returns a slice of all successive matches of the pattern in s,
+// as index pairs [start, end].
+// If n > 0, it returns at most n matches. If n <= 0, it returns all matches.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	indices := re.FindAllStringIndex("1 2 3", -1)
+//	// indices = [[0,1], [2,3], [4,5]]
+func (r *Regex) FindAllStringIndex(s string, n int) [][]int {
+	return r.FindAllIndex([]byte(s), n)
+}
+
+// ReplaceAllLiteral returns a copy of src, replacing matches of the pattern
+// with the replacement bytes repl.
+// The replacement is substituted directly, without expanding $ variables.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	result := re.ReplaceAllLiteral([]byte("age: 42"), []byte("XX"))
+//	// result = []byte("age: XX")
+func (r *Regex) ReplaceAllLiteral(src, repl []byte) []byte {
+	indices := r.FindAllIndex(src, -1)
+	if len(indices) == 0 {
+		// No matches, return copy of src
+		result := make([]byte, len(src))
+		copy(result, src)
+		return result
+	}
+
+	// Pre-allocate result buffer
+	// Estimate: len(src) + (len(repl)-avgMatchLen)*numMatches
+	totalMatchLen := 0
+	for _, idx := range indices {
+		totalMatchLen += idx[1] - idx[0]
+	}
+	avgMatchLen := totalMatchLen / len(indices)
+	estimatedLen := len(src) + (len(repl)-avgMatchLen)*len(indices)
+	if estimatedLen < 0 {
+		estimatedLen = len(src)
+	}
+
+	result := make([]byte, 0, estimatedLen)
+	lastEnd := 0
+
+	for _, idx := range indices {
+		// Append text before match
+		result = append(result, src[lastEnd:idx[0]]...)
+		// Append replacement
+		result = append(result, repl...)
+		lastEnd = idx[1]
+	}
+
+	// Append remaining text
+	result = append(result, src[lastEnd:]...)
+	return result
+}
+
+// ReplaceAllLiteralString returns a copy of src, replacing matches of the pattern
+// with the replacement string repl.
+// The replacement is substituted directly, without expanding $ variables.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	result := re.ReplaceAllLiteralString("age: 42", "XX")
+//	// result = "age: XX"
+func (r *Regex) ReplaceAllLiteralString(src, repl string) string {
+	return string(r.ReplaceAllLiteral([]byte(src), []byte(repl)))
+}
+
+// expand appends template to dst and returns the result; during the
+// append, it replaces $1, $2, etc. with the corresponding submatch.
+// $0 is the entire match.
+func (r *Regex) expand(dst []byte, template []byte, src []byte, match []int) []byte {
+	i := 0
+	for i < len(template) {
+		if template[i] != '$' || i+1 >= len(template) {
+			dst = append(dst, template[i])
+			i++
+			continue
+		}
+
+		// Handle $ escape sequences
+		next := template[i+1]
+
+		// Check for $0-$9
+		if next >= '0' && next <= '9' {
+			groupNum := int(next - '0')
+			// Each group occupies 2 indices in match array
+			groupIdx := groupNum * 2
+			if groupIdx+1 < len(match) && match[groupIdx] >= 0 {
+				dst = append(dst, src[match[groupIdx]:match[groupIdx+1]]...)
+			}
+			i += 2
+			continue
+		}
+
+		// Check for ${name} - not supported yet, treat as literal
+		if next == '{' {
+			dst = append(dst, '$')
+			i++
+			continue
+		}
+
+		// $$ -> $
+		if next == '$' {
+			dst = append(dst, '$')
+			i += 2
+			continue
+		}
+
+		// Unknown $ escape, treat as literal
+		dst = append(dst, '$')
+		i++
+	}
+	return dst
+}
+
+// ReplaceAll returns a copy of src, replacing matches of the pattern
+// with the replacement bytes repl.
+// Inside repl, $ signs are interpreted as in Regexp.Expand:
+// $0 is the entire match, $1 is the first capture group, etc.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+//	result := re.ReplaceAll([]byte("user@example.com"), []byte("$1 at $2 dot $3"))
+//	// result = []byte("user at example dot com")
+func (r *Regex) ReplaceAll(src, repl []byte) []byte {
+	// Check if replacement contains $ variables
+	hasDollar := false
+	for _, b := range repl {
+		if b == '$' {
+			hasDollar = true
+			break
+		}
+	}
+
+	// If no $ variables, use faster literal replacement
+	if !hasDollar {
+		return r.ReplaceAllLiteral(src, repl)
+	}
+
+	// Need to find submatches for expansion
+	numGroups := r.NumSubexp()
+	if numGroups == 0 {
+		// No capture groups, fallback to literal
+		return r.ReplaceAllLiteral(src, repl)
+	}
+
+	var result []byte
+	lastEnd := 0
+	pos := 0
+
+	for {
+		// Search from current position
+		matchData := r.engine.FindSubmatch(src[pos:])
+		if matchData == nil {
+			break
+		}
+
+		// Get match indices (adjusted to absolute positions)
+		matchIndices := make([]int, numGroups*2)
+		for i := 0; i < numGroups; i++ {
+			idx := matchData.GroupIndex(i)
+			if len(idx) >= 2 {
+				matchIndices[i*2] = pos + idx[0]
+				matchIndices[i*2+1] = pos + idx[1]
+			} else {
+				matchIndices[i*2] = -1
+				matchIndices[i*2+1] = -1
+			}
+		}
+
+		absStart := matchIndices[0]
+		absEnd := matchIndices[1]
+
+		// Append text before match
+		result = append(result, src[lastEnd:absStart]...)
+
+		// Expand template
+		result = r.expand(result, repl, src, matchIndices)
+
+		lastEnd = absEnd
+
+		// Move position past this match
+		if absEnd > pos {
+			pos = absEnd
+		} else {
+			// Empty match: advance by 1 to avoid infinite loop
+			pos++
+		}
+
+		if pos > len(src) {
+			break
+		}
+	}
+
+	// Append remaining text
+	result = append(result, src[lastEnd:]...)
+	return result
+}
+
+// ReplaceAllString returns a copy of src, replacing matches of the pattern
+// with the replacement string repl.
+// Inside repl, $ signs are interpreted as in Regexp.Expand:
+// $0 is the entire match, $1 is the first capture group, etc.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+//	result := re.ReplaceAllString("user@example.com", "$1 at $2 dot $3")
+//	// result = "user at example dot com"
+func (r *Regex) ReplaceAllString(src, repl string) string {
+	return string(r.ReplaceAll([]byte(src), []byte(repl)))
+}
+
+// ReplaceAllFunc returns a copy of src in which all matches of the pattern
+// have been replaced by the return value of function repl applied to the matched
+// byte slice. The replacement returned by repl is substituted directly, without
+// using Expand.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	result := re.ReplaceAllFunc([]byte("1 2 3"), func(s []byte) []byte {
+//	    n, _ := strconv.Atoi(string(s))
+//	    return []byte(strconv.Itoa(n * 2))
+//	})
+//	// result = []byte("2 4 6")
+func (r *Regex) ReplaceAllFunc(src []byte, repl func([]byte) []byte) []byte {
+	indices := r.FindAllIndex(src, -1)
+	if len(indices) == 0 {
+		// No matches, return copy of src
+		result := make([]byte, len(src))
+		copy(result, src)
+		return result
+	}
+
+	var result []byte
+	lastEnd := 0
+
+	for _, idx := range indices {
+		// Append text before match
+		result = append(result, src[lastEnd:idx[0]]...)
+		// Apply replacement function
+		replacement := repl(src[idx[0]:idx[1]])
+		result = append(result, replacement...)
+		lastEnd = idx[1]
+	}
+
+	// Append remaining text
+	result = append(result, src[lastEnd:]...)
+	return result
+}
+
+// ReplaceAllStringFunc returns a copy of src in which all matches of the pattern
+// have been replaced by the return value of function repl applied to the matched
+// string. The replacement returned by repl is substituted directly, without using
+// Expand.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	result := re.ReplaceAllStringFunc("1 2 3", func(s string) string {
+//	    n, _ := strconv.Atoi(s)
+//	    return strconv.Itoa(n * 2)
+//	})
+//	// result = "2 4 6"
+func (r *Regex) ReplaceAllStringFunc(src string, repl func(string) string) string {
+	indices := r.FindAllStringIndex(src, -1)
+	if len(indices) == 0 {
+		return src
+	}
+
+	var result string
+	lastEnd := 0
+
+	for _, idx := range indices {
+		// Append text before match
+		result += src[lastEnd:idx[0]]
+		// Apply replacement function
+		replacement := repl(src[idx[0]:idx[1]])
+		result += replacement
+		lastEnd = idx[1]
+	}
+
+	// Append remaining text
+	result += src[lastEnd:]
+	return result
+}
+
+// Split slices s into substrings separated by the expression and returns a slice
+// of the substrings between those expression matches.
+//
+// The slice returned by this method consists of all the substrings of s not
+// contained in the slice returned by FindAllString. When called on an expression
+// that contains no metacharacters, it is equivalent to strings.SplitN.
+//
+// The count determines the number of substrings to return:
+//
+//	n > 0: at most n substrings; the last substring will be the unsplit remainder.
+//	n == 0: the result is nil (zero substrings)
+//	n < 0: all substrings
+//
+// Example:
+//
+//	re := coregex.MustCompile(`,`)
+//	parts := re.Split("a,b,c", -1)
+//	// parts = ["a", "b", "c"]
+//
+//	parts = re.Split("a,b,c", 2)
+//	// parts = ["a", "b,c"]
+func (r *Regex) Split(s string, n int) []string {
+	if n == 0 {
+		return nil
+	}
+
+	indices := r.FindAllStringIndex(s, -1)
+	if len(indices) == 0 {
+		// No matches, return entire string
+		return []string{s}
+	}
+
+	// Determine the number of splits
+	numSplits := len(indices) + 1
+	if n > 0 && n < numSplits {
+		numSplits = n
+	}
+
+	// Pre-allocate result slice
+	result := make([]string, 0, numSplits)
+
+	lastEnd := 0
+	for _, idx := range indices {
+		// Add substring before match
+		result = append(result, s[lastEnd:idx[0]])
+		lastEnd = idx[1]
+
+		// Check if we've reached the limit (but need room for final element)
+		if n > 0 && len(result) >= n-1 {
+			// Add the rest as the final element
+			result = append(result, s[lastEnd:])
+			return result
+		}
+	}
+
+	// Add remaining text after last match
+	result = append(result, s[lastEnd:])
+	return result
+}

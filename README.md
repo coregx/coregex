@@ -172,7 +172,7 @@ See [benchmark/](benchmark/) for detailed comparisons.
 
 ## Supported Features
 
-### v0.2.0 (Current)
+### Current Features
 
 | Feature              | Status | Notes |
 |----------------------|--------|-------|
@@ -185,8 +185,9 @@ See [benchmark/](benchmark/) for detailed comparisons.
 | **One-pass DFA**     | ✅     | For simple patterns |
 | **Unicode support**  | ✅     | Via `regexp/syntax` |
 | **Capture groups**   | ✅     | FindSubmatch, FindSubmatchIndex |
-| **Named captures**   | 📅 v0.3.0 | Planned |
-| **Look-around**      | 📅 v0.4.0 | Lookahead/lookbehind |
+| **Replace/Split**    | ✅     | ReplaceAll, ReplaceAllFunc, Split |
+| **Named captures**   | 📅     | Planned |
+| **Look-around**      | 📅     | Planned |
 | **Backreferences**   | ❌     | Incompatible with O(n) guarantee |
 
 ### Regex Syntax
@@ -203,8 +204,6 @@ coregex uses Go's `regexp/syntax` for pattern parsing, supporting:
 
 ## Known Limitations
 
-### v0.2.0 (Current)
-
 **What Works:**
 - ✅ All standard regex syntax (except backreferences)
 - ✅ Unicode support via `regexp/syntax`
@@ -213,12 +212,13 @@ coregex uses Go's `regexp/syntax` for pattern parsing, supporting:
 - ✅ Thread-safe compilation and execution
 - ✅ Zero external dependencies
 - ✅ Capture groups with FindSubmatch API
+- ✅ Replace/Split with $0-$9 template expansion
 
 **Current Limitations:**
-- ⚠️ **Experimental API** - May change in v0.3+
-- ⚠️ No named capture groups yet (planned v0.3.0)
-- ⚠️ No look-around assertions yet (planned v0.4.0)
-- ⚠️ SIMD only on AMD64 (ARM NEON planned v0.5.0)
+- ⚠️ **Experimental API** - May change before v1.0
+- ⚠️ No named capture groups yet (planned)
+- ⚠️ No look-around assertions yet (planned)
+- ⚠️ SIMD only on AMD64 (ARM NEON planned)
 
 **Performance Notes:**
 - 🚀 Best speedup on patterns with literal prefixes/suffixes
@@ -313,10 +313,9 @@ Contributions are welcome! This is an experimental project and we'd love your he
 - 🧪 Benchmark against stdlib and report results
 
 **Priority areas:**
-- Named capture groups (v0.3.0)
-- Replace/Split functions (v0.3.0)
-- Look-around assertions (v0.4.0)
-- ARM NEON SIMD implementation (v0.5.0)
+- Named capture groups
+- Look-around assertions
+- ARM NEON SIMD implementation
 - More comprehensive benchmarks
 
 ---
@@ -331,9 +330,9 @@ Contributions are welcome! This is an experimental project and we'd love your he
 | **Multi-engine** | ✅ DFA/NFA/PikeVM | ❌ Single | ❌ Backtracking only |
 | **O(n) guarantee** | ✅ Yes | ✅ Yes | ❌ No (exponential worst-case) |
 | **Backreferences** | ❌ Not supported | ❌ Not supported | ✅ Supported |
-| **Capture groups** | ✅ v0.2.0 | ✅ Supported | ✅ Supported |
-| **Named captures** | 📅 v0.3.0 | ✅ Supported | ✅ Supported |
-| **Look-around** | 📅 v0.4.0 | ❌ Limited | ✅ Supported |
+| **Capture groups** | ✅ Supported | ✅ Supported | ✅ Supported |
+| **Named captures** | 📅 Planned | ✅ Supported | ✅ Supported |
+| **Look-around** | 📅 Planned | ❌ Limited | ✅ Supported |
 | **API compatibility** | ⚠️ Similar | - | Different |
 | **Maintained** | ✅ Active | ✅ Stdlib | ✅ Active |
 
@@ -345,7 +344,7 @@ Contributions are welcome! This is an experimental project and we'd love your he
 
 **When to use stdlib `regexp`:**
 - ✅ Simple patterns where performance doesn't matter
-- ✅ You need named captures NOW (coming in v0.3.0)
+- ✅ You need named captures NOW (planned for coregex)
 - ✅ Maximum stability and API compatibility
 
 **When to use `regexp2`:**
@@ -429,14 +428,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Status**: ⚠️ **EXPERIMENTAL** - v0.2.1 released, API may change in 0.x versions
+**Status**: ⚠️ **EXPERIMENTAL** - v0.3.0 released, API may change in 0.x versions
 
-**Current Version**: v0.2.1 (2025-11-27)
+**Current Version**: v0.3.0 (2025-11-27)
 
 **Ready for:** Testing, benchmarking, feedback, and experimental use
 **Production readiness:** API stability expected in v1.0.0
 
-**Next Release:** v0.3.0 - Named captures, Replace/Split functions
+**Next Release:** v0.4.0 - Named captures, Look-around assertions
 
 ---
 
