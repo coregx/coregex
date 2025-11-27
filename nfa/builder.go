@@ -7,8 +7,9 @@ import (
 // Builder constructs NFAs incrementally using a low-level API.
 // This provides full control over NFA construction and is used by the Compiler.
 type Builder struct {
-	states []State
-	start  StateID
+	states          []State
+	startAnchored   StateID
+	startUnanchored StateID
 }
 
 // NewBuilder creates a new NFA builder with default capacity
@@ -19,8 +20,9 @@ func NewBuilder() *Builder {
 // NewBuilderWithCapacity creates a new NFA builder with specified initial capacity
 func NewBuilderWithCapacity(capacity int) *Builder {
 	return &Builder{
-		states: make([]State, 0, capacity),
-		start:  InvalidState,
+		states:          make([]State, 0, capacity),
+		startAnchored:   InvalidState,
+		startUnanchored: InvalidState,
 	}
 }
 
@@ -149,9 +151,18 @@ func (b *Builder) PatchSplit(stateID StateID, left, right StateID) error {
 	return nil
 }
 
-// SetStart sets the starting state for the NFA
+// SetStart sets the starting state for the NFA (both anchored and unanchored)
+//
+// Deprecated: Use SetStarts() to set dual start states explicitly
 func (b *Builder) SetStart(start StateID) {
-	b.start = start
+	b.startAnchored = start
+	b.startUnanchored = start
+}
+
+// SetStarts sets separate anchored and unanchored start states
+func (b *Builder) SetStarts(anchored, unanchored StateID) {
+	b.startAnchored = anchored
+	b.startUnanchored = unanchored
 }
 
 // States returns the current number of states
@@ -164,13 +175,22 @@ func (b *Builder) States() int {
 // - All state references point to valid states
 // - No dangling references
 func (b *Builder) Validate() error {
-	if b.start == InvalidState {
-		return &BuildError{Message: "start state not set"}
+	if b.startAnchored == InvalidState {
+		return &BuildError{Message: "anchored start state not set"}
 	}
-	if int(b.start) >= len(b.states) {
+	if int(b.startAnchored) >= len(b.states) {
 		return &BuildError{
-			Message: "start state out of bounds",
-			StateID: b.start,
+			Message: "anchored start state out of bounds",
+			StateID: b.startAnchored,
+		}
+	}
+	if b.startUnanchored == InvalidState {
+		return &BuildError{Message: "unanchored start state not set"}
+	}
+	if int(b.startUnanchored) >= len(b.states) {
+		return &BuildError{
+			Message: "unanchored start state out of bounds",
+			StateID: b.startUnanchored,
 		}
 	}
 
@@ -219,11 +239,12 @@ func (b *Builder) Validate() error {
 func (b *Builder) Build(opts ...BuildOption) (*NFA, error) {
 	// Apply default options
 	nfa := &NFA{
-		states:       b.states,
-		start:        b.start,
-		anchored:     false,
-		utf8:         true,
-		patternCount: 1,
+		states:          b.states,
+		startAnchored:   b.startAnchored,
+		startUnanchored: b.startUnanchored,
+		anchored:        false,
+		utf8:            true,
+		patternCount:    1,
 	}
 
 	// Apply user options

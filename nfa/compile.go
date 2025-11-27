@@ -75,9 +75,11 @@ func (c *Compiler) CompileRegexp(re *syntax.Regexp) (*NFA, error) {
 	c.builder = NewBuilder()
 	c.depth = 0
 
-	// Compile the regex into NFA states
-	// Returns (start, end) state IDs for the compiled fragment
-	start, end, err := c.compileRegexp(re)
+	// Determine if pattern is inherently anchored (has ^ or \A prefix)
+	allAnchored := c.isPatternAnchored(re)
+
+	// Compile the actual pattern
+	patternStart, patternEnd, err := c.compileRegexp(re)
 	if err != nil {
 		return nil, err
 	}
@@ -85,24 +87,37 @@ func (c *Compiler) CompileRegexp(re *syntax.Regexp) (*NFA, error) {
 	// Add final match state
 	matchID := c.builder.AddMatch()
 
-	// Connect end to match state
-	if err := c.builder.Patch(end, matchID); err != nil {
+	// Connect pattern end to match state
+	if err := c.builder.Patch(patternEnd, matchID); err != nil {
 		// If patching fails, end might be a Split state - add epsilon
 		epsilonID := c.builder.AddEpsilon(matchID)
-		if patchErr := c.builder.Patch(end, epsilonID); patchErr != nil {
+		if patchErr := c.builder.Patch(patternEnd, epsilonID); patchErr != nil {
 			return nil, &CompileError{
 				Err: fmt.Errorf("failed to connect to match state: %w", patchErr),
 			}
 		}
 	}
 
-	// Set start state
-	c.builder.SetStart(start)
+	// Anchored start always points to pattern
+	anchoredStart := patternStart
+
+	// Unanchored start: add implicit (?s:.)*? prefix unless pattern is anchored
+	var unanchoredStart StateID
+	if c.config.Anchored || allAnchored {
+		// Pattern is anchored: unanchored and anchored starts are the same
+		unanchoredStart = anchoredStart
+	} else {
+		// Add unanchored prefix (?s:.)*?
+		unanchoredStart = c.compileUnanchoredPrefix(patternStart)
+	}
+
+	// Set dual start states
+	c.builder.SetStarts(anchoredStart, unanchoredStart)
 
 	// Build the final NFA
 	nfa, err := c.builder.Build(
 		WithUTF8(c.config.UTF8),
-		WithAnchored(c.config.Anchored),
+		WithAnchored(c.config.Anchored || allAnchored),
 	)
 	if err != nil {
 		return nil, &CompileError{
@@ -572,4 +587,65 @@ func encodeRune(buf []byte, r rune) int {
 	buf[2] = byte(0x80 | ((r >> 6) & 0x3F))
 	buf[3] = byte(0x80 | (r & 0x3F))
 	return 4
+}
+
+// compileUnanchoredPrefix creates the unanchored prefix (?s:.)*? for O(n) unanchored search.
+//
+// The prefix is a non-greedy loop that matches any byte zero or more times:
+//
+//	     +---(any byte [0x00-0xFF])---+
+//	     |                             |
+//	     v                             |
+//	[SPLIT] --------------------------(loop back)
+//	   |
+//	   +---(epsilon)---> [patternStart]
+//
+// The Split state has two epsilon transitions:
+//  1. Left (preferred): epsilon to patternStart (try to match pattern)
+//  2. Right: any byte transition that loops back (consume input and retry)
+//
+// This is non-greedy (.*?) because we prefer the pattern match over consuming more input.
+//
+// Returns the StateID of the Split state (the unanchored start).
+func (c *Compiler) compileUnanchoredPrefix(patternStart StateID) StateID {
+	// Create any-byte transition [0x00-0xFF]
+	// This will loop back to the split state
+	anyByte := c.builder.AddByteRange(0x00, 0xFF, InvalidState)
+
+	// Create split state: prefer pattern (left) over consuming byte (right)
+	// For non-greedy .*?, we want to try the pattern first
+	split := c.builder.AddSplit(patternStart, anyByte)
+
+	// Make the any-byte transition loop back to split
+	if err := c.builder.Patch(anyByte, split); err != nil {
+		// This should never fail for a ByteRange state, but handle gracefully
+		// Fall back to pattern start without prefix
+		return patternStart
+	}
+
+	return split
+}
+
+// isPatternAnchored checks if a pattern is inherently anchored (starts with ^ or \A).
+//
+// A pattern is anchored if it begins with:
+//   - OpBeginLine (^)
+//   - OpBeginText (\A)
+//   - A Concat that starts with an anchor
+//
+// For anchored patterns, the unanchored start state equals the anchored start state.
+func (c *Compiler) isPatternAnchored(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpBeginLine, syntax.OpBeginText:
+		return true
+	case syntax.OpConcat:
+		if len(re.Sub) > 0 {
+			return c.isPatternAnchored(re.Sub[0])
+		}
+	case syntax.OpCapture:
+		if len(re.Sub) > 0 {
+			return c.isPatternAnchored(re.Sub[0])
+		}
+	}
+	return false
 }

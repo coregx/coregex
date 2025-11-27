@@ -90,29 +90,23 @@ func (d *DFA) Find(haystack []byte) int {
 		return -1
 	}
 
+	// DEBUG: Print which path we're taking
+	// import "fmt"  // ADD THIS TO TOP OF FILE
+	//if d.prefilter != nil {
+	//	fmt.Printf("[DFA.Find] using findWithPrefilter\n")
+	//} else {
+	//	fmt.Printf("[DFA.Find] NO PREFILTER, using searchAt\n")
+	//}
+
 	// If prefilter available, use it to find candidates
 	if d.prefilter != nil {
 		return d.findWithPrefilter(haystack)
 	}
 
-	// No prefilter: try DFA search from position 0
-	// If unanchored, try each starting position
-	if d.nfa.IsAnchored() {
-		// Anchored: only try position 0
-		if pos := d.searchAt(haystack, 0); pos != -1 {
-			return pos
-		}
-		return -1
-	}
-
-	// Unanchored: try each starting position
-	for start := 0; start <= len(haystack); start++ {
-		if pos := d.searchAt(haystack, start); pos != -1 {
-			return pos
-		}
-	}
-
-	return -1
+	// No prefilter: use DFA search from position 0
+	// The NFA now has proper unanchored start state with implicit (?s:.)*? prefix,
+	// so DFA search is O(n) for both anchored and unanchored patterns
+	return d.searchAt(haystack, 0)
 }
 
 // IsMatch returns true if the pattern matches anywhere in the haystack.
@@ -121,33 +115,111 @@ func (d *DFA) IsMatch(haystack []byte) bool {
 	return d.Find(haystack) != -1
 }
 
-// findWithPrefilter searches using prefilter to find candidates.
-// For each candidate position, verify with DFA or NFA.
+// findWithPrefilter searches using prefilter to accelerate unanchored search.
+// Uses single-pass approach: when in start state, use prefilter to skip ahead.
 func (d *DFA) findWithPrefilter(haystack []byte) int {
+	// DEBUG
+	// import "fmt"
+	// fmt.Printf("[findWithPrefilter] haystack len=%d\n", len(haystack))
+
 	// If prefilter is complete, its match is the final match
 	if d.prefilter.IsComplete() {
+		// fmt.Printf("[findWithPrefilter] prefilter is complete\n")
 		return d.prefilter.Find(haystack, 0)
 	}
 
-	// Find first candidate with prefilter
-	pos := 0
-	for {
-		candidate := d.prefilter.Find(haystack, pos)
-		if candidate == -1 {
-			// No more candidates
-			return -1
-		}
-
-		// Verify candidate with DFA
-		// Try starting from candidate position
-		matchPos := d.searchAt(haystack, candidate)
-		if matchPos != -1 {
-			return matchPos
-		}
-
-		// Not a match, continue after this candidate
-		pos = candidate + 1
+	// Get start state
+	// fmt.Printf("[findWithPrefilter] getting start state\n")
+	startState := d.getState(StartState)
+	if startState == nil {
+		// fmt.Printf("[findWithPrefilter] no start state, using NFA fallback\n")
+		return d.nfaFallback(haystack, 0)
 	}
+
+	// Initial prefilter scan to find first candidate
+	pos := 0
+	// fmt.Printf("[findWithPrefilter] calling prefilter.Find at pos=%d\n", pos)
+	candidate := d.prefilter.Find(haystack, pos)
+	// fmt.Printf("[findWithPrefilter] prefilter returned candidate=%d\n", candidate)
+	if candidate == -1 {
+		// No candidates at all
+		// fmt.Printf("[findWithPrefilter] no candidates, returning -1\n")
+		return -1
+	}
+	pos = candidate
+
+	// Start DFA search from candidate position
+	currentState := startState
+
+	for pos < len(haystack) {
+		b := haystack[pos]
+
+		// Get next state
+		nextID, ok := currentState.Transition(b)
+		var nextState *State
+		switch {
+		case !ok:
+			// Determinize on demand
+			var err error
+			nextState, err = d.determinize(currentState, b)
+			if err != nil {
+				return d.nfaFallback(haystack, 0)
+			}
+			if nextState == nil {
+				// Dead state - need to find next candidate
+				pos++
+				candidate = d.prefilter.Find(haystack, pos)
+				if candidate == -1 {
+					return -1
+				}
+				pos = candidate
+				currentState = startState
+				continue
+			}
+		case nextID == DeadState:
+			// Dead state - find next candidate
+			pos++
+			candidate = d.prefilter.Find(haystack, pos)
+			if candidate == -1 {
+				return -1
+			}
+			pos = candidate
+			currentState = startState
+			continue
+		default:
+			nextState = d.getState(nextID)
+			if nextState == nil {
+				return d.nfaFallback(haystack, 0)
+			}
+		}
+
+		pos++
+		currentState = nextState
+
+		// Check for match
+		if currentState.IsMatch() {
+			return pos
+		}
+
+		// If back in start state (unanchored prefix self-loop), use prefilter to skip
+		if currentState.ID() == StartState && pos < len(haystack) {
+			candidate = d.prefilter.Find(haystack, pos)
+			if candidate == -1 {
+				return -1
+			}
+			if candidate > pos {
+				pos = candidate
+				// Stay in start state
+			}
+		}
+	}
+
+	// Check final state
+	if currentState.IsMatch() {
+		return pos
+	}
+
+	return -1
 }
 
 // searchAt attempts to find a match starting at the given position.
@@ -345,9 +417,9 @@ func (d *DFA) ResetCache() {
 	d.cache.Clear()
 	d.stateByID = make(map[StateID]*State, d.config.MaxStates)
 
-	// Recreate start state
+	// Recreate start state using unanchored start (with implicit (?s:.)*? prefix)
 	builder := NewBuilder(d.nfa, d.config)
-	startStateSet := builder.epsilonClosure([]nfa.StateID{d.nfa.Start()})
+	startStateSet := builder.epsilonClosure([]nfa.StateID{d.nfa.StartUnanchored()})
 	isMatch := builder.containsMatchState(startStateSet)
 	startState := NewState(StartState, startStateSet, isMatch)
 	key := ComputeStateKey(startStateSet)

@@ -170,7 +170,8 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 			DeterminizationLimit: config.DeterminizationLimit,
 		}
 
-		dfaEngine, err = lazy.CompileWithConfig(nfaEngine, dfaConfig)
+		// Pass prefilter to DFA for start-state skip optimization
+		dfaEngine, err = lazy.CompileWithPrefilter(nfaEngine, dfaConfig, pf)
 		if err != nil {
 			// DFA compilation failed: fall back to NFA-only
 			strategy = UseNFA
@@ -246,20 +247,21 @@ func (e *Engine) findNFA(haystack []byte) *Match {
 func (e *Engine) findDFA(haystack []byte) *Match {
 	e.stats.DFASearches++
 
-	// If prefilter available and complete, use it directly
+	// If prefilter available and complete, use it to find candidates quickly
+	// then verify with NFA to get exact match bounds
 	if e.prefilter != nil && e.prefilter.IsComplete() {
 		pos := e.prefilter.Find(haystack, 0)
 		if pos == -1 {
 			return nil
 		}
 		e.stats.PrefilterHits++
-		// Prefilter is complete: this IS the match
-		// Need to find match end (pattern length)
-		end := pos + e.estimateMatchLength()
-		if end > len(haystack) {
-			end = len(haystack)
+		// Prefilter found the literal, now get exact match bounds from NFA
+		// (NFA will start from the unanchored prefix and find the match)
+		start, end, matched := e.pikevm.Search(haystack)
+		if !matched {
+			return nil
 		}
-		return NewMatch(pos, end, haystack)
+		return NewMatch(start, end, haystack)
 	}
 
 	// Use DFA search
@@ -268,10 +270,14 @@ func (e *Engine) findDFA(haystack []byte) *Match {
 		return nil
 	}
 
-	// DFA returns end position
-	// For now, assume match starts at beginning of input or at a prefilter hit
-	// TODO: track match start in DFA for precise bounds
-	return NewMatch(0, pos, haystack)
+	// DFA returns end position, but doesn't track start position
+	// Fall back to NFA to get exact match bounds
+	// TODO: optimize by tracking match start in DFA
+	start, end, matched := e.pikevm.Search(haystack)
+	if !matched {
+		return nil
+	}
+	return NewMatch(start, end, haystack)
 }
 
 // findAdaptive tries DFA first, falls back to NFA on failure.
@@ -293,14 +299,6 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 
 	// Fall back to NFA
 	return e.findNFA(haystack)
-}
-
-// estimateMatchLength estimates the length of a match for complete prefilters.
-// This is a heuristic - in the future, the DFA should track match bounds precisely.
-func (e *Engine) estimateMatchLength() int {
-	// For now, return a conservative estimate based on NFA size
-	// This is a placeholder - real implementation needs proper match tracking
-	return 1
 }
 
 // Strategy returns the execution strategy selected for this engine.

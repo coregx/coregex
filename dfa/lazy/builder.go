@@ -45,8 +45,9 @@ func (b *Builder) Build() (*DFA, error) {
 		pf = b.buildPrefilter()
 	}
 
-	// Create start state from NFA start
-	startStateSet := b.epsilonClosure([]nfa.StateID{b.nfa.Start()})
+	// Create start state from NFA unanchored start (for O(n) unanchored search)
+	// Use StartUnanchored() which includes the implicit (?s:.)*? prefix
+	startStateSet := b.epsilonClosure([]nfa.StateID{b.nfa.StartUnanchored()})
 	isMatch := b.containsMatchState(startStateSet)
 	startState := NewState(StartState, startStateSet, isMatch)
 
@@ -226,6 +227,18 @@ func Compile(n *nfa.NFA) (*DFA, error) {
 func CompileWithConfig(n *nfa.NFA, config Config) (*DFA, error) {
 	builder := NewBuilder(n, config)
 	return builder.Build()
+}
+
+// CompileWithPrefilter builds a DFA from an NFA with the specified configuration and prefilter.
+// The prefilter is used to accelerate unanchored search by skipping non-matching regions.
+func CompileWithPrefilter(n *nfa.NFA, config Config, pf prefilter.Prefilter) (*DFA, error) {
+	builder := NewBuilder(n, config)
+	dfa, err := builder.Build()
+	if err != nil {
+		return nil, err
+	}
+	dfa.prefilter = pf
+	return dfa, nil
 }
 
 // CompilePattern is a convenience function to compile a regex pattern directly to DFA.

@@ -179,8 +179,14 @@ type NFA struct {
 	// states contains all NFA states indexed by StateID
 	states []State
 
-	// start is the starting state for the NFA
-	start StateID
+	// startAnchored is the start state for anchored searches.
+	// Points directly to the compiled pattern.
+	startAnchored StateID
+
+	// startUnanchored is the start state for unanchored searches.
+	// Points to the (?s:.)*? prefix for O(n) unanchored matching.
+	// When pattern is anchored (has ^ prefix), equals startAnchored.
+	startUnanchored StateID
 
 	// anchored indicates if the pattern must match at the start of input
 	anchored bool
@@ -195,8 +201,26 @@ type NFA struct {
 }
 
 // Start returns the starting state ID of the NFA
+//
+// Deprecated: Use StartAnchored() or StartUnanchored() for explicit control
 func (n *NFA) Start() StateID {
-	return n.start
+	return n.startAnchored
+}
+
+// StartAnchored returns the start state for anchored searches
+func (n *NFA) StartAnchored() StateID {
+	return n.startAnchored
+}
+
+// StartUnanchored returns the start state for unanchored searches
+func (n *NFA) StartUnanchored() StateID {
+	return n.startUnanchored
+}
+
+// IsAlwaysAnchored returns true if anchored and unanchored starts are the same.
+// This indicates the pattern is inherently anchored (has ^ prefix).
+func (n *NFA) IsAlwaysAnchored() bool {
+	return n.startAnchored == n.startUnanchored
 }
 
 // State returns the state with the given ID.
@@ -268,6 +292,6 @@ func (it *StateIter) HasNext() bool {
 
 // String returns a human-readable representation of the NFA
 func (n *NFA) String() string {
-	return fmt.Sprintf("NFA{states: %d, start: %d, anchored: %v, utf8: %v}",
-		len(n.states), n.start, n.anchored, n.utf8)
+	return fmt.Sprintf("NFA{states: %d, startAnchored: %d, startUnanchored: %d, anchored: %v, utf8: %v}",
+		len(n.states), n.startAnchored, n.startUnanchored, n.anchored, n.utf8)
 }

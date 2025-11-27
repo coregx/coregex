@@ -91,13 +91,6 @@ func SelectStrategy(n *nfa.NFA, literals *literal.Seq, config Config) Strategy {
 	// Analyze NFA size
 	nfaSize := n.States()
 
-	// Tiny NFA: use PikeVM directly (DFA overhead not worth it)
-	// For patterns like "a", "abc", "[0-9]", the DFA cache lookup and
-	// determinization overhead exceeds the benefit.
-	if nfaSize < 20 {
-		return UseNFA
-	}
-
 	// Check if we have good literals for prefiltering
 	hasGoodLiterals := false
 	if literals != nil && !literals.IsEmpty() {
@@ -109,11 +102,19 @@ func SelectStrategy(n *nfa.NFA, literals *literal.Seq, config Config) Strategy {
 	}
 
 	// Good literals → use prefilter + DFA (best performance)
-	// Patterns like "(foo|foobar)\d+" benefit massively from:
-	//  1. Prefilter finds "foo" candidates quickly
+	// Patterns like "ABXBYXCX" or "(foo|foobar)\d+" benefit massively from:
+	//  1. Prefilter finds literal candidates quickly (5-50x speedup)
 	//  2. DFA verifies with O(n) deterministic scan
+	// This is fast even for tiny NFAs because prefilter does the heavy lifting.
 	if hasGoodLiterals {
 		return UseDFA
+	}
+
+	// Tiny NFA without literals: use PikeVM directly (DFA overhead not worth it)
+	// For patterns like "a", ".", "[0-9]", the DFA cache lookup and
+	// determinization overhead exceeds the benefit.
+	if nfaSize < 20 {
+		return UseNFA
 	}
 
 	// Large NFA without literals → still use DFA
