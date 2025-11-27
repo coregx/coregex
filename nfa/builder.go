@@ -105,6 +105,23 @@ func (b *Builder) AddFail() StateID {
 	return id
 }
 
+// AddCapture adds a capture boundary state.
+// captureIndex is the capture group number (1-based for explicit groups, 0 for entire match).
+// isStart is true for opening boundary '(', false for closing ')'.
+// next is the state to transition to after recording the capture position.
+func (b *Builder) AddCapture(captureIndex uint32, isStart bool, next StateID) StateID {
+	//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
+	id := StateID(len(b.states))
+	b.states = append(b.states, State{
+		id:           id,
+		kind:         StateCapture,
+		captureIndex: captureIndex,
+		captureStart: isStart,
+		next:         next,
+	})
+	return id
+}
+
 // Patch updates a state's target. This is used during compilation to handle
 // forward references (e.g., loops, alternations).
 // This only works for states with a single 'next' target (ByteRange, Epsilon).
@@ -118,7 +135,7 @@ func (b *Builder) Patch(stateID, target StateID) error {
 
 	s := &b.states[stateID]
 	switch s.kind {
-	case StateByteRange, StateEpsilon:
+	case StateByteRange, StateEpsilon, StateCapture:
 		s.next = target
 		return nil
 	default:
@@ -199,7 +216,7 @@ func (b *Builder) Validate() error {
 		//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 		id := StateID(i)
 		switch s.kind {
-		case StateByteRange, StateEpsilon:
+		case StateByteRange, StateEpsilon, StateCapture:
 			if s.next != InvalidState && int(s.next) >= len(b.states) {
 				return &BuildError{
 					Message: fmt.Sprintf("invalid next state %d", s.next),
@@ -281,5 +298,12 @@ func WithUTF8(utf8 bool) BuildOption {
 func WithPatternCount(count int) BuildOption {
 	return func(n *NFA) {
 		n.patternCount = count
+	}
+}
+
+// WithCaptureCount sets the number of capture groups in the NFA
+func WithCaptureCount(count int) BuildOption {
+	return func(n *NFA) {
+		n.captureCount = count
 	}
 }

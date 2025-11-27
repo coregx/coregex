@@ -131,3 +131,105 @@ func (m *Match) IsEmpty() bool {
 func (m *Match) Contains(pos int) bool {
 	return pos >= m.start && pos < m.end
 }
+
+// MatchWithCaptures represents a match with capture group information.
+// Group 0 is always the entire match, groups 1+ are explicit capture groups.
+type MatchWithCaptures struct {
+	haystack []byte
+	// captures[i] = [start, end] for group i, or nil if not captured
+	captures [][]int
+}
+
+// NewMatchWithCaptures creates a MatchWithCaptures from capture positions.
+func NewMatchWithCaptures(haystack []byte, captures [][]int) *MatchWithCaptures {
+	return &MatchWithCaptures{
+		haystack: haystack,
+		captures: captures,
+	}
+}
+
+// Start returns the start position of the entire match (group 0).
+func (m *MatchWithCaptures) Start() int {
+	if len(m.captures) > 0 && m.captures[0] != nil {
+		return m.captures[0][0]
+	}
+	return -1
+}
+
+// End returns the end position of the entire match (group 0).
+func (m *MatchWithCaptures) End() int {
+	if len(m.captures) > 0 && m.captures[0] != nil {
+		return m.captures[0][1]
+	}
+	return -1
+}
+
+// Bytes returns the matched bytes for group 0 (entire match).
+func (m *MatchWithCaptures) Bytes() []byte {
+	if len(m.captures) > 0 && m.captures[0] != nil {
+		start, end := m.captures[0][0], m.captures[0][1]
+		if start >= 0 && end >= start && end <= len(m.haystack) {
+			return m.haystack[start:end]
+		}
+	}
+	return nil
+}
+
+// String returns the matched text for group 0 (entire match).
+func (m *MatchWithCaptures) String() string {
+	return string(m.Bytes())
+}
+
+// NumCaptures returns the number of capture groups (including group 0).
+func (m *MatchWithCaptures) NumCaptures() int {
+	return len(m.captures)
+}
+
+// Group returns the captured text for the specified group.
+// Group 0 is the entire match. Returns nil if group was not captured.
+func (m *MatchWithCaptures) Group(index int) []byte {
+	if index < 0 || index >= len(m.captures) {
+		return nil
+	}
+	if m.captures[index] == nil {
+		return nil
+	}
+	start, end := m.captures[index][0], m.captures[index][1]
+	if start >= 0 && end >= start && end <= len(m.haystack) {
+		return m.haystack[start:end]
+	}
+	return nil
+}
+
+// GroupString returns the captured text as string for the specified group.
+func (m *MatchWithCaptures) GroupString(index int) string {
+	return string(m.Group(index))
+}
+
+// GroupIndex returns [start, end] positions for the specified group.
+// Returns nil if group was not captured.
+func (m *MatchWithCaptures) GroupIndex(index int) []int {
+	if index < 0 || index >= len(m.captures) {
+		return nil
+	}
+	return m.captures[index]
+}
+
+// AllGroups returns all captured groups as byte slices.
+// Result[0] is the entire match, result[i] may be nil if group i was not captured.
+func (m *MatchWithCaptures) AllGroups() [][]byte {
+	result := make([][]byte, len(m.captures))
+	for i := range m.captures {
+		result[i] = m.Group(i)
+	}
+	return result
+}
+
+// AllGroupStrings returns all captured groups as strings.
+func (m *MatchWithCaptures) AllGroupStrings() []string {
+	result := make([]string, len(m.captures))
+	for i := range m.captures {
+		result[i] = m.GroupString(i)
+	}
+	return result
+}

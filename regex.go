@@ -301,3 +301,95 @@ func (r *Regex) FindAllString(s string, n int) []string {
 func (r *Regex) String() string {
 	return r.pattern
 }
+
+// NumSubexp returns the number of parenthesized subexpressions (capture groups).
+// Group 0 is the entire match, so the returned value equals the number of
+// explicit capture groups plus 1.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+//	println(re.NumSubexp()) // 4 (entire match + 3 groups)
+func (r *Regex) NumSubexp() int {
+	return r.engine.NumCaptures()
+}
+
+// FindSubmatch returns a slice holding the text of the leftmost match
+// and the matches of all capture groups.
+//
+// A return value of nil indicates no match.
+// Result[0] is the entire match, result[i] is the ith capture group.
+// Unmatched groups will be nil.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+//	match := re.FindSubmatch([]byte("user@example.com"))
+//	// match[0] = "user@example.com"
+//	// match[1] = "user"
+//	// match[2] = "example"
+//	// match[3] = "com"
+func (r *Regex) FindSubmatch(b []byte) [][]byte {
+	match := r.engine.FindSubmatch(b)
+	if match == nil {
+		return nil
+	}
+	return match.AllGroups()
+}
+
+// FindStringSubmatch returns a slice of strings holding the text of the leftmost
+// match and the matches of all capture groups.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+//	match := re.FindStringSubmatch("user@example.com")
+//	// match[0] = "user@example.com"
+//	// match[1] = "user"
+func (r *Regex) FindStringSubmatch(s string) []string {
+	match := r.engine.FindSubmatch([]byte(s))
+	if match == nil {
+		return nil
+	}
+	return match.AllGroupStrings()
+}
+
+// FindSubmatchIndex returns a slice holding the index pairs for the leftmost
+// match and the matches of all capture groups.
+//
+// A return value of nil indicates no match.
+// Result[2*i:2*i+2] is the indices for the ith group.
+// Unmatched groups have -1 indices.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+//	idx := re.FindSubmatchIndex([]byte("user@example.com"))
+//	// idx[0:2] = indices for entire match
+//	// idx[2:4] = indices for first capture group
+func (r *Regex) FindSubmatchIndex(b []byte) []int {
+	match := r.engine.FindSubmatch(b)
+	if match == nil {
+		return nil
+	}
+
+	numGroups := match.NumCaptures()
+	result := make([]int, numGroups*2)
+	for i := 0; i < numGroups; i++ {
+		idx := match.GroupIndex(i)
+		if len(idx) >= 2 {
+			result[i*2] = idx[0]
+			result[i*2+1] = idx[1]
+		} else {
+			result[i*2] = -1
+			result[i*2+1] = -1
+		}
+	}
+	return result
+}
+
+// FindStringSubmatchIndex returns the index pairs for the leftmost match
+// and capture groups. Same as FindSubmatchIndex but for strings.
+func (r *Regex) FindStringSubmatchIndex(s string) []int {
+	return r.FindSubmatchIndex([]byte(s))
+}

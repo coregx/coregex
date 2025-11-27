@@ -34,9 +34,10 @@ func DefaultCompilerConfig() CompilerConfig {
 
 // Compiler compiles regexp/syntax.Regexp patterns into Thompson NFAs
 type Compiler struct {
-	config  CompilerConfig
-	builder *Builder
-	depth   int // current recursion depth
+	config       CompilerConfig
+	builder      *Builder
+	depth        int // current recursion depth
+	captureCount int // number of capture groups (1-based, group 0 is entire match)
 }
 
 // NewCompiler creates a new NFA compiler with the given configuration
@@ -74,6 +75,10 @@ func (c *Compiler) Compile(pattern string) (*NFA, error) {
 func (c *Compiler) CompileRegexp(re *syntax.Regexp) (*NFA, error) {
 	c.builder = NewBuilder()
 	c.depth = 0
+	c.captureCount = 0
+
+	// Count capture groups in the pattern
+	c.countCaptures(re)
 
 	// Determine if pattern is inherently anchored (has ^ or \A prefix)
 	allAnchored := c.isPatternAnchored(re)
@@ -115,9 +120,11 @@ func (c *Compiler) CompileRegexp(re *syntax.Regexp) (*NFA, error) {
 	c.builder.SetStarts(anchoredStart, unanchoredStart)
 
 	// Build the final NFA
+	// captureCount + 1 because group 0 is the entire match
 	nfa, err := c.builder.Build(
 		WithUTF8(c.config.UTF8),
 		WithAnchored(c.config.Anchored || allAnchored),
+		WithCaptureCount(c.captureCount+1),
 	)
 	if err != nil {
 		return nil, &CompileError{
@@ -163,8 +170,7 @@ func (c *Compiler) compileRegexp(re *syntax.Regexp) (start, end StateID, err err
 	case syntax.OpRepeat:
 		return c.compileRepeat(re.Sub[0], re.Min, re.Max)
 	case syntax.OpCapture:
-		// For MVP, treat captures as non-capturing groups
-		return c.compileRegexp(re.Sub[0])
+		return c.compileCapture(re)
 	case syntax.OpBeginLine, syntax.OpBeginText:
 		// Anchors - for MVP, just pass through (handled by anchored flag)
 		// In future, implement as zero-width assertions
@@ -624,6 +630,62 @@ func (c *Compiler) compileUnanchoredPrefix(patternStart StateID) StateID {
 	}
 
 	return split
+}
+
+// compileCapture compiles a capture group (re.Op == OpCapture)
+// Creates opening capture state -> sub-expression -> closing capture state
+func (c *Compiler) compileCapture(re *syntax.Regexp) (start, end StateID, err error) {
+	if len(re.Sub) == 0 {
+		return c.compileEmptyMatch()
+	}
+
+	// Compile the sub-expression first
+	subStart, subEnd, err := c.compileRegexp(re.Sub[0])
+	if err != nil {
+		return InvalidState, InvalidState, err
+	}
+
+	// Create closing capture state (records end position)
+	// Note: we create closing first to get the ID, then opening points to subStart
+	//nolint:gosec // G115: re.Cap is limited by regex complexity, safe conversion
+	closeCapture := c.builder.AddCapture(uint32(re.Cap), false, InvalidState)
+
+	// Connect sub-expression end to closing capture
+	if err := c.builder.Patch(subEnd, closeCapture); err != nil {
+		// If patching fails, insert epsilon
+		epsilon := c.builder.AddEpsilon(closeCapture)
+		if err := c.builder.Patch(subEnd, epsilon); err != nil {
+			return InvalidState, InvalidState, err
+		}
+	}
+
+	// Create opening capture state (records start position)
+	//nolint:gosec // G115: re.Cap is limited by regex complexity, safe conversion
+	openCapture := c.builder.AddCapture(uint32(re.Cap), true, subStart)
+
+	return openCapture, closeCapture, nil
+}
+
+// countCaptures counts the number of capture groups in a pattern.
+// This must be called before compilation to know the total count.
+func (c *Compiler) countCaptures(re *syntax.Regexp) {
+	switch re.Op {
+	case syntax.OpCapture:
+		if re.Cap > c.captureCount {
+			c.captureCount = re.Cap
+		}
+		for _, sub := range re.Sub {
+			c.countCaptures(sub)
+		}
+	case syntax.OpConcat, syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			c.countCaptures(sub)
+		}
+	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		if len(re.Sub) > 0 {
+			c.countCaptures(re.Sub[0])
+		}
+	}
 }
 
 // isPatternAnchored checks if a pattern is inherently anchored (starts with ^ or \A).

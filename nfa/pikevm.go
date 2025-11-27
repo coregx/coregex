@@ -24,17 +24,26 @@ type PikeVM struct {
 }
 
 // thread represents an execution thread in the PikeVM.
-// Each thread tracks a position in the NFA state graph.
+// Each thread tracks a position in the NFA state graph and capture positions.
 type thread struct {
 	state    StateID
-	startPos int // Position where this thread's match attempt started
-	// Future: capture group positions
+	startPos int   // Position where this thread's match attempt started
+	captures []int // Capture positions: [start0, end0, start1, end1, ...] (-1 = not set)
 }
 
 // Match represents a successful regex match with start and end positions
 type Match struct {
 	Start int
 	End   int
+}
+
+// MatchWithCaptures represents a match including capture group positions.
+// Captures is a slice where Captures[i] is [start, end] for group i.
+// Group 0 is the entire match.
+type MatchWithCaptures struct {
+	Start    int
+	End      int
+	Captures [][]int // Captures[i] = [start, end] for group i, or nil if not captured
 }
 
 // NewPikeVM creates a new PikeVM for executing the given NFA
@@ -52,6 +61,45 @@ func NewPikeVM(nfa *NFA) *PikeVM {
 		//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 		visited: sparse.NewSparseSet(uint32(capacity)),
 	}
+}
+
+// newCaptures creates a new capture slots array initialized to -1 (unset)
+func (p *PikeVM) newCaptures() []int {
+	numSlots := p.nfa.CaptureCount() * 2 // Each group has start and end
+	if numSlots == 0 {
+		return nil
+	}
+	caps := make([]int, numSlots)
+	for i := range caps {
+		caps[i] = -1
+	}
+	return caps
+}
+
+// copyCaptures creates a copy of capture slots
+func copyCaptures(src []int) []int {
+	if src == nil {
+		return nil
+	}
+	dst := make([]int, len(src))
+	copy(dst, src)
+	return dst
+}
+
+// updateCapture updates a capture slot in a copy of the captures array
+func updateCapture(caps []int, groupIndex uint32, isStart bool, pos int) []int {
+	if caps == nil {
+		return nil
+	}
+	newCaps := copyCaptures(caps)
+	slotIndex := int(groupIndex) * 2
+	if !isStart {
+		slotIndex++
+	}
+	if slotIndex < len(newCaps) {
+		newCaps[slotIndex] = pos
+	}
+	return newCaps
 }
 
 // Search finds the first match in the haystack.
@@ -165,6 +213,182 @@ func (p *PikeVM) searchUnanchored(haystack []byte) (int, int, bool) {
 	return -1, -1, false
 }
 
+// SearchWithCaptures finds the first match with capture group positions.
+// Returns nil if no match is found.
+func (p *PikeVM) SearchWithCaptures(haystack []byte) *MatchWithCaptures {
+	if len(haystack) == 0 {
+		// Check if empty string matches
+		if p.matchesEmpty() {
+			return &MatchWithCaptures{
+				Start:    0,
+				End:      0,
+				Captures: p.buildCapturesResult(nil, 0, 0),
+			}
+		}
+		return nil
+	}
+
+	if p.nfa.IsAnchored() {
+		return p.searchAtWithCaptures(haystack, 0)
+	}
+
+	return p.searchUnanchoredWithCaptures(haystack)
+}
+
+// searchUnanchoredWithCaptures is like searchUnanchored but returns captures
+func (p *PikeVM) searchUnanchoredWithCaptures(haystack []byte) *MatchWithCaptures {
+	// Reset state
+	p.queue = p.queue[:0]
+	p.nextQueue = p.nextQueue[:0]
+	p.visited.Clear()
+
+	// Track leftmost-longest match
+	bestStart := -1
+	bestEnd := -1
+	var bestCaptures []int
+
+	// Process each byte position once
+	for pos := 0; pos <= len(haystack); pos++ {
+		// Add new start thread at current position (simulates .*? prefix)
+		if bestStart == -1 {
+			p.visited.Clear()
+			caps := p.newCaptures()
+			p.addThread(thread{state: p.nfa.Start(), startPos: pos, captures: caps}, haystack, pos)
+		}
+
+		// Check for matches in current generation
+		for _, t := range p.queue {
+			if p.nfa.IsMatch(t.state) {
+				if bestStart == -1 || t.startPos < bestStart ||
+					(t.startPos == bestStart && pos > bestEnd) {
+					bestStart = t.startPos
+					bestEnd = pos
+					bestCaptures = copyCaptures(t.captures)
+				}
+			}
+		}
+
+		if pos >= len(haystack) {
+			break
+		}
+
+		// Early termination check
+		if bestStart != -1 {
+			hasLeftmostCandidate := false
+			for _, t := range p.queue {
+				if t.startPos <= bestStart {
+					hasLeftmostCandidate = true
+					break
+				}
+			}
+			if !hasLeftmostCandidate {
+				break
+			}
+		}
+
+		if len(p.queue) == 0 {
+			break
+		}
+
+		// Process current byte
+		b := haystack[pos]
+		p.visited.Clear()
+		for _, t := range p.queue {
+			p.step(t, b, haystack, pos+1)
+		}
+
+		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+	}
+
+	if bestStart != -1 {
+		return &MatchWithCaptures{
+			Start:    bestStart,
+			End:      bestEnd,
+			Captures: p.buildCapturesResult(bestCaptures, bestStart, bestEnd),
+		}
+	}
+	return nil
+}
+
+// searchAtWithCaptures is like searchAt but returns captures
+func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithCaptures {
+	// Reset state
+	p.queue = p.queue[:0]
+	p.nextQueue = p.nextQueue[:0]
+	p.visited.Clear()
+
+	caps := p.newCaptures()
+	p.addThread(thread{state: p.nfa.Start(), startPos: startPos, captures: caps}, haystack, startPos)
+
+	lastMatchPos := -1
+	var lastMatchCaptures []int
+
+	for pos := startPos; pos <= len(haystack); pos++ {
+		for _, t := range p.queue {
+			if p.nfa.IsMatch(t.state) {
+				lastMatchPos = pos
+				lastMatchCaptures = copyCaptures(t.captures)
+				break
+			}
+		}
+
+		if len(p.queue) == 0 {
+			break
+		}
+
+		if pos >= len(haystack) {
+			break
+		}
+
+		b := haystack[pos]
+		for _, t := range p.queue {
+			p.step(t, b, haystack, pos+1)
+		}
+
+		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+		p.visited.Clear()
+	}
+
+	if lastMatchPos != -1 {
+		return &MatchWithCaptures{
+			Start:    startPos,
+			End:      lastMatchPos,
+			Captures: p.buildCapturesResult(lastMatchCaptures, startPos, lastMatchPos),
+		}
+	}
+	return nil
+}
+
+// buildCapturesResult converts internal capture slots to the result format
+func (p *PikeVM) buildCapturesResult(caps []int, matchStart, matchEnd int) [][]int {
+	numGroups := p.nfa.CaptureCount()
+	if numGroups == 0 {
+		// No captures defined - return just group 0 (entire match)
+		return [][]int{{matchStart, matchEnd}}
+	}
+
+	result := make([][]int, numGroups)
+	// Group 0 is always the entire match
+	result[0] = []int{matchStart, matchEnd}
+
+	// Fill in captured groups
+	if caps != nil {
+		for i := 1; i < numGroups; i++ {
+			startIdx := i * 2
+			endIdx := startIdx + 1
+			if startIdx < len(caps) && endIdx < len(caps) {
+				start := caps[startIdx]
+				end := caps[endIdx]
+				if start >= 0 && end >= 0 {
+					result[i] = []int{start, end}
+				}
+			}
+		}
+	}
+
+	return result
+}
+
 // SearchAll finds all non-overlapping matches in the haystack.
 // Returns a slice of matches in order of occurrence.
 func (p *PikeVM) SearchAll(haystack []byte) []Match {
@@ -250,7 +474,7 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 
 // addThread adds a new thread to the current queue, following epsilon transitions
 //
-//nolint:unparam // haystack parameter reserved for future capture group support
+//nolint:unparam // haystack parameter reserved for future use
 func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 	// Check if we've already visited this state in this generation
 	if p.visited.Contains(uint32(t.state)) {
@@ -273,20 +497,29 @@ func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 		p.queue = append(p.queue, t)
 
 	case StateEpsilon:
-		// Follow epsilon transition immediately, preserving startPos
+		// Follow epsilon transition immediately, preserving startPos and captures
 		next := state.Epsilon()
 		if next != InvalidState {
-			p.addThread(thread{state: next, startPos: t.startPos}, haystack, pos)
+			p.addThread(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
 		}
 
 	case StateSplit:
-		// Follow both branches, preserving startPos
+		// Follow both branches, preserving startPos and captures
+		// Note: captures are shared (copy-on-write when modified)
 		left, right := state.Split()
 		if left != InvalidState {
-			p.addThread(thread{state: left, startPos: t.startPos}, haystack, pos)
+			p.addThread(thread{state: left, startPos: t.startPos, captures: t.captures}, haystack, pos)
 		}
 		if right != InvalidState {
-			p.addThread(thread{state: right, startPos: t.startPos}, haystack, pos)
+			p.addThread(thread{state: right, startPos: t.startPos, captures: t.captures}, haystack, pos)
+		}
+
+	case StateCapture:
+		// Record capture position and follow epsilon transition
+		groupIndex, isStart, next := state.Capture()
+		if next != InvalidState {
+			newCaps := updateCapture(t.captures, groupIndex, isStart, pos)
+			p.addThread(thread{state: next, startPos: t.startPos, captures: newCaps}, haystack, pos)
 		}
 
 	case StateFail:
@@ -305,16 +538,16 @@ func (p *PikeVM) step(t thread, b byte, haystack []byte, nextPos int) {
 	case StateByteRange:
 		lo, hi, next := state.ByteRange()
 		if b >= lo && b <= hi {
-			// Byte matches - add thread for next state, preserving startPos
-			p.addThreadToNext(thread{state: next, startPos: t.startPos}, haystack, nextPos)
+			// Byte matches - add thread for next state, preserving startPos and captures
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, nextPos)
 		}
 
 	case StateSparse:
 		// Check all transitions
 		for _, tr := range state.Transitions() {
 			if b >= tr.Lo && b <= tr.Hi {
-				// Byte matches this transition, preserving startPos
-				p.addThreadToNext(thread{state: tr.Next, startPos: t.startPos}, haystack, nextPos)
+				// Byte matches this transition, preserving startPos and captures
+				p.addThreadToNext(thread{state: tr.Next, startPos: t.startPos, captures: t.captures}, haystack, nextPos)
 			}
 		}
 	}
@@ -322,29 +555,38 @@ func (p *PikeVM) step(t thread, b byte, haystack []byte, nextPos int) {
 
 // addThreadToNext adds a thread to the next generation queue
 //
-//nolint:unparam // haystack parameter reserved for future capture group support
+//nolint:unparam // haystack parameter reserved for future use
 func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 	state := p.nfa.State(t.state)
 	if state == nil {
 		return
 	}
 
-	// Follow epsilon transitions immediately, preserving startPos
+	// Follow epsilon transitions immediately, preserving startPos and captures
 	switch state.Kind() {
 	case StateEpsilon:
 		next := state.Epsilon()
 		if next != InvalidState {
-			p.addThreadToNext(thread{state: next, startPos: t.startPos}, haystack, pos)
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
 		}
 		return
 
 	case StateSplit:
 		left, right := state.Split()
 		if left != InvalidState {
-			p.addThreadToNext(thread{state: left, startPos: t.startPos}, haystack, pos)
+			p.addThreadToNext(thread{state: left, startPos: t.startPos, captures: t.captures}, haystack, pos)
 		}
 		if right != InvalidState {
-			p.addThreadToNext(thread{state: right, startPos: t.startPos}, haystack, pos)
+			p.addThreadToNext(thread{state: right, startPos: t.startPos, captures: t.captures}, haystack, pos)
+		}
+		return
+
+	case StateCapture:
+		// Record capture position and follow epsilon transition
+		groupIndex, isStart, next := state.Capture()
+		if next != InvalidState {
+			newCaps := updateCapture(t.captures, groupIndex, isStart, pos)
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: newCaps}, haystack, pos)
 		}
 		return
 	}

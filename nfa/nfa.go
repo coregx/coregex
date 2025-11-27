@@ -86,9 +86,9 @@ type State struct {
 	// For Split: epsilon transitions to two states
 	left, right StateID
 
-	// For Capture: capture group index (future)
-	//nolint:unused // Reserved for future capture group implementation
+	// For Capture: capture group index and whether this is opening/closing
 	captureIndex uint32
+	captureStart bool // true = opening boundary, false = closing boundary
 }
 
 // Transition represents a byte range and target state for sparse transitions.
@@ -150,6 +150,16 @@ func (s *State) Transitions() []Transition {
 	return nil
 }
 
+// Capture returns capture group info for Capture states.
+// Returns (group index, isStart, next state).
+// isStart is true for opening boundary '(' and false for closing ')'.
+func (s *State) Capture() (index uint32, isStart bool, next StateID) {
+	if s.kind == StateCapture {
+		return s.captureIndex, s.captureStart, s.next
+	}
+	return 0, false, InvalidState
+}
+
 // String returns a human-readable representation of the state
 func (s *State) String() string {
 	switch s.kind {
@@ -198,6 +208,10 @@ type NFA struct {
 	// patternCount is the number of patterns in a multi-pattern NFA
 	// For single patterns, this is 1
 	patternCount int
+
+	// captureCount is the number of capture groups in the pattern
+	// Group 0 is the entire match, groups 1+ are explicit captures
+	captureCount int
 }
 
 // Start returns the starting state ID of the NFA
@@ -258,6 +272,13 @@ func (n *NFA) IsUTF8() bool {
 // PatternCount returns the number of patterns in the NFA
 func (n *NFA) PatternCount() int {
 	return n.patternCount
+}
+
+// CaptureCount returns the number of capture groups in the NFA.
+// Group 0 is the entire match, groups 1+ are explicit captures.
+// For a pattern like "(a)(b)", this returns 3 (entire match + 2 groups).
+func (n *NFA) CaptureCount() int {
+	return n.captureCount
 }
 
 // Iter returns an iterator over all states in the NFA

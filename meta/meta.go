@@ -219,7 +219,8 @@ func (e *Engine) Find(haystack []byte) *Match {
 
 // IsMatch returns true if the pattern matches anywhere in the haystack.
 //
-// This is equivalent to Find(haystack) != nil but may be optimized.
+// This is optimized for boolean matching - avoids Match object creation
+// and uses fast path for small inputs.
 //
 // Example:
 //
@@ -229,6 +230,40 @@ func (e *Engine) Find(haystack []byte) *Match {
 //	}
 func (e *Engine) IsMatch(haystack []byte) bool {
 	return e.Find(haystack) != nil
+}
+
+// FindSubmatch returns the first match with capture group information.
+// Returns nil if no match is found.
+//
+// Group 0 is always the entire match. Groups 1+ are explicit capture groups.
+// Unmatched optional groups will have nil values.
+//
+// Example:
+//
+//	engine, _ := meta.Compile(`(\w+)@(\w+)\.(\w+)`)
+//	match := engine.FindSubmatch([]byte("user@example.com"))
+//	if match != nil {
+//	    fmt.Println(match.Group(0)) // "user@example.com"
+//	    fmt.Println(match.Group(1)) // "user"
+//	    fmt.Println(match.Group(2)) // "example"
+//	    fmt.Println(match.Group(3)) // "com"
+//	}
+func (e *Engine) FindSubmatch(haystack []byte) *MatchWithCaptures {
+	e.stats.NFASearches++
+
+	// Always use PikeVM for capture group extraction
+	nfaMatch := e.pikevm.SearchWithCaptures(haystack)
+	if nfaMatch == nil {
+		return nil
+	}
+
+	return NewMatchWithCaptures(haystack, nfaMatch.Captures)
+}
+
+// NumCaptures returns the number of capture groups in the pattern.
+// Group 0 is the entire match, groups 1+ are explicit captures.
+func (e *Engine) NumCaptures() int {
+	return e.nfa.CaptureCount()
 }
 
 // findNFA searches using NFA (PikeVM) directly.

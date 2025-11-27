@@ -83,3 +83,37 @@ func ExampleCompileWithConfig() {
 	fmt.Println(re.MatchString("abcabc"))
 	// Output: true
 }
+
+// ExampleRegex_FindSubmatch demonstrates capture group extraction.
+func ExampleRegex_FindSubmatch() {
+	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+	match := re.FindSubmatch([]byte("Contact: user@example.com"))
+	if match != nil {
+		fmt.Println("Full match:", string(match[0]))
+		fmt.Println("User:", string(match[1]))
+		fmt.Println("Domain:", string(match[2]))
+		fmt.Println("TLD:", string(match[3]))
+	}
+	// Output:
+	// Full match: user@example.com
+	// User: user
+	// Domain: example
+	// TLD: com
+}
+
+// ExampleRegex_FindStringSubmatch demonstrates capture groups with strings.
+func ExampleRegex_FindStringSubmatch() {
+	re := coregex.MustCompile(`(\d{4})-(\d{2})-(\d{2})`)
+	match := re.FindStringSubmatch("Date: 2024-12-25")
+	if match != nil {
+		fmt.Printf("Year: %s, Month: %s, Day: %s\n", match[1], match[2], match[3])
+	}
+	// Output: Year: 2024, Month: 12, Day: 25
+}
+
+// ExampleRegex_NumSubexp demonstrates counting capture groups.
+func ExampleRegex_NumSubexp() {
+	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+	fmt.Println("Number of groups:", re.NumSubexp())
+	// Output: Number of groups: 4
+}
