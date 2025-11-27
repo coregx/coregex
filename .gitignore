@@ -47,3 +47,6 @@ INDEX.md
 
 # Private Claude configuration
 .claude/
+
+# Development comparison benchmarks (separate module with external deps)
+benchmark/comparison/
