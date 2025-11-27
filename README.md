@@ -1,6 +1,6 @@
 # coregex - Production-Grade Regex Engine for Go
 
-> **Up to 143x faster than stdlib through multi-engine architecture and SIMD optimizations**
+> **Up to 263x faster than stdlib through multi-engine architecture and SIMD optimizations**
 
 [![GitHub Release](https://img.shields.io/github/v/release/coregx/coregex?include_prereleases&style=flat-square&logo=github&color=blue)](https://github.com/coregx/coregex/releases/latest)
 [![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
@@ -13,12 +13,12 @@
 
 ---
 
-A **production-grade regex engine** for Go with dramatic performance improvements over the standard library. Inspired by Rust's regex crate, coregex uses a multi-engine architecture with SIMD-accelerated prefilters to achieve **up to 143x speedup** (especially on case-insensitive patterns).
+A **production-grade regex engine** for Go with dramatic performance improvements over the standard library. Inspired by Rust's regex crate, coregex uses a multi-engine architecture with SIMD-accelerated prefilters to achieve **up to 263x speedup** (especially on case-insensitive patterns).
 
 ## Features
 
 ⚡ **Performance**
-- 🚀 **Up to 143x faster** than Go's `regexp` package (case-insensitive patterns)
+- 🚀 **Up to 263x faster** than Go's `regexp` package (case-insensitive patterns)
 - 🎯 **SIMD-accelerated** search with AVX2/SSSE3 assembly (10-15x faster substring search)
 - 📊 **Multi-pattern search** (Teddy SIMD algorithm for 2-8 literals)
 - 🔍 **Aho-Corasick** for many literals
@@ -161,11 +161,10 @@ func benchmarkSearch(pattern string, text []byte) {
 
 | Pattern Type | Input Size | stdlib | coregex | Speedup |
 |--------------|------------|--------|---------|---------|
-| Literal (case-sensitive) | 32KB | 3,654 ns | 4,375 ns | ~1x (on par) |
-| **Literal (case-insensitive)** | 32KB | 842,422 ns | **5,883 ns** | **143x faster** |
-| Email extraction | - | - | - | 15-25x faster |
-| URL matching | - | - | - | 10-20x faster |
-| Log parsing | - | - | - | 30-50x faster |
+| Case-sensitive | 1KB | 688 ns | 196 ns | **3.5x faster** |
+| Case-sensitive | 32KB | 9,715 ns | 8,367 ns | **1.2x faster** |
+| **Case-insensitive** | 1KB | 24,110 ns | **262 ns** | **92x faster** |
+| **Case-insensitive** | 32KB | 1,229,521 ns | **4,669 ns** | **263x faster** |
 
 **Key insight:** Case-insensitive patterns (`(?i)...`) are where coregex truly shines - stdlib uses backtracking which becomes very slow, while our DFA handles it with the same speed as case-sensitive patterns.
 
@@ -173,7 +172,7 @@ See [benchmark/](benchmark/) for detailed comparisons.
 
 ## Supported Features
 
-### v0.1.0 (Current)
+### v0.2.0 (Current)
 
 | Feature              | Status | Notes |
 |----------------------|--------|-------|
@@ -185,9 +184,9 @@ See [benchmark/](benchmark/) for detailed comparisons.
 | **Pike VM (NFA)**    | ✅     | Thompson's construction |
 | **One-pass DFA**     | ✅     | For simple patterns |
 | **Unicode support**  | ✅     | Via `regexp/syntax` |
-| **Captures**         | ✅     | Numbered groups |
-| **Named captures**   | 📅 v0.2.0 | Planned |
-| **Look-around**      | 📅 v0.3.0 | Lookahead/lookbehind |
+| **Capture groups**   | ✅     | FindSubmatch, FindSubmatchIndex |
+| **Named captures**   | 📅 v0.3.0 | Planned |
+| **Look-around**      | 📅 v0.4.0 | Lookahead/lookbehind |
 | **Backreferences**   | ❌     | Incompatible with O(n) guarantee |
 
 ### Regex Syntax
@@ -204,7 +203,7 @@ coregex uses Go's `regexp/syntax` for pattern parsing, supporting:
 
 ## Known Limitations
 
-### v0.1.0 (Experimental)
+### v0.2.0 (Current)
 
 **What Works:**
 - ✅ All standard regex syntax (except backreferences)
@@ -213,12 +212,13 @@ coregex uses Go's `regexp/syntax` for pattern parsing, supporting:
 - ✅ Cross-platform (fallback to pure Go on other architectures)
 - ✅ Thread-safe compilation and execution
 - ✅ Zero external dependencies
+- ✅ Capture groups with FindSubmatch API
 
 **Current Limitations:**
-- ⚠️ **Experimental API** - May change in v0.2+
-- ⚠️ No named capture groups yet (planned v0.2.0)
-- ⚠️ No look-around assertions yet (planned v0.3.0)
-- ⚠️ SIMD only on AMD64 (ARM NEON planned v0.4.0)
+- ⚠️ **Experimental API** - May change in v0.3+
+- ⚠️ No named capture groups yet (planned v0.3.0)
+- ⚠️ No look-around assertions yet (planned v0.4.0)
+- ⚠️ SIMD only on AMD64 (ARM NEON planned v0.5.0)
 
 **Performance Notes:**
 - 🚀 Best speedup on patterns with literal prefixes/suffixes
@@ -313,11 +313,11 @@ Contributions are welcome! This is an experimental project and we'd love your he
 - 🧪 Benchmark against stdlib and report results
 
 **Priority areas:**
-- ARM NEON SIMD implementation (v0.4.0)
-- Named capture groups (v0.2.0)
-- Look-around assertions (v0.3.0)
+- Named capture groups (v0.3.0)
+- Replace/Split functions (v0.3.0)
+- Look-around assertions (v0.4.0)
+- ARM NEON SIMD implementation (v0.5.0)
 - More comprehensive benchmarks
-- Real-world performance testing
 
 ---
 
@@ -325,14 +325,15 @@ Contributions are welcome! This is an experimental project and we'd love your he
 
 | Feature | coregex | stdlib `regexp` | regexp2 |
 |---------|---------|----------------|---------|
-| **Performance** | 🚀 5-50x faster | Baseline | Slower (backtracking) |
+| **Performance** | 🚀 3-263x faster | Baseline | Slower (backtracking) |
 | **SIMD acceleration** | ✅ AVX2/SSSE3 | ❌ No | ❌ No |
 | **Prefilters** | ✅ Automatic | ❌ No | ❌ No |
 | **Multi-engine** | ✅ DFA/NFA/PikeVM | ❌ Single | ❌ Backtracking only |
 | **O(n) guarantee** | ✅ Yes | ✅ Yes | ❌ No (exponential worst-case) |
 | **Backreferences** | ❌ Not supported | ❌ Not supported | ✅ Supported |
-| **Named captures** | 📅 v0.2.0 | ✅ Supported | ✅ Supported |
-| **Look-around** | 📅 v0.3.0 | ❌ Limited | ✅ Supported |
+| **Capture groups** | ✅ v0.2.0 | ✅ Supported | ✅ Supported |
+| **Named captures** | 📅 v0.3.0 | ✅ Supported | ✅ Supported |
+| **Look-around** | 📅 v0.4.0 | ❌ Limited | ✅ Supported |
 | **API compatibility** | ⚠️ Similar | - | Different |
 | **Maintained** | ✅ Active | ✅ Stdlib | ✅ Active |
 
@@ -344,12 +345,12 @@ Contributions are welcome! This is an experimental project and we'd love your he
 
 **When to use stdlib `regexp`:**
 - ✅ Simple patterns where performance doesn't matter
-- ✅ You need named captures NOW (coming in v0.2.0)
+- ✅ You need named captures NOW (coming in v0.3.0)
 - ✅ Maximum stability and API compatibility
 
 **When to use `regexp2`:**
 - ✅ You need backreferences (not supported by coregex)
-- ✅ Complex look-around assertions (v0.3.0 for coregex)
+- ✅ Complex look-around assertions (v0.4.0 for coregex)
 - ⚠️ Accept exponential worst-case performance
 
 ---
@@ -428,14 +429,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Status**: ⚠️ **EXPERIMENTAL** - v0.1.4 released, API may change in 0.x versions
+**Status**: ⚠️ **EXPERIMENTAL** - v0.2.1 released, API may change in 0.x versions
 
-**Current Version**: v0.1.4 (2025-11-27)
+**Current Version**: v0.2.1 (2025-11-27)
 
 **Ready for:** Testing, benchmarking, feedback, and experimental use
 **Production readiness:** API stability expected in v1.0.0
 
-**Next Release:** v0.2.0 (Q1 2025) - Named captures, API refinements
+**Next Release:** v0.3.0 - Named captures, Replace/Split functions
 
 ---
 

@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1] - 2025-11-27
+
+### Fixed
+- Documentation: Updated README.md with v0.2.0 features and performance numbers
+- Updated performance claims from 143x to 263x (accurate benchmark results)
+- Added capture groups to feature table
+
+---
+
 ## [0.2.0] - 2025-11-27
 
 ### Added
