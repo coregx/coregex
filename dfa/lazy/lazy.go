@@ -117,39 +117,37 @@ func (d *DFA) IsMatch(haystack []byte) bool {
 
 // findWithPrefilter searches using prefilter to accelerate unanchored search.
 // Uses single-pass approach: when in start state, use prefilter to skip ahead.
+// Returns the end position of the leftmost-longest match.
 func (d *DFA) findWithPrefilter(haystack []byte) int {
-	// DEBUG
-	// import "fmt"
-	// fmt.Printf("[findWithPrefilter] haystack len=%d\n", len(haystack))
-
 	// If prefilter is complete, its match is the final match
 	if d.prefilter.IsComplete() {
-		// fmt.Printf("[findWithPrefilter] prefilter is complete\n")
 		return d.prefilter.Find(haystack, 0)
 	}
 
 	// Get start state
-	// fmt.Printf("[findWithPrefilter] getting start state\n")
 	startState := d.getState(StartState)
 	if startState == nil {
-		// fmt.Printf("[findWithPrefilter] no start state, using NFA fallback\n")
 		return d.nfaFallback(haystack, 0)
 	}
 
 	// Initial prefilter scan to find first candidate
 	pos := 0
-	// fmt.Printf("[findWithPrefilter] calling prefilter.Find at pos=%d\n", pos)
 	candidate := d.prefilter.Find(haystack, pos)
-	// fmt.Printf("[findWithPrefilter] prefilter returned candidate=%d\n", candidate)
 	if candidate == -1 {
-		// No candidates at all
-		// fmt.Printf("[findWithPrefilter] no candidates, returning -1\n")
 		return -1
 	}
 	pos = candidate
 
+	// Track last match position for leftmost-longest semantics
+	lastMatch := -1
+	committed := false // True once we've entered a match state
+
 	// Start DFA search from candidate position
 	currentState := startState
+	if currentState.IsMatch() {
+		lastMatch = pos // Empty match at start
+		committed = true
+	}
 
 	for pos < len(haystack) {
 		b := haystack[pos]
@@ -166,7 +164,11 @@ func (d *DFA) findWithPrefilter(haystack []byte) int {
 				return d.nfaFallback(haystack, 0)
 			}
 			if nextState == nil {
-				// Dead state - need to find next candidate
+				// Dead state - return last match if we had one
+				if lastMatch != -1 {
+					return lastMatch
+				}
+				// No match yet - find next candidate
 				pos++
 				candidate = d.prefilter.Find(haystack, pos)
 				if candidate == -1 {
@@ -174,10 +176,20 @@ func (d *DFA) findWithPrefilter(haystack []byte) int {
 				}
 				pos = candidate
 				currentState = startState
+				lastMatch = -1
+				committed = false
+				if currentState.IsMatch() {
+					lastMatch = pos
+					committed = true
+				}
 				continue
 			}
 		case nextID == DeadState:
-			// Dead state - find next candidate
+			// Dead state - return last match if we had one
+			if lastMatch != -1 {
+				return lastMatch
+			}
+			// No match yet - find next candidate
 			pos++
 			candidate = d.prefilter.Find(haystack, pos)
 			if candidate == -1 {
@@ -185,6 +197,12 @@ func (d *DFA) findWithPrefilter(haystack []byte) int {
 			}
 			pos = candidate
 			currentState = startState
+			lastMatch = -1
+			committed = false
+			if currentState.IsMatch() {
+				lastMatch = pos
+				committed = true
+			}
 			continue
 		default:
 			nextState = d.getState(nextID)
@@ -196,13 +214,18 @@ func (d *DFA) findWithPrefilter(haystack []byte) int {
 		pos++
 		currentState = nextState
 
-		// Check for match
+		// Track match state and enforce leftmost semantics
 		if currentState.IsMatch() {
-			return pos
+			lastMatch = pos
+			committed = true
+		} else if committed {
+			// We were in a match but now we're not - return leftmost match
+			return lastMatch
 		}
 
 		// If back in start state (unanchored prefix self-loop), use prefilter to skip
-		if currentState.ID() == StartState && pos < len(haystack) {
+		// Only do this if we haven't committed to a match yet
+		if !committed && currentState.ID() == StartState && pos < len(haystack) {
 			candidate = d.prefilter.Find(haystack, pos)
 			if candidate == -1 {
 				return -1
@@ -214,18 +237,15 @@ func (d *DFA) findWithPrefilter(haystack []byte) int {
 		}
 	}
 
-	// Check final state
-	if currentState.IsMatch() {
-		return pos
-	}
-
-	return -1
+	// Reached end of input - return last match position
+	return lastMatch
 }
 
 // searchAt attempts to find a match starting at the given position.
-// Returns the end position of the match, or -1 if no match.
+// Returns the end position of the leftmost-longest match, or -1 if no match.
 //
 // This is the core DFA search algorithm with lazy determinization.
+// Uses leftmost-longest semantics: find the earliest match start, then extend greedily.
 func (d *DFA) searchAt(haystack []byte, startPos int) int {
 	if startPos > len(haystack) {
 		return -1
@@ -238,6 +258,15 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 		return d.nfaFallback(haystack, startPos)
 	}
 
+	// Track last match position for leftmost-longest semantics
+	lastMatch := -1
+	committed := false // True once we've entered a match state
+
+	if currentState.IsMatch() {
+		lastMatch = startPos // Empty match at start
+		committed = true
+	}
+
 	// Scan input byte by byte
 	pos := startPos
 	for pos < len(haystack) {
@@ -245,7 +274,8 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 
 		// Check if current state has a transition for this byte
 		nextID, ok := currentState.Transition(b)
-		if !ok {
+		switch {
+		case !ok:
 			// No cached transition: determinize on-demand
 			nextState, err := d.determinize(currentState, b)
 			if err != nil {
@@ -255,12 +285,15 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 
 			// Check for dead state (no possible transitions)
 			if nextState == nil {
-				// Dead state: no match possible from here
-				return -1
+				// Dead state: return last match (if any)
+				return lastMatch
 			}
 
 			currentState = nextState
-		} else {
+		case nextID == DeadState:
+			// Cached dead state: return last match (if any)
+			return lastMatch
+		default:
 			// Cached transition: follow it
 			currentState = d.getState(nextID)
 			if currentState == nil {
@@ -271,18 +304,19 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 
 		pos++
 
-		// Check if we reached a match state
+		// Track match state and enforce leftmost semantics
 		if currentState.IsMatch() {
-			return pos // Return end position of match
+			lastMatch = pos
+			committed = true
+		} else if committed {
+			// We were in a match but now we're not - return leftmost match
+			// This ensures we don't keep searching for later matches
+			return lastMatch
 		}
 	}
 
-	// Reached end of input - check if current state is match
-	if currentState.IsMatch() {
-		return pos
-	}
-
-	return -1
+	// Reached end of input - return last match position
+	return lastMatch
 }
 
 // determinize creates a new DFA state for the given state + input byte.

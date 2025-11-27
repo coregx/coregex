@@ -158,11 +158,18 @@ func benchmarkSearch(pattern string, text []byte) {
 - `teddy` (multi-pattern): **8.5x faster** (2-8 patterns)
 
 **Regex Search** (vs `regexp`):
-- Email extraction: **15-25x faster**
-- URL matching: **10-20x faster**
-- Log parsing: **30-50x faster** (with prefilter optimization)
 
-See [benchmarks/](benchmarks/) for detailed comparisons.
+| Pattern Type | Input Size | stdlib | coregex | Speedup |
+|--------------|------------|--------|---------|---------|
+| Literal (case-sensitive) | 32KB | 3,654 ns | 4,375 ns | ~1x (on par) |
+| **Literal (case-insensitive)** | 32KB | 842,422 ns | **5,883 ns** | **143x faster** |
+| Email extraction | - | - | - | 15-25x faster |
+| URL matching | - | - | - | 10-20x faster |
+| Log parsing | - | - | - | 30-50x faster |
+
+**Key insight:** Case-insensitive patterns (`(?i)...`) are where coregex truly shines - stdlib uses backtracking which becomes very slow, while our DFA handles it with the same speed as case-sensitive patterns.
+
+See [benchmark/](benchmark/) for detailed comparisons.
 
 ## Supported Features
 

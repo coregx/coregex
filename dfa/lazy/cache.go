@@ -84,9 +84,11 @@ func (c *Cache) Insert(key StateKey, state *State) (StateID, error) {
 		return InvalidState, ErrCacheFull
 	}
 
-	// Assign state ID
-	state.id = c.nextID
-	c.nextID++
+	// Assign state ID only if not already set (e.g., StartState = 0)
+	if state.id == InvalidState {
+		state.id = c.nextID
+		c.nextID++
+	}
 
 	// Insert into cache
 	c.states[key] = state
