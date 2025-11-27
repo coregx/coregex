@@ -45,6 +45,7 @@ import (
 //   - A cache of determinized states
 //   - An optional prefilter for fast candidate finding
 //   - A PikeVM for NFA fallback
+//   - A StartTable for caching start states by look-behind context
 //
 // Thread safety: Not thread-safe. Each goroutine should use its own DFA instance.
 // The underlying NFA can be shared (it's immutable), but the DFA's cache and
@@ -59,6 +60,11 @@ type DFA struct {
 	// stateByID provides O(1) lookup of states by ID
 	// This maps StateID → *State for fast access during search
 	stateByID map[StateID]*State
+
+	// startTable caches start states for different look-behind contexts
+	// This enables correct handling of assertions (^, \b, etc.) and
+	// avoids recomputing epsilon closures on every search
+	startTable *StartTable
 }
 
 // Find returns the index of the first match in the haystack, or -1 if no match.
@@ -124,26 +130,23 @@ func (d *DFA) findWithPrefilter(haystack []byte) int {
 		return d.prefilter.Find(haystack, 0)
 	}
 
-	// Get start state
-	startState := d.getState(StartState)
-	if startState == nil {
-		return d.nfaFallback(haystack, 0)
-	}
-
 	// Initial prefilter scan to find first candidate
-	pos := 0
-	candidate := d.prefilter.Find(haystack, pos)
+	candidate := d.prefilter.Find(haystack, 0)
 	if candidate == -1 {
 		return -1
 	}
-	pos = candidate
+	pos := candidate
+
+	// Get start state based on look-behind context at candidate position
+	currentState := d.getStartStateForUnanchored(haystack, pos)
+	if currentState == nil {
+		return d.nfaFallback(haystack, 0)
+	}
 
 	// Track last match position for leftmost-longest semantics
 	lastMatch := -1
 	committed := false // True once we've entered a match state
 
-	// Start DFA search from candidate position
-	currentState := startState
 	if currentState.IsMatch() {
 		lastMatch = pos // Empty match at start
 		committed = true
@@ -175,7 +178,11 @@ func (d *DFA) findWithPrefilter(haystack []byte) int {
 					return -1
 				}
 				pos = candidate
-				currentState = startState
+				// Get context-aware start state based on look-behind at new position
+				currentState = d.getStartStateForUnanchored(haystack, pos)
+				if currentState == nil {
+					return d.nfaFallback(haystack, 0)
+				}
 				lastMatch = -1
 				committed = false
 				if currentState.IsMatch() {
@@ -196,7 +203,11 @@ func (d *DFA) findWithPrefilter(haystack []byte) int {
 				return -1
 			}
 			pos = candidate
-			currentState = startState
+			// Get context-aware start state based on look-behind at new position
+			currentState = d.getStartStateForUnanchored(haystack, pos)
+			if currentState == nil {
+				return d.nfaFallback(haystack, 0)
+			}
 			lastMatch = -1
 			committed = false
 			if currentState.IsMatch() {
@@ -251,8 +262,9 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 		return -1
 	}
 
-	// Start from DFA start state
-	currentState := d.getState(StartState)
+	// Get appropriate start state based on look-behind context
+	// This enables correct handling of assertions like ^, \b, etc.
+	currentState := d.getStartStateForUnanchored(haystack, startPos)
 	if currentState == nil {
 		// Start state not in cache? This should never happen
 		return d.nfaFallback(haystack, startPos)
@@ -405,6 +417,61 @@ func (d *DFA) registerState(state *State) {
 	d.stateByID[state.ID()] = state
 }
 
+// getStartState returns the appropriate start state for the given position.
+//
+// The start state depends on:
+//   - Position in haystack (0 = start of text)
+//   - Previous byte (for word boundary, line boundary detection)
+//   - Anchored flag (anchored patterns use different NFA start)
+//
+// Start states are cached in the StartTable for O(1) access.
+// If not cached, the state is computed and stored for future use.
+func (d *DFA) getStartState(haystack []byte, pos int, anchored bool) *State {
+	// Determine start kind based on position and previous byte
+	var kind StartKind
+	if pos == 0 {
+		kind = StartText
+	} else {
+		kind = d.startTable.GetKind(haystack[pos-1])
+	}
+
+	// Check if already cached in StartTable
+	stateID := d.startTable.Get(kind, anchored)
+	if stateID != InvalidState {
+		return d.getState(stateID)
+	}
+
+	// Not cached - compute and store
+	builder := NewBuilder(d.nfa, d.config)
+	config := StartConfig{Kind: kind, Anchored: anchored}
+	state, key := ComputeStartState(builder, d.nfa, config)
+
+	// Try to insert into cache using GetOrInsert
+	// This handles the case where another goroutine may have inserted it
+	insertedState, existed, err := d.cache.GetOrInsert(key, state)
+	if err != nil {
+		// Cache full - return the computed state anyway
+		// (it won't be cached, but search can continue)
+		return state
+	}
+
+	// Register in ID lookup map (only if we inserted a new state)
+	if !existed {
+		d.registerState(insertedState)
+	}
+
+	// Cache in StartTable for fast lookup next time
+	d.startTable.Set(kind, anchored, insertedState.ID())
+
+	return insertedState
+}
+
+// getStartStateForUnanchored is a convenience method for unanchored search.
+// This is the common case for Find() operations.
+func (d *DFA) getStartStateForUnanchored(haystack []byte, pos int) *State {
+	return d.getStartState(haystack, pos, false)
+}
+
 // nfaFallback executes the NFA (PikeVM) when DFA gives up.
 // This ensures correctness even when cache is full or pattern is too complex.
 func (d *DFA) nfaFallback(haystack []byte, startPos int) int {
@@ -451,6 +518,9 @@ func (d *DFA) ResetCache() {
 	d.cache.Clear()
 	d.stateByID = make(map[StateID]*State, d.config.MaxStates)
 
+	// Reset StartTable
+	d.startTable = NewStartTable()
+
 	// Recreate start state using unanchored start (with implicit (?s:.)*? prefix)
 	builder := NewBuilder(d.nfa, d.config)
 	startStateSet := builder.epsilonClosure([]nfa.StateID{d.nfa.StartUnanchored()})
@@ -459,4 +529,7 @@ func (d *DFA) ResetCache() {
 	key := ComputeStateKey(startStateSet)
 	_, _ = d.cache.Insert(key, startState) // Ignore error (cache is empty)
 	d.registerState(startState)
+
+	// Cache the default start state in StartTable
+	d.startTable.Set(StartText, false, startState.ID())
 }

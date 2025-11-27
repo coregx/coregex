@@ -1,481 +1,213 @@
 # coregex - Development Roadmap
 
-> **Strategic Approach**: Multi-engine regex with SIMD acceleration for 5-50x performance improvement
+> **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
 **Last Updated**: 2025-11-27 | **Current Version**: v0.3.0 | **Target**: v1.0.0 stable
 
 ---
 
-## 🎯 Vision
+## Vision
 
-Build a **production-ready, high-performance regex engine** for Go with **5-50x speedup** over stdlib through multi-engine architecture and SIMD optimization.
+Build a **production-ready, high-performance regex engine** for Go that matches or exceeds RE2 and rust-regex performance through comprehensive optimizations.
 
-### Key Advantages
+### Current State vs Target
 
-✅ **Multi-Engine Architecture**
-- Thompson's NFA (no backtracking, bounded time)
-- Lazy DFA (on-demand determinization)
-- Intelligent strategy selection (automatic)
-- SIMD-accelerated prefilters (AVX2/SSSE3)
-
-✅ **Performance First**
-- 5-50x faster than stdlib for patterns with literals
-- Zero allocations in hot paths
-- O(n) worst-case time complexity
-- Thread-safe implementation
-
-✅ **stdlib-compatible API**
-- Easy migration from regexp package
-- Familiar API surface (Compile, Match, Find, etc.)
-- Drop-in replacement for most use cases
-- Clear documentation of limitations
+| Metric | Current (v0.3.0) | Target (v1.0.0) |
+|--------|------------------|-----------------|
+| Case-insensitive speedup | **263x** | 263x+ |
+| Small input overhead | ~40ns | <15ns |
+| Start state configs | 1 | 6 |
+| State acceleration | No | Yes |
+| Reverse search | No | Yes (3 strategies) |
+| Prefilter tracking | No | Yes |
+| OnePass DFA | No | Yes |
 
 ---
 
-## 🚀 Version Strategy
-
-### Philosophy: Performance → Features → Stability → Community Feedback → API Freeze
+## Release Strategy
 
 ```
-v0.1.0 (2025-01-26) ✅ → Initial release (SIMD + Multi-engine)
-v0.2.0 (2025-11-27) ✅ → Capture groups support
-v0.3.0 (2025-11-27) ✅ → Replace/Split functions + extended API
+v0.3.0 (Current) ✅ → Replace/Split + Research complete
          ↓
-v0.4.0 → Named capture groups + Look-around
+v0.4.0 (Next) → Core Optimizations (6 tasks)
          ↓
-v0.5.0 → ARM NEON SIMD + Performance optimizations
+v0.5.0 → Advanced Strategies (Reverse Search)
          ↓
-v1.0.0-rc.1 → Feature freeze, API locked
-         ↓ (community feedback)
+v0.6.0 → Features & Polish (Named captures, OnePass)
+         ↓
+v0.7.0 → Platform & Unicode (ARM NEON, UTF-8)
+         ↓
+v1.0.0-rc → Feature freeze, API locked
+         ↓
 v1.0.0 STABLE → Production release with API stability guarantee
 ```
 
-**Important Notes**:
-- **v1.0.0** requires community feedback and API stability guarantee
-- **v2.0.0** only for breaking changes
-- Pre-1.0 versions may have API changes (documented in CHANGELOG)
-- Beta/experimental status until v1.0.0
+---
+
+## v0.4.0 - Core Optimizations (HIGH PRIORITY)
+
+**Goal**: Implement foundational optimizations from RE2/rust-regex
+
+### Phase 1: Quick Wins
+
+| ID | Feature | Impact | Complexity | Status |
+|----|---------|--------|------------|--------|
+| OPT-001 | Start State Caching (6 configs) | 5-20% + correctness | LOW | Planned |
+| OPT-002 | Prefilter Effectiveness Tracking | Catastrophic slowdown prevention | LOW | Planned |
+| OPT-003 | Early Match Termination | 2-10x for IsMatch() | LOW | Planned |
+
+### Phase 2: Core Engine
+
+| ID | Feature | Impact | Complexity | Status |
+|----|---------|--------|------------|--------|
+| OPT-004 | State Acceleration | 5-20x on loop states | MEDIUM | Planned |
+| OPT-005 | ByteClasses | 4-8x memory reduction | MEDIUM | Planned |
+| OPT-006 | Specialized Search Functions | 10-30% less branching | MEDIUM | Planned |
+
+**Target**: 4-6 weeks
 
 ---
 
-## 📊 Current Status (v0.3.0 ✅)
+## v0.5.0 - Advanced Strategies (HIGH PRIORITY)
 
-### ✅ What's Working Now
+**Goal**: Implement reverse search strategies for 10-100x gains on suffix/inner patterns
 
-**Project Infrastructure** (100%):
-- ✅ Repository structure with public/internal packages
-- ✅ Development tools (.golangci.yml, comprehensive linters)
-- ✅ CI/CD (GitHub Actions: Linux, macOS, Windows) - PLANNED
-- ✅ Documentation (README.md, CHANGELOG.md, ROADMAP.md, CONTRIBUTING.md)
-- ✅ Git-Flow workflow, Kanban task management
-- ✅ Production-quality code (golangci-lint: 0 issues across all 13 tasks!)
+| ID | Feature | Impact | Complexity | Status |
+|----|---------|--------|------------|--------|
+| OPT-007 | Reverse NFA/DFA Construction | Prerequisite | MEDIUM | Planned |
+| OPT-008 | ReverseAnchored Strategy | 10-100x for `.*$` | MEDIUM | Planned |
+| OPT-009 | ReverseSuffix Strategy | 10-100x for `.*\.txt` | MEDIUM | Planned |
+| OPT-010 | ReverseInner Strategy | 10-100x for `prefix.*keyword.*suffix` | HIGH | Planned |
 
-**Core Implementation** (100% - ALL PHASES COMPLETE):
-- ✅ **SIMD Primitives** (Phase 1)
-  - Memchr (1.7x @ 1MB)
-  - Memmem (6.8x - 87.4x vs stdlib)
-  - AVX2/SSE4.2 assembly
-  - Platform fallbacks
-- ✅ **Literal Extraction** (Phase 2)
-  - Prefix/suffix/inner extraction
-  - 8 syntax.Op types supported
-  - Optimization operations (Minimize, LCP, LCS)
-- ✅ **Prefilter System** (Phase 3)
-  - Memchr/Memmem prefilters
-  - Teddy multi-pattern SIMD
-  - Automatic strategy selection
-  - 4-79 GB/s throughput
-- ✅ **NFA Engine** (Phase 4)
-  - Thompson's construction
-  - PikeVM execution
-  - SparseSet state tracking
-  - O(n×m) bounded time
-- ✅ **Lazy DFA** (Phase 4)
-  - On-demand determinization
-  - Thread-safe caching
-  - NFA fallback
-  - O(n) search time
-- ✅ **Meta Engine** (Phase 4)
-  - Intelligent strategy selection
-  - Full pipeline integration
-  - Automatic prefilter coordination
-
-**Public API** (100%):
-- ✅ Compile, MustCompile, CompileWithConfig
-- ✅ Match, MatchString
-- ✅ Find, FindString, FindIndex, FindStringIndex
-- ✅ FindAll, FindAllString, FindAllIndex
-- ✅ FindSubmatch, FindStringSubmatch, FindSubmatchIndex
-- ✅ ReplaceAll, ReplaceAllString, ReplaceAllLiteral
-- ✅ ReplaceAllFunc, ReplaceAllStringFunc
-- ✅ Split
-- ✅ String(), NumSubexp()
-
-**Quality Metrics** (v0.3.0):
-- ✅ **Grade: A (Excellent)** - Production Quality
-- ✅ Test coverage: 88.3% average
-- ✅ Tests: 400+ test cases, 100% passing
-- ✅ Linter: 0 errors, 0 warnings (13/13 tasks clean!)
-- ✅ Race detector: PASS (0 races detected)
-- ✅ Documentation: 48 examples + comprehensive godoc
-- ✅ Zero allocations in hot paths
-
-**Known Limitations** (documented in CHANGELOG):
-- ❌ No named capture groups (planned v0.4.0)
-- ❌ No look-around assertions (planned v0.4.0)
-- ❌ SIMD only AMD64 (ARM NEON planned v0.5.0)
-- ❌ API may change before v1.0 (experimental status)
+**Target**: 4-6 weeks
 
 ---
 
-## 📅 Development Phases
+## v0.6.0 - Features & Polish (MEDIUM PRIORITY)
 
-### **Phase 1: v0.1.0 - Initial Release** ✅ COMPLETE
+**Goal**: Complete feature set and secondary optimizations
 
-**Goal**: First production-ready release with multi-engine architecture
+| ID | Feature | Impact | Complexity | Status |
+|----|---------|--------|------------|--------|
+| FEAT-001 | Named Capture Groups | API completeness | MEDIUM | Planned |
+| OPT-011 | OnePass DFA | 2-5x for simple patterns | HIGH | Planned |
+| OPT-012 | Aho-Corasick Integration | Large multi-pattern | LOW | Planned |
+| OPT-013 | Memory Layout Optimization | 5-15% cache efficiency | MEDIUM | Planned |
 
-**Deliverables**:
-1. ✅ SIMD Primitives (Memchr, Memmem) - 6 tasks
-2. ✅ Literal Extraction - 2 tasks
-3. ✅ Prefilter System (Teddy SIMD) - 2 tasks
-4. ✅ NFA (Thompson's + PikeVM) - 1 task
-5. ✅ Lazy DFA (on-demand + caching) - 1 task
-6. ✅ Meta Engine (strategy selection) - 1 task
-7. ✅ Public API (stdlib-compatible)
-8. ✅ Comprehensive tests (77% coverage)
-9. ✅ Full documentation (48 examples)
-
-**Tasks**: 13 tasks (P1-001 to P4-003)
-**Duration**: 1 day! (2025-01-26, ~8-10 hours)
-**Status**: ✅ RELEASED 2025-01-26
-
-**Key Achievements**:
-- 🏆 13/13 tasks with 0 linter issues (unprecedented!)
-- 🏆 Multi-engine architecture fully functional
-- 🏆 5-50x performance target achievable
-- 🏆 Production-quality code from day one
+**Target**: 4 weeks
 
 ---
 
-### **Phase 2: v0.2.0 - Capture Groups Support**
+## v0.7.0 - Platform & Unicode (MEDIUM PRIORITY)
 
-**Goal**: Add submatch extraction via NFA (bypass DFA limitation)
+**Goal**: Cross-platform SIMD and Unicode optimizations
 
-**Planned Features**:
-1. ⭐ FindSubmatch, FindAllSubmatch APIs
-2. ⭐ Named capture groups
-3. ⭐ Submatch extraction via PikeVM
-4. ⭐ Automatic NFA fallback for patterns with groups
-5. ⭐ Performance optimization for common patterns
+| ID | Feature | Impact | Complexity | Status |
+|----|---------|--------|------------|--------|
+| PLAT-001 | ARM NEON SIMD | Apple Silicon, ARM servers | HIGH | Planned |
+| OPT-014 | UTF-8 Automata Optimization | Unicode performance | HIGH | Planned |
 
-**Technical Approach**:
-- DFA for initial match finding
-- PikeVM for submatch extraction
-- Hybrid strategy for optimal performance
-
-**Duration**: 2-4 weeks
-**Target**: Q1 2026
+**Target**: 4-6 weeks
 
 ---
 
-### **Phase 3: v0.3.0 - Replace/Split Functions**
+## v1.0.0 - Production Ready
 
-**Goal**: Complete stdlib API parity for replacement operations
+**Requirements**:
+- [ ] All v0.4.0-v0.7.0 optimizations complete
+- [ ] API stability guarantee
+- [ ] Comprehensive documentation
+- [ ] Performance regression tests
+- [ ] Security audit
+- [ ] 90%+ test coverage
 
-**Planned Features**:
-1. ⭐ ReplaceAll, ReplaceAllString
-2. ⭐ ReplaceAllFunc, ReplaceAllStringFunc
-3. ⭐ Split, SplitN
-4. ⭐ Template-based replacement (expand)
-5. ⭐ Literal replacement optimization
+**Guarantees**:
+- API stability (no breaking changes in v1.x.x)
+- Semantic versioning
+- Long-term support
 
-**Duration**: 2-4 weeks
-**Target**: Q1-Q2 2026
-
----
-
-### **Phase 4: v0.4.0 - Flags and Case-Insensitive**
-
-**Goal**: Extended matching modes and flags
-
-**Planned Features**:
-1. ⭐ Case-insensitive matching (`(?i)`)
-2. ⭐ Multiline mode (`(?m)`)
-3. ⭐ Dot-all mode (`(?s)`)
-4. ⭐ Unicode mode (`(?u)`)
-5. ⭐ Flag combinations
-
-**Technical Challenges**:
-- Case folding for Unicode (complex)
-- DFA state explosion with case-insensitive
-- Performance impact mitigation
-
-**Duration**: 1-2 months
 **Target**: Q2 2026
 
 ---
 
-### **Phase 5: v0.5.0 - Unicode Properties**
+## Feature Comparison Matrix
 
-**Goal**: Unicode category and property support
-
-**Planned Features**:
-1. ⭐ Unicode property classes (`\p{Letter}`, `\p{Digit}`)
-2. ⭐ Unicode categories (`\p{L}`, `\p{N}`, `\p{P}`)
-3. ⭐ Script matching (`\p{Greek}`, `\p{Cyrillic}`)
-4. ⭐ Unicode normalization
-5. ⭐ Full Unicode 15.0 support
-
-**Technical Challenges**:
-- Large Unicode tables (memory overhead)
-- DFA state explosion with properties
-- Performance impact
-
-**Duration**: 1-2 months
-**Target**: Q2-Q3 2026
-
----
-
-### **Phase 6: v0.6.0+ - Advanced Features**
-
-**Goal**: Performance optimization and advanced features
-
-**Planned Features**:
-1. ⭐ Regex compilation caching
-2. ⭐ Set operations (intersection, difference)
-3. ⭐ Bounded repetition optimization (`a{10,20}`)
-4. ⭐ Look-around assertions (lookahead/lookbehind)
-5. ⭐ Regex analysis tools (complexity, optimization hints)
-6. ⭐ Context support (cancellable operations)
-7. ⭐ Streaming input support
-
-**Duration**: 2-3 months
-**Target**: Q3 2026
+| Feature | RE2 | rust-regex | coregex v0.3 | coregex v1.0 |
+|---------|-----|------------|--------------|--------------|
+| Lazy DFA | ✅ | ✅ | ✅ | ✅ |
+| Thompson NFA | ✅ | ✅ | ✅ | ✅ |
+| PikeVM | ✅ | ✅ | ✅ | ✅ |
+| Teddy SIMD | ❌ | ✅ | ✅ | ✅ |
+| Start State Cache | 8 | 6 | **1** | 6 |
+| State Acceleration | ✅ | ✅ | ❌ | ✅ |
+| Reverse Search | ✅ | ✅ (3) | ❌ | ✅ (3) |
+| Prefilter Tracking | ✅ | ✅ | ❌ | ✅ |
+| ByteClasses | ✅ | ✅ | ❌ | ✅ |
+| OnePass DFA | ✅ | ✅ | ❌ | ✅ |
+| Specialized Search | 8 | Trait | **1** | 8 |
+| Aho-Corasick | ❌ | ✅ | ❌ | ✅ |
+| Named Captures | ✅ | ✅ | ❌ | ✅ |
+| ARM NEON | ❌ | ✅ | ❌ | ✅ |
 
 ---
 
-### **Phase 7: v1.0.0-rc.1 - Feature Freeze**
+## Performance Targets
 
-**Goal**: API stability and comprehensive testing
+### Current (v0.3.0)
 
-**Requirements**:
-- ✅ All planned features complete
-- ✅ Comprehensive tests (>85% coverage)
-- ✅ Performance benchmarks vs stdlib
-- ✅ Documentation complete
-- ✅ Examples for all features
-- ✅ Security audit complete
+| Pattern Type | stdlib | coregex | Speedup |
+|--------------|--------|---------|---------|
+| Case-sensitive 32KB | 9,715 ns | 8,367 ns | 1.2x |
+| Case-insensitive 32KB | 1,229,521 ns | 4,669 ns | **263x** |
+| Small input (16B) | 7 ns | 40 ns | **0.2x** (slower) |
 
-**After v1.0.0-rc.1**:
-- API FROZEN (no breaking changes)
-- Only bug fixes and performance improvements
-- Community testing phase (2+ months)
+### Target (v1.0.0)
 
-**Duration**: 1-2 months
-**Target**: Q4 2026
-
----
-
-### **Phase 8: v1.0.0 - Stable Release**
-
-**Goal**: Production-ready with API stability guarantee
-
-**Requirements**:
-- Stable for 2+ months
-- No critical bugs
-- Community feedback positive
-- Test coverage >85%
-- Full documentation
-- Performance benchmarks published
-
-**Guarantees**:
-- ✅ API stability (no breaking changes in v1.x.x)
-- ✅ Semantic versioning
-- ✅ Long-term support (LTS)
-- ✅ Performance guarantees
-
-**Target**: Q1 2027
+| Pattern Type | Target Speedup | Optimization Required |
+|--------------|----------------|----------------------|
+| Case-sensitive | 2-5x | State acceleration, specialized search |
+| Case-insensitive | 200-300x | Current level maintained |
+| Small input | 1-2x | Start state cache, early termination |
+| Suffix patterns | 10-100x | Reverse search strategies |
+| Inner literal patterns | 10-100x | ReverseInner strategy |
 
 ---
 
-## 📚 Feature Support Roadmap
+## Research Documentation
 
-### Core Features
+All optimization research is documented:
 
-| Feature | v0.1.0 | v0.2.0 | v0.3.0 | v0.4.0 | v0.5.0 | v1.0.0 |
-|---------|--------|--------|--------|--------|--------|--------|
-| **Compile** patterns | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Match** boolean | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Find** first match | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **FindAll** matches | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **FindSubmatch** | ❌ | ⭐ | ✅ | ✅ | ✅ | ✅ |
-| **ReplaceAll** | ❌ | ❌ | ⭐ | ✅ | ✅ | ✅ |
-| **Split** | ❌ | ❌ | ⭐ | ✅ | ✅ | ✅ |
+| Document | Content |
+|----------|---------|
+| `docs/dev/research/RE2_SMALL_INPUT_OPTIMIZATION_ANALYSIS.md` | RE2 thresholds and strategies |
+| `docs/dev/research/RUST_REGEX_SMALL_INPUT_OPTIMIZATION_ANALYSIS.md` | rust-regex analysis |
+| `docs/dev/research/OPTIMIZATION_OPPORTUNITIES.md` | Comprehensive gap analysis with code examples |
 
-### Pattern Features
-
-| Feature | v0.1.0 | v0.2.0 | v0.3.0 | v0.4.0 | v0.5.0 | v1.0.0 |
-|---------|--------|--------|--------|--------|--------|--------|
-| **Literals** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Character classes** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Repetition** (*, +, ?) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Alternation** (\|) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Capture groups** | ❌ | ⭐ | ✅ | ✅ | ✅ | ✅ |
-| **Named groups** | ❌ | ⭐ | ✅ | ✅ | ✅ | ✅ |
-| **Anchors** (^, $) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Case-insensitive** | ❌ | ❌ | ❌ | ⭐ | ✅ | ✅ |
-| **Unicode properties** | ❌ | ❌ | ❌ | ❌ | ⭐ | ✅ |
-| **Lookahead/behind** | ❌ | ❌ | ❌ | ❌ | ⚠️ | ✅ |
-
-### Performance Features
-
-| Feature | v0.1.0 | v0.2.0 | v0.3.0 | v0.4.0 | v0.5.0 | v1.0.0 |
-|---------|--------|--------|--------|--------|--------|--------|
-| **SIMD memchr** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **SIMD memmem** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Teddy prefilter** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Lazy DFA** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Strategy selection** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Compilation caching** | ❌ | ❌ | ❌ | ❌ | ❌ | ⭐ |
-| **Streaming input** | ❌ | ❌ | ❌ | ❌ | ❌ | ⭐ |
-
-**Legend**:
-- ✅ Implemented
-- ⭐ Planned for this version
-- ⚠️ Experimental / Limited
-- ❌ Not available
+Reference implementations available locally:
+- `docs/dev/reference/re2/` - RE2 source code
+- `docs/dev/reference/rust-regex/` - rust-regex source code
 
 ---
 
-## 🎯 Current Focus (Post v0.1.0 Release)
+## Out of Scope
 
-### Immediate Priorities (Next 2-4 Weeks)
-
-**Focus**: Community feedback + v0.2.0 planning
-
-**Current Status**: v0.1.0 RELEASED (2025-01-26) ✅
-
-**Planned Work**:
-1. **Community Engagement** ⭐
-   - Monitor GitHub issues
-   - Respond to questions
-   - Gather feature requests
-   - Collect feedback on v0.1.0 API
-
-2. **Documentation** ⭐
-   - README.md completion
-   - Performance benchmarks publication
-   - Migration guide from stdlib
-   - Architecture deep-dive documentation
-
-3. **v0.2.0 Research** ⭐
-   - Capture group implementation strategy
-   - Performance impact analysis
-   - API design for submatch extraction
-   - NFA vs DFA trade-offs
-
-4. **Infrastructure** ⭐
-   - GitHub repository setup
-   - CI/CD pipeline (GitHub Actions)
-   - Automated testing
-   - Release automation
+**Not planned**:
+- Backtracking engines (catastrophic backtracking risk)
+- PCRE/.NET regex flavors
+- Regex visualization
+- Code generation to native
 
 ---
 
-## 📖 Dependencies
+## Release History
 
-**Required**:
-- Go 1.25+
-- `golang.org/x/sys` (minimal) - CPU feature detection for SIMD
-
-**Development**:
-- golangci-lint (code quality)
-- GitHub Actions (CI/CD)
-
-**Testing**:
-- Go stdlib regexp (comparison testing)
-- Fuzz testing tools
-
-**No external runtime dependencies** - Pure Go except SIMD assembly
+| Version | Date | Type | Key Changes |
+|---------|------|------|-------------|
+| v0.3.0 | 2025-11-27 | Feature | Replace/Split, $0-$9 expansion |
+| v0.2.0 | 2025-11-27 | Feature | Capture groups |
+| v0.1.x | 2025-11-27 | Fixes | DFA cache, strategy selection, O(n²) |
+| v0.1.0 | 2025-01-26 | Initial | Multi-engine architecture |
 
 ---
 
-## 🔬 Development Approach
-
-**Performance First**:
-- Optimize hot paths (SIMD, zero allocations)
-- Benchmark-driven development
-- Compare with stdlib and other engines
-- Profile and measure everything
-
-**Testing Strategy**:
-- Unit tests for all components (77% coverage target)
-- Fuzz tests for parsers and matchers
-- Comparison tests vs stdlib regexp
-- Performance benchmarks
-- Race detector for thread safety
-- Target: >85% coverage by v1.0.0
-
-**Quality Assurance**:
-- golangci-lint with 34+ linters
-- Comprehensive CI/CD (Linux, macOS, Windows)
-- Pre-release check script
-- Code review process
-- Security audit before v1.0.0
-
----
-
-## ⛔ Out of Scope
-
-The following features are **not planned**:
-
-- ❌ **Backtracking engines** (catastrophic backtracking risk)
-- ❌ **Regex flavors** (PCRE, .NET, etc.) - Go flavor only
-- ❌ **Deprecated syntax** (obsolete regex features)
-- ❌ **Code generation** (compile to native code) - runtime only
-- ❌ **Regex visualization** (use external tools)
-
-These are outside the scope of a high-performance regex library focused on Go's regex syntax.
-
----
-
-## 📞 Support
-
-**Documentation**:
-- README.md - Project overview and quick start
-- CONTRIBUTING.md - Development guide
-- CHANGELOG.md - Release history
-- ROADMAP.md - This file
-- SECURITY.md - Security policy
-
-**Community**:
-- GitHub Issues - Bug reports and feature requests
-- GitHub Discussions - Questions and help
-- Repository: https://github.com/coregx/coregex
-
----
-
-## 🎉 Release History
-
-### v0.1.0 (2025-01-26) - Initial Release
-
-**What's New**:
-- ✅ Multi-engine architecture (NFA + Lazy DFA + Meta)
-- ✅ SIMD primitives (Memchr, Memmem, Teddy)
-- ✅ Literal extraction and prefiltering
-- ✅ Intelligent strategy selection
-- ✅ stdlib-compatible basic API
-- ✅ 77% test coverage, 48 examples
-- ✅ Production-quality code (0 linter issues on all 13 tasks!)
-- ✅ 5-50x performance potential
-
-**Known Limitations**:
-- ❌ No capture groups
-- ❌ No Replace/Split
-- ❌ API experimental (may change in v0.2+)
-
-**Development**: 1 day (8-10 hours) from zero to release-ready!
-
----
-
-*Current: v0.3.0 | Next: v0.4.0 (Named Captures, Look-around) | Target: v1.0.0*
+*Current: v0.3.0 | Next: v0.4.0 (Core Optimizations) | Target: v1.0.0*

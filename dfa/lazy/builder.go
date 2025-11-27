@@ -63,18 +63,26 @@ func (b *Builder) Build() (*DFA, error) {
 		}
 	}
 
+	// Create StartTable for caching start states by look-behind context
+	startTable := NewStartTable()
+
 	// Create DFA
 	dfa := &DFA{
-		nfa:       b.nfa,
-		cache:     cache,
-		config:    b.config,
-		prefilter: pf,
-		pikevm:    nfa.NewPikeVM(b.nfa),
-		stateByID: make(map[StateID]*State, b.config.MaxStates),
+		nfa:        b.nfa,
+		cache:      cache,
+		config:     b.config,
+		prefilter:  pf,
+		pikevm:     nfa.NewPikeVM(b.nfa),
+		stateByID:  make(map[StateID]*State, b.config.MaxStates),
+		startTable: startTable,
 	}
 
 	// Register start state in ID lookup map
 	dfa.registerState(startState)
+
+	// Cache the default start state (StartText, unanchored) in StartTable
+	// This is the most common start configuration
+	startTable.Set(StartText, false, startState.ID())
 
 	return dfa, nil
 }

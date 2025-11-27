@@ -167,6 +167,7 @@ linters:
       - path: dfa/lazy/.*\.go
         linters:
           - gocyclo      # DFA construction is complex
+          - cyclop       # DFA determinization complexity
           - gocognit     # Determinization complexity
           - nestif       # DFA logic has nested conditions
 
