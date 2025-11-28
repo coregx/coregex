@@ -1,0 +1,118 @@
+name: Benchmark Comparison
+
+# Benchmark Comparison Strategy:
+# - Runs only on PRs to main/develop (most impactful)
+# - Compares PR benchmarks with base branch using benchstat
+# - Posts results as PR comment (informational, not blocking)
+# - Uses 5 iterations for reasonable CI time vs statistical significance
+#
+# Note: GitHub Actions shared runners have ~10-20% variance.
+# Results are directional, not absolute. Major regressions (>30%) are reliable.
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  benchmark-compare:
+    name: Benchmark Comparison
+    runs-on: ubuntu-latest
+    # Don't run on draft PRs
+    if: github.event.pull_request.draft == false
+
+    steps:
+    - name: Checkout PR branch
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        path: pr
+
+    - name: Checkout base branch
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.base.sha }}
+        path: base
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+        cache: false  # Different directories, cache won't help
+
+    - name: Install benchstat
+      run: go install golang.org/x/perf/cmd/benchstat@latest
+
+    - name: Run base branch benchmarks
+      working-directory: base
+      run: |
+        echo "# Base branch benchmarks - ${{ github.event.pull_request.base.sha }}" > ../base-bench.txt
+        echo "# Generated: $(date -Iseconds)" >> ../base-bench.txt
+        echo "" >> ../base-bench.txt
+
+        # Run critical benchmarks (5 iterations for CI speed)
+        go test -bench=. -benchmem -count=5 -benchtime=50ms ./meta/... 2>/dev/null >> ../base-bench.txt || true
+        go test -bench=. -benchmem -count=5 -benchtime=50ms ./simd/... 2>/dev/null >> ../base-bench.txt || true
+        go test -bench=. -benchmem -count=5 -benchtime=50ms ./dfa/... 2>/dev/null >> ../base-bench.txt || true
+
+    - name: Run PR branch benchmarks
+      working-directory: pr
+      run: |
+        echo "# PR branch benchmarks - ${{ github.event.pull_request.head.sha }}" > ../pr-bench.txt
+        echo "# Generated: $(date -Iseconds)" >> ../pr-bench.txt
+        echo "" >> ../pr-bench.txt
+
+        # Run same benchmarks on PR
+        go test -bench=. -benchmem -count=5 -benchtime=50ms ./meta/... 2>/dev/null >> ../pr-bench.txt || true
+        go test -bench=. -benchmem -count=5 -benchtime=50ms ./simd/... 2>/dev/null >> ../pr-bench.txt || true
+        go test -bench=. -benchmem -count=5 -benchtime=50ms ./dfa/... 2>/dev/null >> ../pr-bench.txt || true
+
+    - name: Compare benchmarks
+      id: benchstat
+      run: |
+        echo "## Benchmark Comparison" > comparison.md
+        echo "" >> comparison.md
+        echo "Comparing \`${{ github.event.pull_request.base.ref }}\` (base) vs PR #${{ github.event.pull_request.number }}" >> comparison.md
+        echo "" >> comparison.md
+        echo "<details>" >> comparison.md
+        echo "<summary>Click to expand benchmark results</summary>" >> comparison.md
+        echo "" >> comparison.md
+        echo "\`\`\`" >> comparison.md
+        benchstat base-bench.txt pr-bench.txt >> comparison.md 2>&1 || echo "benchstat comparison failed" >> comparison.md
+        echo "\`\`\`" >> comparison.md
+        echo "" >> comparison.md
+        echo "</details>" >> comparison.md
+        echo "" >> comparison.md
+        echo "---" >> comparison.md
+        echo "" >> comparison.md
+        echo "**Legend:**" >> comparison.md
+        echo "- \`~\` = no significant change (within noise)" >> comparison.md
+        echo "- \`-X%\` = X% faster (improvement)" >> comparison.md
+        echo "- \`+X%\` = X% slower (regression)" >> comparison.md
+        echo "" >> comparison.md
+        echo "> **Note:** CI runners have ~10-20% variance. Only regressions >30% are reliably detected." >> comparison.md
+        echo "> For accurate benchmarks, run locally: \`./scripts/bench.sh --compare\`" >> comparison.md
+
+        # Store for comment
+        cat comparison.md
+
+    - name: Find existing comment
+      uses: peter-evans/find-comment@v3
+      id: fc
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        comment-author: 'github-actions[bot]'
+        body-includes: '## Benchmark Comparison'
+
+    - name: Create or update comment
+      uses: peter-evans/create-or-update-comment@v4
+      with:
+        comment-id: ${{ steps.fc.outputs.comment-id }}
+        issue-number: ${{ github.event.pull_request.number }}
+        body-path: comparison.md
+        edit-mode: replace

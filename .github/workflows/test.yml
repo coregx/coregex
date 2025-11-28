@@ -117,10 +117,13 @@ jobs:
         fi
         echo "All files are properly formatted ✓"
 
-  # Benchmarks (informational only)
+  # Benchmarks (informational only, runs on push)
+  # For PR benchmark comparison, see benchmarks.yml
   benchmarks:
-    name: Benchmarks
+    name: Benchmarks (Smoke Test)
     runs-on: ubuntu-latest
+    # Only run on push (not PRs - those use benchmarks.yml for comparison)
+    if: github.event_name == 'push'
     continue-on-error: true  # Don't fail CI on benchmark failures
 
     steps:
@@ -133,16 +136,13 @@ jobs:
         go-version: '1.25'
         cache: true
 
-    - name: Run benchmarks
+    - name: Run benchmark smoke test
       run: |
-        echo "=== SIMD Benchmarks ==="
-        go test -bench=BenchmarkMemchr -benchmem ./simd/ || true
-        go test -bench=BenchmarkMemmem -benchmem ./simd/ || true
-
+        echo "=== Quick Benchmark Smoke Test ==="
+        echo "For detailed comparison, see PR benchmark workflow"
         echo ""
-        echo "=== Prefilter Benchmarks ==="
-        go test -bench=Benchmark -benchmem ./prefilter/ || true
 
-        echo ""
-        echo "=== Meta Engine Benchmarks ==="
-        go test -bench=Benchmark -benchmem . || true
+        # Quick smoke test (1 iteration)
+        go test -bench=BenchmarkMemchr/AVX2_4096 -benchmem -count=1 ./simd/ || true
+        go test -bench=BenchmarkMemmem/AVX2_4096 -benchmem -count=1 ./simd/ || true
+        go test -bench=BenchmarkReverseSuffix -benchmem -count=1 ./meta/ || true
