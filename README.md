@@ -1,9 +1,9 @@
 # coregex - Production-Grade Regex Engine for Go
 
-> **Up to 263x faster than stdlib through multi-engine architecture and SIMD optimizations**
+> **3-1000x+ faster than stdlib through multi-engine architecture and SIMD optimizations**
 
 [![GitHub Release](https://img.shields.io/github/v/release/coregx/coregex?include_prereleases&style=flat-square&logo=github&color=blue)](https://github.com/coregx/coregex/releases/latest)
-[![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/coregx/coregex?style=flat-square&logo=go)](https://go.dev/dl/)
 [![Go Reference](https://pkg.go.dev/badge/github.com/coregx/coregex.svg)](https://pkg.go.dev/github.com/coregx/coregex)
 [![GitHub Actions](https://img.shields.io/github/actions/workflow/status/coregx/coregex/test.yml?branch=main&style=flat-square&logo=github-actions&label=CI)](https://github.com/coregx/coregex/actions)
 [![Go Report Card](https://goreportcard.com/badge/github.com/coregx/coregex?style=flat-square)](https://goreportcard.com/report/github.com/coregx/coregex)
@@ -13,7 +13,7 @@
 
 ---
 
-A **production-grade regex engine** for Go with dramatic performance improvements over the standard library. Inspired by Rust's regex crate, coregex uses a multi-engine architecture with SIMD-accelerated prefilters to achieve **up to 263x speedup** (especially on case-insensitive patterns).
+A **production-grade regex engine** for Go with dramatic performance improvements over the standard library. Inspired by Rust's regex crate, coregex uses a multi-engine architecture with SIMD-accelerated prefilters to achieve **3-1000x+ speedup** depending on pattern type (especially suffix patterns like `.*\.txt`).
 
 ## Features
 
@@ -165,8 +165,13 @@ func benchmarkSearch(pattern string, text []byte) {
 | Case-sensitive | 32KB | 9,715 ns | 8,367 ns | **1.2x faster** |
 | **Case-insensitive** | 1KB | 24,110 ns | **262 ns** | **92x faster** |
 | **Case-insensitive** | 32KB | 1,229,521 ns | **4,669 ns** | **263x faster** |
+| **`.*\.txt` IsMatch** | 32KB | 1.3 ms | **855 ns** | **1,549x faster** |
+| **`.*\.txt` IsMatch** | 1MB | 27 ms | **21 µs** | **1,314x faster** |
 
-**Key insight:** Case-insensitive patterns (`(?i)...`) are where coregex truly shines - stdlib uses backtracking which becomes very slow, while our DFA handles it with the same speed as case-sensitive patterns.
+**Key insights:**
+- **Suffix patterns** (`.*\.txt`) see the largest speedups (1000x+) through ReverseSuffix optimization
+- **Case-insensitive** patterns (`(?i)...`) are also excellent (100-263x) - stdlib backtracking is slow, our DFA is fast
+- **Simple patterns** see 1-5x improvement depending on literals
 
 See [benchmark/](benchmark/) for detailed comparisons.
 
@@ -182,7 +187,7 @@ See [benchmark/](benchmark/) for detailed comparisons.
 | **Meta-Engine**      | ✅     | DFA/NFA/ReverseAnchored orchestration |
 | **Lazy DFA**         | ✅     | On-demand state construction |
 | **Pike VM (NFA)**    | ✅     | Thompson's construction |
-| **Reverse Search**   | ✅     | **NEW in v0.4.0** - 78,000x speedup for `$` patterns |
+| **Reverse Search**   | ✅     | ReverseAnchored (v0.4.0) + **ReverseSuffix (v0.6.0)** |
 | **Unicode support**  | ✅     | Via `regexp/syntax` |
 | **Capture groups**   | ✅     | FindSubmatch, FindSubmatchIndex |
 | **Replace/Split**    | ✅     | ReplaceAll, ReplaceAllFunc, Split |
@@ -315,7 +320,8 @@ Contributions are welcome! This is an experimental project and we'd love your he
 **Priority areas:**
 - Look-around assertions
 - ARM NEON SIMD implementation
-- Advanced reverse strategies (ReverseSuffix, ReverseInner)
+- OnePass DFA for simple patterns
+- ReverseInner strategy for `prefix.*keyword.*suffix`
 - More comprehensive benchmarks
 
 ---
@@ -388,9 +394,10 @@ Contributions are welcome! This is an experimental project and we'd love your he
 **Key components:**
 1. **Meta-Engine** - Intelligent strategy selection based on pattern analysis
 2. **Prefilter System** - Fast rejection of non-matching candidates
-3. **Multi-Engine Execution** - DFA for speed, NFA for correctness, ReverseAnchored for `$` patterns
-4. **Reverse Search** - 78,000x faster for end-anchored patterns (v0.4.0)
-5. **SIMD Primitives** - 10-15x faster byte/substring search
+3. **Multi-Engine Execution** - DFA for speed, NFA for correctness
+4. **ReverseAnchored** - For `$` patterns (v0.4.0)
+5. **ReverseSuffix** - 1000x+ speedup for `.*\.txt` patterns (v0.6.0)
+6. **SIMD Primitives** - 10-15x faster byte/substring search
 
 See package documentation on [pkg.go.dev](https://pkg.go.dev/github.com/coregx/coregex) for API details.
 
@@ -432,15 +439,15 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Status**: ⚠️ **EXPERIMENTAL** - v0.5.0 released, API may change in 0.x versions
+**Status**: ⚠️ **EXPERIMENTAL** - v0.6.0 released, API may change in 0.x versions
 
-**Current Version**: v0.5.0 (2025-11-28)
+**Current Version**: v0.6.0 (2025-11-28)
 
 **Ready for:** Testing, benchmarking, feedback, and experimental use
 **Production readiness:** API stability expected in v1.0.0
 
-**Current Release:** v0.5.0 - Named captures with SubexpNames() API
-**Next Release:** v0.6.0 - Advanced reverse strategies (ReverseSuffix, ReverseInner)
+**Current Release:** v0.6.0 - ReverseSuffix optimization (1000x+ speedup for `.*\.txt` patterns)
+**Next Release:** v0.7.0 - OnePass DFA + ReverseInner strategy
 
 ---
 

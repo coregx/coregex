@@ -759,3 +759,181 @@ func (d *DFA) AlphabetLen() int {
 	}
 	return d.byteClasses.AlphabetLen()
 }
+
+// SearchReverse performs backward DFA search from end to start.
+// This is a zero-allocation implementation that reads bytes in reverse order
+// instead of physically reversing the byte slice.
+//
+// Used by ReverseSuffix and ReverseAnchored strategies for efficient
+// backward matching without memory allocation.
+//
+// Parameters:
+//   - haystack: the input to search
+//   - start: the start index (inclusive, search stops here)
+//   - end: the end index (exclusive, search starts from end-1)
+//
+// Returns the position where a match ends (scanning backward), or -1 if no match.
+// For reverse search, a "match" means the reverse DFA reached a match state,
+// which corresponds to finding the START of a match in the original direction.
+func (d *DFA) SearchReverse(haystack []byte, start, end int) int {
+	if end <= start || end > len(haystack) {
+		return -1
+	}
+
+	// Get start state for reverse search
+	// For reverse DFA, we start from what would be "end of match" in forward direction
+	currentState := d.getStartStateForReverse(haystack, end)
+	if currentState == nil {
+		return d.nfaFallbackReverse(haystack, start, end)
+	}
+
+	// Track last match position (in reverse, this is the START of match)
+	lastMatch := -1
+
+	// Check if start state is already a match (empty match case)
+	if currentState.IsMatch() {
+		lastMatch = end
+	}
+
+	// Scan BACKWARD from end-1 to start
+	for at := end - 1; at >= start; at-- {
+		b := haystack[at] // Direct access, no reversal needed!
+
+		// Get next state
+		nextID, ok := currentState.Transition(b)
+		switch {
+		case !ok:
+			// Determinize on demand
+			nextState, err := d.determinize(currentState, b)
+			if err != nil {
+				return d.nfaFallbackReverse(haystack, start, end)
+			}
+			if nextState == nil {
+				// Dead state - return last match if we had one
+				return lastMatch
+			}
+			currentState = nextState
+
+		case nextID == DeadState:
+			// Dead state - return last match if we had one
+			return lastMatch
+
+		default:
+			currentState = d.getState(nextID)
+			if currentState == nil {
+				return d.nfaFallbackReverse(haystack, start, end)
+			}
+		}
+
+		// Track match state
+		if currentState.IsMatch() {
+			lastMatch = at // Position where match starts (in forward direction)
+		}
+	}
+
+	return lastMatch
+}
+
+// IsMatchReverse performs backward DFA search and returns true if any match is found.
+// This is optimized for early termination - returns true as soon as any match state is reached.
+//
+// Zero-allocation implementation that reads bytes in reverse order.
+func (d *DFA) IsMatchReverse(haystack []byte, start, end int) bool {
+	if end <= start || end > len(haystack) {
+		return false
+	}
+
+	// Get start state for reverse search
+	currentState := d.getStartStateForReverse(haystack, end)
+	if currentState == nil {
+		_, _, matched := d.pikevm.Search(haystack[start:end])
+		return matched
+	}
+
+	// Check if start state is already a match
+	if currentState.IsMatch() {
+		return true
+	}
+
+	// Scan BACKWARD from end-1 to start with early termination
+	for at := end - 1; at >= start; at-- {
+		b := haystack[at]
+
+		nextID, ok := currentState.Transition(b)
+		switch {
+		case !ok:
+			nextState, err := d.determinize(currentState, b)
+			if err != nil {
+				_, _, matched := d.pikevm.Search(haystack[start:end])
+				return matched
+			}
+			if nextState == nil {
+				return false
+			}
+			currentState = nextState
+
+		case nextID == DeadState:
+			return false
+
+		default:
+			currentState = d.getState(nextID)
+			if currentState == nil {
+				_, _, matched := d.pikevm.Search(haystack[start:end])
+				return matched
+			}
+		}
+
+		// Early termination on any match
+		if currentState.IsMatch() {
+			return true
+		}
+	}
+
+	return false
+}
+
+// getStartStateForReverse returns the appropriate start state for reverse search.
+// For reverse search, we need to consider the context at the END of the search region.
+func (d *DFA) getStartStateForReverse(haystack []byte, end int) *State {
+	// For reverse search, the "start" is at the end of the region
+	// Use StartText kind if at end of haystack, otherwise determine from next byte
+	var kind StartKind
+	if end >= len(haystack) {
+		kind = StartText // End of input = "start of text" for reverse DFA
+	} else {
+		kind = d.startTable.GetKind(haystack[end])
+	}
+
+	// Check if already cached in StartTable (use anchored=false for reverse)
+	stateID := d.startTable.Get(kind, false)
+	if stateID != InvalidState {
+		return d.getState(stateID)
+	}
+
+	// Not cached - compute and store
+	builder := NewBuilder(d.nfa, d.config)
+	config := StartConfig{Kind: kind, Anchored: false}
+	state, key := ComputeStartState(builder, d.nfa, config)
+
+	insertedState, existed, err := d.cache.GetOrInsert(key, state)
+	if err != nil {
+		return state
+	}
+
+	if !existed {
+		d.registerState(insertedState)
+	}
+
+	d.startTable.Set(kind, false, insertedState.ID())
+	return insertedState
+}
+
+// nfaFallbackReverse handles NFA fallback for reverse search.
+func (d *DFA) nfaFallbackReverse(haystack []byte, start, end int) int {
+	// For reverse fallback, we need to search the region and find match start
+	matchStart, _, matched := d.pikevm.Search(haystack[start:end])
+	if !matched {
+		return -1
+	}
+	return start + matchStart
+}

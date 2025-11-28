@@ -65,13 +65,12 @@ func NewReverseAnchoredSearcher(forwardNFA *nfa.NFA, config lazy.Config) (*Rever
 // Find searches backward from end of haystack and returns the match.
 //
 // Algorithm:
-//  1. Reverse the haystack bytes
-//  2. Search using reverse DFA from position 0 (which corresponds to end of original haystack)
-//  3. If match found, use PikeVM to get exact bounds in reversed haystack
-//  4. Convert reverse positions back to forward positions
+//  1. Quick check with reverse DFA (zero-allocation backward scan)
+//  2. If DFA confirms match, reverse bytes for PikeVM to get exact bounds
+//  3. Convert reverse positions back to forward positions
 //
-// For a pattern ending with $, the reverse NFA is anchored at start (^), so the
-// reverse DFA will match from position 0 of reversed haystack = end of original.
+// For a pattern ending with $, the reverse NFA is anchored at start (^).
+// PikeVM on reverse NFA requires reversed bytes to find exact match bounds.
 //
 // Example:
 //
@@ -86,11 +85,14 @@ func (s *ReverseAnchoredSearcher) Find(haystack []byte) *Match {
 		return nil
 	}
 
-	// Reverse haystack for reverse search
-	reversed := reverseBytes(haystack)
+	// Quick check: use zero-allocation reverse DFA scan
+	if !s.reverseDFA.IsMatchReverse(haystack, 0, len(haystack)) {
+		return nil
+	}
 
-	// Use PikeVM to get exact match bounds in reversed haystack
-	// The reverse NFA is anchored at start (for $ in forward pattern)
+	// Match confirmed - need exact bounds from PikeVM
+	// PikeVM requires reversed bytes for reverse NFA
+	reversed := reverseBytes(haystack)
 	revStart, revEnd, matched := s.pikevm.Search(reversed)
 	if !matched {
 		return nil
@@ -110,28 +112,9 @@ func (s *ReverseAnchoredSearcher) Find(haystack []byte) *Match {
 	return NewMatch(start, end, haystack)
 }
 
-// IsMatch checks if the pattern matches at the end of haystack.
-//
-// This is optimized for boolean matching:
-//   - Uses DFA for fast rejection
-//   - No Match object allocation
-//   - Early termination
-func (s *ReverseAnchoredSearcher) IsMatch(haystack []byte) bool {
-	if len(haystack) == 0 {
-		return false
-	}
-
-	// Reverse haystack
-	reversed := reverseBytes(haystack)
-
-	// Use DFA for fast check
-	return s.reverseDFA.IsMatch(reversed)
-}
-
 // reverseBytes creates a reversed copy of the byte slice.
-//
-// Note: This allocates a new slice. For very large haystacks, we might want
-// to implement a zero-copy reverse iterator instead.
+// Only used by Find() for PikeVM, which requires reversed bytes.
+// IsMatch() uses zero-allocation IsMatchReverse() instead.
 func reverseBytes(b []byte) []byte {
 	n := len(b)
 	reversed := make([]byte, n)
@@ -139,4 +122,21 @@ func reverseBytes(b []byte) []byte {
 		reversed[i] = b[n-1-i]
 	}
 	return reversed
+}
+
+// IsMatch checks if the pattern matches at the end of haystack.
+//
+// This is optimized for boolean matching:
+//   - Uses reverse DFA for fast rejection
+//   - ZERO-ALLOCATION: backward scan without byte reversal
+//   - No Match object allocation
+//   - Early termination
+func (s *ReverseAnchoredSearcher) IsMatch(haystack []byte) bool {
+	if len(haystack) == 0 {
+		return false
+	}
+
+	// Use reverse DFA to scan backward from end to start
+	// ZERO-ALLOCATION: IsMatchReverse scans backward without byte reversal
+	return s.reverseDFA.IsMatchReverse(haystack, 0, len(haystack))
 }

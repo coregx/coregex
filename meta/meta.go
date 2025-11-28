@@ -35,13 +35,14 @@ import (
 //	    println(match.String()) // "foo123"
 //	}
 type Engine struct {
-	nfa             *nfa.NFA
-	dfa             *lazy.DFA
-	pikevm          *nfa.PikeVM
-	reverseSearcher *ReverseAnchoredSearcher
-	prefilter       prefilter.Prefilter
-	strategy        Strategy
-	config          Config
+	nfa                   *nfa.NFA
+	dfa                   *lazy.DFA
+	pikevm                *nfa.PikeVM
+	reverseSearcher       *ReverseAnchoredSearcher
+	reverseSuffixSearcher *ReverseSuffixSearcher
+	prefilter             prefilter.Prefilter
+	strategy              Strategy
+	config                Config
 
 	// Statistics (useful for debugging and tuning)
 	stats Stats
@@ -166,8 +167,9 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Build DFA if strategy requires it
 	var dfaEngine *lazy.DFA
 	var reverseSearcher *ReverseAnchoredSearcher
+	var reverseSuffixSearcher *ReverseSuffixSearcher
 
-	if strategy == UseDFA || strategy == UseBoth || strategy == UseReverseAnchored {
+	if strategy == UseDFA || strategy == UseBoth || strategy == UseReverseAnchored || strategy == UseReverseSuffix {
 		dfaConfig := lazy.Config{
 			MaxStates:            config.MaxDFAStates,
 			DeterminizationLimit: config.DeterminizationLimit,
@@ -178,6 +180,23 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 			reverseSearcher, err = NewReverseAnchoredSearcher(nfaEngine, dfaConfig)
 			if err != nil {
 				// Reverse DFA compilation failed: fall back to forward DFA
+				strategy = UseDFA
+			}
+		}
+
+		// For reverse suffix search, build reverse suffix searcher
+		if strategy == UseReverseSuffix {
+			// Extract suffix literals
+			extractor := literal.New(literal.ExtractorConfig{
+				MaxLiterals:   config.MaxLiterals,
+				MaxLiteralLen: 64,
+				MaxClassSize:  10,
+			})
+			suffixLiterals := extractor.ExtractSuffixes(re)
+
+			reverseSuffixSearcher, err = NewReverseSuffixSearcher(nfaEngine, suffixLiterals, dfaConfig)
+			if err != nil {
+				// ReverseSuffix compilation failed: fall back to forward DFA
 				strategy = UseDFA
 			}
 		}
@@ -194,14 +213,15 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	}
 
 	return &Engine{
-		nfa:             nfaEngine,
-		dfa:             dfaEngine,
-		pikevm:          pikevm,
-		reverseSearcher: reverseSearcher,
-		prefilter:       pf,
-		strategy:        strategy,
-		config:          config,
-		stats:           Stats{},
+		nfa:                   nfaEngine,
+		dfa:                   dfaEngine,
+		pikevm:                pikevm,
+		reverseSearcher:       reverseSearcher,
+		reverseSuffixSearcher: reverseSuffixSearcher,
+		prefilter:             pf,
+		strategy:              strategy,
+		config:                config,
+		stats:                 Stats{},
 	}, nil
 }
 
@@ -230,6 +250,8 @@ func (e *Engine) Find(haystack []byte) *Match {
 		return e.findAdaptive(haystack)
 	case UseReverseAnchored:
 		return e.findReverseAnchored(haystack)
+	case UseReverseSuffix:
+		return e.findReverseSuffix(haystack)
 	default:
 		return e.findNFA(haystack)
 	}
@@ -258,6 +280,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchAdaptive(haystack)
 	case UseReverseAnchored:
 		return e.isMatchReverseAnchored(haystack)
+	case UseReverseSuffix:
+		return e.isMatchReverseSuffix(haystack)
 	default:
 		return e.isMatchNFA(haystack)
 	}
@@ -427,6 +451,27 @@ func (e *Engine) isMatchReverseAnchored(haystack []byte) bool {
 
 	e.stats.DFASearches++
 	return e.reverseSearcher.IsMatch(haystack)
+}
+
+// findReverseSuffix searches using suffix literal prefilter + reverse DFA.
+func (e *Engine) findReverseSuffix(haystack []byte) *Match {
+	if e.reverseSuffixSearcher == nil {
+		// Fallback to NFA if reverse suffix searcher not available
+		return e.findNFA(haystack)
+	}
+
+	e.stats.DFASearches++
+	return e.reverseSuffixSearcher.Find(haystack)
+}
+
+// isMatchReverseSuffix checks for match using suffix prefilter + reverse DFA.
+func (e *Engine) isMatchReverseSuffix(haystack []byte) bool {
+	if e.reverseSuffixSearcher == nil {
+		return e.isMatchNFA(haystack)
+	}
+
+	e.stats.DFASearches++
+	return e.reverseSuffixSearcher.IsMatch(haystack)
 }
 
 // Strategy returns the execution strategy selected for this engine.

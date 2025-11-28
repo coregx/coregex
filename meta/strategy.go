@@ -46,6 +46,14 @@ const (
 	//   - Searches backward from end of haystack
 	//   - Converts O(n*m) to O(m) for end-anchored patterns
 	UseReverseAnchored
+
+	// UseReverseSuffix uses suffix literal prefilter + reverse DFA search.
+	// Selected for:
+	//   - Patterns with literal suffix (e.g., `.*\.txt`)
+	//   - NOT start-anchored (^)
+	//   - Has good suffix literal for prefiltering
+	//   - Speedup: 10-100x for patterns like `.*\.txt`
+	UseReverseSuffix
 )
 
 // String returns a human-readable representation of the Strategy.
@@ -59,6 +67,8 @@ func (s Strategy) String() string {
 		return "UseBoth"
 	case UseReverseAnchored:
 		return "UseReverseAnchored"
+	case UseReverseSuffix:
+		return "UseReverseSuffix"
 	default:
 		return "Unknown"
 	}
@@ -114,6 +124,58 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 			// Example: "pattern.*suffix$" on large haystack
 			// Forward: O(n*m) tries, Reverse: O(m) one try
 			return UseReverseAnchored
+		}
+	}
+
+	// Check for suffix literal optimization (second priority)
+	// Pattern must:
+	//   1. NOT be start-anchored (^ or \A)
+	//   2. NOT be end-anchored ($ or \z) - already handled above
+	//   3. Have good suffix literals for prefiltering
+	//   4. NOT have good prefix literals (prefer prefix search with UseDFA)
+	//   5. Have DFA enabled
+	// This converts O(n*m) to O(k*m) where k=suffix candidates
+	//
+	// IMPORTANT: Only use ReverseSuffix for patterns like `.*\.txt` where:
+	//   - Prefix is a wildcard (no good prefix literal)
+	//   - Suffix is a concrete literal
+	// For pure literals like "hello", use UseDFA with prefix prefilter (much faster).
+	//
+	// ZERO-ALLOCATION: Uses IsMatchReverse for backward scanning without byte reversal
+	if re != nil && config.EnableDFA && config.EnablePrefilter {
+		isStartAnchored := n.IsAlwaysAnchored()
+		isEndAnchored := nfa.IsPatternEndAnchored(re)
+
+		if !isStartAnchored && !isEndAnchored {
+			// First check if we have good PREFIX literals - if so, prefer UseDFA
+			hasGoodPrefixLiterals := false
+			if literals != nil && !literals.IsEmpty() {
+				lcp := literals.LongestCommonPrefix()
+				if len(lcp) >= config.MinLiteralLen {
+					hasGoodPrefixLiterals = true
+				}
+			}
+
+			// Only use ReverseSuffix if NO good prefix literals (i.e., prefix is wildcard)
+			if !hasGoodPrefixLiterals {
+				// Extract suffix literals
+				extractor := literal.New(literal.ExtractorConfig{
+					MaxLiterals:   config.MaxLiterals,
+					MaxLiteralLen: 64,
+					MaxClassSize:  10,
+				})
+				suffixLiterals := extractor.ExtractSuffixes(re)
+
+				// Check if we have good suffix literals
+				if suffixLiterals != nil && !suffixLiterals.IsEmpty() {
+					lcs := suffixLiterals.LongestCommonSuffix()
+					if len(lcs) >= config.MinLiteralLen {
+						// Good suffix literal available - use ReverseSuffix
+						// Example: ".*\.txt" with suffix ".txt"
+						return UseReverseSuffix
+					}
+				}
+			}
 		}
 	}
 
@@ -205,6 +267,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseReverseAnchored:
 		return "reverse search for end-anchored pattern (O(m) instead of O(n*m))"
+
+	case UseReverseSuffix:
+		return "suffix literal prefilter + reverse DFA (10-100x for patterns like .*\\.txt)"
 
 	default:
 		return "unknown strategy"

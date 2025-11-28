@@ -156,7 +156,7 @@ func TestSelectStrategy(t *testing.T) {
 			strategy := SelectStrategy(nfaEngine, re, literals, config)
 
 			// Verify it's one of the valid strategies
-			if strategy != UseNFA && strategy != UseDFA && strategy != UseBoth && strategy != UseReverseAnchored {
+			if strategy != UseNFA && strategy != UseDFA && strategy != UseBoth && strategy != UseReverseAnchored && strategy != UseReverseSuffix {
 				t.Errorf("invalid strategy: %v", strategy)
 			}
 
