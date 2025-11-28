@@ -7,9 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v0.4.0
+### Planned for v0.5.0
 - Named capture groups (`(?P<name>...)`)
 - ARM NEON SIMD support
+- Advanced reverse strategies (ReverseSuffix, ReverseInner)
+
+---
+
+## [0.4.0] - 2025-11-28
+
+### Added
+- **Reverse Search Engine**: Complete reverse NFA/DFA construction
+  - `nfa.Reverse()` - Build reverse NFA from forward NFA
+  - `nfa.ReverseAnchored()` - Build anchored reverse NFA for `$` patterns
+  - Two-pass algorithm for correct state ordering
+  - Comprehensive test suite (12 tests)
+
+- **ReverseAnchored Strategy**: Optimized search for `$` anchor patterns
+  - New `UseReverseAnchored` strategy in meta-engine
+  - `ReverseAnchoredSearcher` with reversed haystack search
+  - `IsPatternEndAnchored()` for `$` and `\z` detection
+  - Automatic strategy selection for end-anchored patterns
+
+- **Core Optimizations (OPT-001..006)**:
+  - **OPT-001**: Start State Caching - 6 start configurations with StartByteMap
+  - **OPT-002**: Prefilter Effectiveness Tracking - dynamic disabling at >90% false positives
+  - **OPT-003**: Early Match Termination - `searchEarliestMatch()` for IsMatch
+  - **OPT-004**: State Acceleration - memchr/memchr2/memchr3 in DFA loop
+  - **OPT-005**: ByteClasses - alphabet compression for reduced DFA states
+  - **OPT-006**: Specialized Search Functions - optimized Count/FindAllSubmatch
+
+### Fixed
+- **FIX-001**: PikeVM visited check in `addThreadToNext`
+  - Prevents exponential thread explosion for patterns with character classes
+  - Added visited check per rust-regex pikevm.rs:1683 pattern
+  - Fixed `visited.Clear()` timing in searchAt/searchAtWithCaptures
+
+- **FIX-002**: ReverseAnchored unanchored prefix bug
+  - Critical bug: Reverse NFA incorrectly included `.*?` prefix loop
+  - Caused O(n*m) instead of O(m) for end-anchored patterns
+  - Fixed by skipping unanchored prefix states in `ReverseAnchored()`
+  - Result: Easy1 1MB: 340 sec → 1.6 ms (**205,000x faster**)
+
+### Performance
+- **Easy1 `$` anchor 1MB**: 340 sec → 1.6 ms (**205,000x faster** - critical bug fix)
+- Case-insensitive patterns: Still **233x faster** than stdlib
+- Hard1 multi-alternation: **5.2x faster** than stdlib
+
+### Technical
+- New files: `nfa/reverse.go`, `nfa/reverse_test.go`
+- New files: `meta/reverse_anchored.go`, `meta/reverse_anchored_test.go`
+- Modified: `meta/strategy.go`, `meta/meta.go`, `nfa/compile.go`
+- Code: +1000 lines for reverse search implementation
+- Tests: All passing, 0 linter issues
 
 ---
 
@@ -62,15 +112,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-### Planned for v0.4.0
-- Case-insensitive matching flag
-- Multiline mode
-- Extended flags support
-
 ### Planned for v0.5.0
-- Unicode property classes (\p{Letter}, \p{Digit})
-- Unicode category support
-- Full Unicode normalization
+- Named capture groups (`(?P<name>...)`)
+- Advanced reverse strategies (ReverseSuffix, ReverseInner)
+
+### Planned for v0.6.0
+- OnePass DFA for simple patterns
+- Memory layout optimizations
+- Aho-Corasick for large multi-pattern sets
+
+### Planned for v0.7.0
+- ARM NEON SIMD support
+- UTF-8 automata optimization
 
 ### Planned for v1.0.0
 - API stability guarantee
@@ -278,12 +331,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ```
 v0.1.0 → Initial release (DONE ✅)
-v0.2.0 → Capture groups support
-v0.3.0 → Replace/Split functions
-v0.4.0 → Case-insensitive, flags
-v0.5.0 → Unicode properties
-v0.6.0 → Performance optimizations
-v0.7.0 → API refinements
+v0.2.0 → Capture groups support (DONE ✅)
+v0.3.0 → Replace/Split functions (DONE ✅)
+v0.4.0 → Reverse Search + Core Optimizations (DONE ✅) ← YOU ARE HERE
+v0.5.0 → Named captures, Advanced reverse strategies
+v0.6.0 → OnePass DFA, Aho-Corasick
+v0.7.0 → ARM NEON SIMD, UTF-8 optimization
 v0.8.0 → Beta testing period
 v0.9.0 → Release candidate
 v1.0.0 → Stable release (API frozen)

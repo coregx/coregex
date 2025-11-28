@@ -341,12 +341,15 @@ func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithC
 		}
 
 		b := haystack[pos]
+
+		// Clear visited BEFORE step loop for next-gen state tracking
+		p.visited.Clear()
+
 		for _, t := range p.queue {
 			p.step(t, b, haystack, pos+1)
 		}
 
 		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
-		p.visited.Clear()
 	}
 
 	if lastMatchPos != -1 {
@@ -454,6 +457,11 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 		// Get current byte
 		b := haystack[pos]
 
+		// Clear visited BEFORE step loop so addThreadToNext can track next-gen states
+		// This is critical: visited was used by addThread for current gen,
+		// we need fresh tracking for next gen to allow +/* quantifiers to work
+		p.visited.Clear()
+
 		// Process all active threads
 		for _, t := range p.queue {
 			p.step(t, b, haystack, pos+1)
@@ -461,7 +469,6 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 
 		// Swap queues for next iteration
 		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
-		p.visited.Clear()
 	}
 
 	// Return the last (longest) match found
@@ -557,6 +564,15 @@ func (p *PikeVM) step(t thread, b byte, haystack []byte, nextPos int) {
 //
 //nolint:unparam // haystack parameter reserved for future use
 func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
+	// CRITICAL: Check if we've already visited this state in this generation
+	// Without this check, patterns with multiple character classes like
+	// A[AB]B[BC]C[CD]... can cause exponential thread explosion (2^N duplicates)
+	// Reference: rust-regex pikevm.rs line 1683: "if !next.set.insert(sid) { return; }"
+	if p.visited.Contains(uint32(t.state)) {
+		return
+	}
+	p.visited.Insert(uint32(t.state))
+
 	state := p.nfa.State(t.state)
 	if state == nil {
 		return

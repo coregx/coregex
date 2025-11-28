@@ -146,17 +146,17 @@ func TestSelectStrategy(t *testing.T) {
 
 			// Extract literals
 			var literals *literal.Seq
+			re, _ := syntax.Parse(tt.pattern, syntax.Perl)
 			if tt.hasLits {
-				re, _ := syntax.Parse(tt.pattern, syntax.Perl)
 				extractor := literal.New(literal.DefaultConfig())
 				literals = extractor.ExtractPrefixes(re)
 			}
 
 			// Select strategy
-			strategy := SelectStrategy(nfaEngine, literals, config)
+			strategy := SelectStrategy(nfaEngine, re, literals, config)
 
 			// Verify it's one of the valid strategies
-			if strategy != UseNFA && strategy != UseDFA && strategy != UseBoth {
+			if strategy != UseNFA && strategy != UseDFA && strategy != UseBoth && strategy != UseReverseAnchored {
 				t.Errorf("invalid strategy: %v", strategy)
 			}
 
@@ -181,7 +181,9 @@ func TestStrategyDisabledDFA(t *testing.T) {
 		t.Fatalf("failed to compile NFA: %v", err)
 	}
 
-	strategy := SelectStrategy(nfaEngine, nil, config)
+	// Parse pattern for anchor detection
+	re, _ := syntax.Parse("(foo|bar)", syntax.Perl)
+	strategy := SelectStrategy(nfaEngine, re, nil, config)
 	if strategy != UseNFA {
 		t.Errorf("expected UseNFA when DFA disabled, got %v", strategy)
 	}

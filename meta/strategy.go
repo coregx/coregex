@@ -1,6 +1,8 @@
 package meta
 
 import (
+	"regexp/syntax"
+
 	"github.com/coregx/coregex/literal"
 	"github.com/coregx/coregex/nfa"
 )
@@ -36,6 +38,14 @@ const (
 	//   - Patterns with some literals but complex structure
 	//   - Default when pattern characteristics are unclear
 	UseBoth
+
+	// UseReverseAnchored uses reverse DFA search for patterns anchored at end.
+	// Selected for:
+	//   - Patterns with $ or \z anchor (end of text)
+	//   - NOT also anchored at start (^)
+	//   - Searches backward from end of haystack
+	//   - Converts O(n*m) to O(m) for end-anchored patterns
+	UseReverseAnchored
 )
 
 // String returns a human-readable representation of the Strategy.
@@ -47,6 +57,8 @@ func (s Strategy) String() string {
 		return "UseDFA"
 	case UseBoth:
 		return "UseBoth"
+	case UseReverseAnchored:
+		return "UseReverseAnchored"
 	default:
 		return "Unknown"
 	}
@@ -55,11 +67,12 @@ func (s Strategy) String() string {
 // SelectStrategy analyzes the NFA and literals to choose the best execution strategy.
 //
 // Algorithm:
-//  1. If DFA disabled in config → UseNFA
-//  2. If NFA is tiny (< 20 states) → UseNFA (DFA overhead not worth it)
-//  3. If good literals exist → UseDFA (prefilter + DFA is fastest)
-//  4. If NFA is large (> 100 states) → UseDFA (essential for performance)
-//  5. Otherwise → UseBoth (adaptive)
+//  1. If end-anchored ($ or \z) and not start-anchored → UseReverseAnchored
+//  2. If DFA disabled in config → UseNFA
+//  3. If NFA is tiny (< 20 states) → UseNFA (DFA overhead not worth it)
+//  4. If good literals exist → UseDFA (prefilter + DFA is fastest)
+//  5. If NFA is large (> 100 states) → UseDFA (essential for performance)
+//  6. Otherwise → UseBoth (adaptive)
 //
 // "Good literals" means:
 //   - At least one literal exists
@@ -67,22 +80,43 @@ func (s Strategy) String() string {
 //   - This enables effective prefiltering
 //
 // Parameters:
-//   - nfa: the compiled NFA to analyze
+//   - n: the compiled NFA to analyze
+//   - re: the parsed regexp (for anchor detection, can be nil)
 //   - literals: extracted prefix literals (can be nil)
 //   - config: meta-engine configuration
 //
 // Example:
 //
-//	strategy := meta.SelectStrategy(nfa, literals, config)
+//	strategy := meta.SelectStrategy(nfa, re, literals, config)
 //	switch strategy {
 //	case meta.UseNFA:
 //	    // Use PikeVM only
 //	case meta.UseDFA:
 //	    // Use Lazy DFA
+//	case meta.UseReverseAnchored:
+//	    // Use reverse search
 //	case meta.UseBoth:
 //	    // Adaptive
 //	}
-func SelectStrategy(n *nfa.NFA, literals *literal.Seq, config Config) Strategy {
+func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config Config) Strategy {
+	// Check for end-anchored patterns (highest priority optimization)
+	// Pattern must:
+	//   1. Be anchored at end ($ or \z)
+	//   2. NOT be anchored at start (^ or \A)
+	//   3. Have DFA enabled
+	// This converts O(n*m) forward search to O(m) reverse search
+	if re != nil && config.EnableDFA {
+		isEndAnchored := nfa.IsPatternEndAnchored(re)
+		isStartAnchored := n.IsAlwaysAnchored()
+
+		if isEndAnchored && !isStartAnchored {
+			// Perfect candidate for reverse search
+			// Example: "pattern.*suffix$" on large haystack
+			// Forward: O(n*m) tries, Reverse: O(m) one try
+			return UseReverseAnchored
+		}
+	}
+
 	// If DFA disabled, always use NFA
 	if !config.EnableDFA {
 		return UseNFA
@@ -168,6 +202,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseBoth:
 		return "adaptive strategy (medium complexity pattern)"
+
+	case UseReverseAnchored:
+		return "reverse search for end-anchored pattern (O(m) instead of O(n*m))"
 
 	default:
 		return "unknown strategy"

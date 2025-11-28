@@ -711,3 +711,40 @@ func (c *Compiler) isPatternAnchored(re *syntax.Regexp) bool {
 	}
 	return false
 }
+
+// IsPatternEndAnchored checks if a pattern is inherently anchored at end (ends with $ or \z).
+//
+// A pattern is end-anchored if it ends with:
+//   - OpEndLine ($)
+//   - OpEndText (\z)
+//   - A Concat that ends with an end anchor
+//
+// This is used to select the ReverseAnchored strategy which searches backward
+// from the end of haystack for O(m) instead of O(n*m) performance.
+func IsPatternEndAnchored(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpEndLine, syntax.OpEndText:
+		return true
+	case syntax.OpConcat:
+		if len(re.Sub) > 0 {
+			// Check the last sub-expression
+			return IsPatternEndAnchored(re.Sub[len(re.Sub)-1])
+		}
+	case syntax.OpCapture:
+		if len(re.Sub) > 0 {
+			return IsPatternEndAnchored(re.Sub[0])
+		}
+	case syntax.OpAlternate:
+		// All alternatives must be end-anchored
+		if len(re.Sub) == 0 {
+			return false
+		}
+		for _, sub := range re.Sub {
+			if !IsPatternEndAnchored(sub) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}

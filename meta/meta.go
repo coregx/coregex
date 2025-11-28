@@ -35,12 +35,13 @@ import (
 //	    println(match.String()) // "foo123"
 //	}
 type Engine struct {
-	nfa       *nfa.NFA
-	dfa       *lazy.DFA
-	pikevm    *nfa.PikeVM
-	prefilter prefilter.Prefilter
-	strategy  Strategy
-	config    Config
+	nfa             *nfa.NFA
+	dfa             *lazy.DFA
+	pikevm          *nfa.PikeVM
+	reverseSearcher *ReverseAnchoredSearcher
+	prefilter       prefilter.Prefilter
+	strategy        Strategy
+	config          Config
 
 	// Statistics (useful for debugging and tuning)
 	stats Stats
@@ -156,36 +157,51 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		}
 	}
 
-	// Select strategy
-	strategy := SelectStrategy(nfaEngine, literals, config)
+	// Select strategy (pass re for anchor detection)
+	strategy := SelectStrategy(nfaEngine, re, literals, config)
 
 	// Build PikeVM (always needed for fallback)
 	pikevm := nfa.NewPikeVM(nfaEngine)
 
 	// Build DFA if strategy requires it
 	var dfaEngine *lazy.DFA
-	if strategy == UseDFA || strategy == UseBoth {
+	var reverseSearcher *ReverseAnchoredSearcher
+
+	if strategy == UseDFA || strategy == UseBoth || strategy == UseReverseAnchored {
 		dfaConfig := lazy.Config{
 			MaxStates:            config.MaxDFAStates,
 			DeterminizationLimit: config.DeterminizationLimit,
 		}
 
-		// Pass prefilter to DFA for start-state skip optimization
-		dfaEngine, err = lazy.CompileWithPrefilter(nfaEngine, dfaConfig, pf)
-		if err != nil {
-			// DFA compilation failed: fall back to NFA-only
-			strategy = UseNFA
+		// For reverse search, build reverse searcher
+		if strategy == UseReverseAnchored {
+			reverseSearcher, err = NewReverseAnchoredSearcher(nfaEngine, dfaConfig)
+			if err != nil {
+				// Reverse DFA compilation failed: fall back to forward DFA
+				strategy = UseDFA
+			}
+		}
+
+		// Build forward DFA for non-reverse strategies
+		if strategy == UseDFA || strategy == UseBoth {
+			// Pass prefilter to DFA for start-state skip optimization
+			dfaEngine, err = lazy.CompileWithPrefilter(nfaEngine, dfaConfig, pf)
+			if err != nil {
+				// DFA compilation failed: fall back to NFA-only
+				strategy = UseNFA
+			}
 		}
 	}
 
 	return &Engine{
-		nfa:       nfaEngine,
-		dfa:       dfaEngine,
-		pikevm:    pikevm,
-		prefilter: pf,
-		strategy:  strategy,
-		config:    config,
-		stats:     Stats{},
+		nfa:             nfaEngine,
+		dfa:             dfaEngine,
+		pikevm:          pikevm,
+		reverseSearcher: reverseSearcher,
+		prefilter:       pf,
+		strategy:        strategy,
+		config:          config,
+		stats:           Stats{},
 	}, nil
 }
 
@@ -212,6 +228,8 @@ func (e *Engine) Find(haystack []byte) *Match {
 		return e.findDFA(haystack)
 	case UseBoth:
 		return e.findAdaptive(haystack)
+	case UseReverseAnchored:
+		return e.findReverseAnchored(haystack)
 	default:
 		return e.findNFA(haystack)
 	}
@@ -238,6 +256,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchDFA(haystack)
 	case UseBoth:
 		return e.isMatchAdaptive(haystack)
+	case UseReverseAnchored:
+		return e.isMatchReverseAnchored(haystack)
 	default:
 		return e.isMatchNFA(haystack)
 	}
@@ -379,6 +399,27 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 
 	// Fall back to NFA
 	return e.findNFA(haystack)
+}
+
+// findReverseAnchored searches using reverse DFA for end-anchored patterns.
+func (e *Engine) findReverseAnchored(haystack []byte) *Match {
+	if e.reverseSearcher == nil {
+		// Fallback to NFA if reverse searcher not available
+		return e.findNFA(haystack)
+	}
+
+	e.stats.DFASearches++
+	return e.reverseSearcher.Find(haystack)
+}
+
+// isMatchReverseAnchored checks for match using reverse DFA.
+func (e *Engine) isMatchReverseAnchored(haystack []byte) bool {
+	if e.reverseSearcher == nil {
+		return e.isMatchNFA(haystack)
+	}
+
+	e.stats.DFASearches++
+	return e.reverseSearcher.IsMatch(haystack)
 }
 
 // Strategy returns the execution strategy selected for this engine.

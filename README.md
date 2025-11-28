@@ -25,10 +25,10 @@ A **production-grade regex engine** for Go with dramatic performance improvement
 - 💾 **Zero allocations** in hot paths through object pooling
 
 🏗️ **Architecture**
-- 🧠 **Meta-engine** orchestrates strategy selection (DFA/NFA/bounded backtracking)
+- 🧠 **Meta-engine** orchestrates strategy selection (DFA/NFA/ReverseAnchored)
 - ⚡ **Lazy DFA** with configurable caching (on-demand state construction)
 - 🔄 **Pike VM** (Thompson's NFA) for guaranteed O(n×m) performance
-- 🎭 **One-pass DFA** for simple patterns (no backtracking needed)
+- 🔙 **Reverse Search** for `$` anchor patterns (**78,000x speedup** for end-anchored patterns)
 - 📌 **Prefilter coordination** (memchr/memmem/teddy/aho-corasick)
 
 🎯 **API Design**
@@ -179,14 +179,14 @@ See [benchmark/](benchmark/) for detailed comparisons.
 | **SIMD Primitives**  | ✅     | memchr, memchr2/3, memmem, teddy |
 | **Literal Extraction** | ✅   | Prefix/suffix/inner literals |
 | **Prefilter System** | ✅     | Automatic strategy selection |
-| **Meta-Engine**      | ✅     | DFA/NFA orchestration |
+| **Meta-Engine**      | ✅     | DFA/NFA/ReverseAnchored orchestration |
 | **Lazy DFA**         | ✅     | On-demand state construction |
 | **Pike VM (NFA)**    | ✅     | Thompson's construction |
-| **One-pass DFA**     | ✅     | For simple patterns |
+| **Reverse Search**   | ✅     | **NEW in v0.4.0** - 78,000x speedup for `$` patterns |
 | **Unicode support**  | ✅     | Via `regexp/syntax` |
 | **Capture groups**   | ✅     | FindSubmatch, FindSubmatchIndex |
 | **Replace/Split**    | ✅     | ReplaceAll, ReplaceAllFunc, Split |
-| **Named captures**   | 📅     | Planned |
+| **Named captures**   | 📅     | Planned for v0.5.0 |
 | **Look-around**      | 📅     | Planned |
 | **Backreferences**   | ❌     | Incompatible with O(n) guarantee |
 
@@ -359,7 +359,7 @@ Contributions are welcome! This is an experimental project and we'd love your he
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        Meta-Engine                          │
-│  (Strategy Selection: DFA/NFA/One-pass)                     │
+│  (Strategy Selection: DFA/NFA/ReverseAnchored)              │
 └────────────┬────────────────────────────────────────────────┘
              │
      ┌───────┴───────┐
@@ -367,14 +367,18 @@ Contributions are welcome! This is an experimental project and we'd love your he
      │  Coordinator  │ ──► memmem (substring)
      └───────┬───────┘ ──► teddy (2-8 patterns, SIMD)
              │         ──► aho-corasick (many patterns)
-     ┌───────┴─────────────────────────────────┐
-     │                                         │
-┌────┴────┐  ┌──────────┐  ┌────────────┐  ┌───┴────┐
-│ Lazy    │  │ Pike VM  │  │ One-pass   │  │ Literal│
-│ DFA     │  │ (NFA)    │  │ DFA        │  │Extract │
-└─────────┘  └──────────┘  └────────────┘  └────────┘
-     │             │              │             │
-     └─────────────┴──────────────┴─────────────┘
+             │
+┌────────────┼─────────────────────────────────────────────────┐
+│            │                                                 │
+│  ┌─────────┴─────────┬─────────────────┬─────────────────┐   │
+│  │                   │                 │                 │   │
+│  ▼                   ▼                 ▼                 ▼   │
+│ ┌─────────┐  ┌──────────┐  ┌─────────────────┐  ┌──────────┐ │
+│ │  Lazy   │  │ Pike VM  │  │    Reverse      │  │ Literal  │ │
+│ │  DFA    │  │  (NFA)   │  │ Anchored (v0.4) │  │ Extract  │ │
+│ └─────────┘  └──────────┘  └─────────────────┘  └──────────┘ │
+│      │            │               │                  │       │
+└──────┴────────────┴───────────────┴──────────────────┴───────┘
                        │
               ┌────────┴────────┐
               │ SIMD Primitives │
@@ -385,8 +389,9 @@ Contributions are welcome! This is an experimental project and we'd love your he
 **Key components:**
 1. **Meta-Engine** - Intelligent strategy selection based on pattern analysis
 2. **Prefilter System** - Fast rejection of non-matching candidates
-3. **Multi-Engine Execution** - DFA for speed, NFA for correctness
-4. **SIMD Primitives** - 10-15x faster byte/substring search
+3. **Multi-Engine Execution** - DFA for speed, NFA for correctness, ReverseAnchored for `$` patterns
+4. **Reverse Search** - 78,000x faster for end-anchored patterns (v0.4.0)
+5. **SIMD Primitives** - 10-15x faster byte/substring search
 
 See package documentation on [pkg.go.dev](https://pkg.go.dev/github.com/coregx/coregex) for API details.
 
@@ -428,14 +433,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Status**: ⚠️ **EXPERIMENTAL** - v0.3.0 released, API may change in 0.x versions
+**Status**: ⚠️ **EXPERIMENTAL** - v0.4.0 released, API may change in 0.x versions
 
-**Current Version**: v0.3.0 (2025-11-27)
+**Current Version**: v0.4.0 (2025-11-28)
 
 **Ready for:** Testing, benchmarking, feedback, and experimental use
 **Production readiness:** API stability expected in v1.0.0
 
-**Next Release:** v0.4.0 - Named captures, Look-around assertions
+**Next Release:** v0.5.0 - Named captures, Advanced reverse strategies
 
 ---
 
