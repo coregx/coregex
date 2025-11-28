@@ -796,3 +796,124 @@ func (r *Regex) Split(s string, n int) []string {
 	result = append(result, s[lastEnd:])
 	return result
 }
+
+// Count returns the number of non-overlapping matches of the pattern in b.
+// If n > 0, counts at most n matches. If n <= 0, counts all matches.
+//
+// This is optimized for counting without building result slices.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	count := re.Count([]byte("1 2 3 4 5"), -1)
+//	// count == 5
+func (r *Regex) Count(b []byte, n int) int {
+	return r.engine.Count(b, n)
+}
+
+// CountString returns the number of non-overlapping matches of the pattern in s.
+// If n > 0, counts at most n matches. If n <= 0, counts all matches.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	count := re.CountString("1 2 3 4 5", -1)
+//	// count == 5
+func (r *Regex) CountString(s string, n int) int {
+	return r.Count([]byte(s), n)
+}
+
+// FindAllSubmatch returns a slice of all successive matches of the pattern in b,
+// where each match includes all capture groups.
+// If n > 0, returns at most n matches. If n <= 0, returns all matches.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+//	matches := re.FindAllSubmatch([]byte("a@b.c x@y.z"), -1)
+//	// len(matches) == 2
+//	// matches[0][0] = "a@b.c"
+//	// matches[0][1] = "a"
+func (r *Regex) FindAllSubmatch(b []byte, n int) [][][]byte {
+	matches := r.engine.FindAllSubmatch(b, n)
+	if matches == nil {
+		return nil
+	}
+
+	result := make([][][]byte, len(matches))
+	for i, m := range matches {
+		result[i] = m.AllGroups()
+	}
+	return result
+}
+
+// FindAllStringSubmatch returns a slice of all successive matches of the pattern in s,
+// where each match includes all capture groups as strings.
+// If n > 0, returns at most n matches. If n <= 0, returns all matches.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+//	matches := re.FindAllStringSubmatch("a@b.c x@y.z", -1)
+//	// len(matches) == 2
+//	// matches[0][0] = "a@b.c"
+//	// matches[0][1] = "a"
+func (r *Regex) FindAllStringSubmatch(s string, n int) [][]string {
+	matches := r.engine.FindAllSubmatch([]byte(s), n)
+	if matches == nil {
+		return nil
+	}
+
+	result := make([][]string, len(matches))
+	for i, m := range matches {
+		result[i] = m.AllGroupStrings()
+	}
+	return result
+}
+
+// FindAllSubmatchIndex returns a slice of all successive matches of the pattern in b,
+// where each match includes index pairs for all capture groups.
+// If n > 0, returns at most n matches. If n <= 0, returns all matches.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+//	indices := re.FindAllSubmatchIndex([]byte("a@b.c x@y.z"), -1)
+//	// len(indices) == 2
+//	// indices[0] contains start/end pairs for each group
+func (r *Regex) FindAllSubmatchIndex(b []byte, n int) [][]int {
+	matches := r.engine.FindAllSubmatch(b, n)
+	if matches == nil {
+		return nil
+	}
+
+	result := make([][]int, len(matches))
+	for i, m := range matches {
+		numGroups := m.NumCaptures()
+		indices := make([]int, numGroups*2)
+		for j := 0; j < numGroups; j++ {
+			idx := m.GroupIndex(j)
+			if len(idx) >= 2 {
+				indices[j*2] = idx[0]
+				indices[j*2+1] = idx[1]
+			} else {
+				indices[j*2] = -1
+				indices[j*2+1] = -1
+			}
+		}
+		result[i] = indices
+	}
+	return result
+}
+
+// FindAllStringSubmatchIndex returns a slice of all successive matches of the pattern in s,
+// where each match includes index pairs for all capture groups.
+// If n > 0, returns at most n matches. If n <= 0, returns all matches.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
+//	indices := re.FindAllStringSubmatchIndex("a@b.c x@y.z", -1)
+func (r *Regex) FindAllStringSubmatchIndex(s string, n int) [][]int {
+	return r.FindAllSubmatchIndex([]byte(s), n)
+}

@@ -373,3 +373,106 @@ func BenchmarkFindAll(b *testing.B) {
 		}
 	}
 }
+
+// TestCount tests counting matches
+func TestCount(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+		n       int
+		want    int
+	}{
+		{"all digits", `\d`, "1 2 3 4 5", -1, 5},
+		{"limited", `\d`, "1 2 3 4 5", 3, 3},
+		{"no match", `\d`, "abc", -1, 0},
+		{"words", `\w+`, "hello world foo", -1, 3},
+		{"zero limit", `\d`, "123", 0, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+			got := re.Count([]byte(tt.input), tt.n)
+			if got != tt.want {
+				t.Errorf("Count() = %d, want %d", got, tt.want)
+			}
+
+			// Also test CountString
+			gotStr := re.CountString(tt.input, tt.n)
+			if gotStr != tt.want {
+				t.Errorf("CountString() = %d, want %d", gotStr, tt.want)
+			}
+		})
+	}
+}
+
+// TestFindAllSubmatch tests finding all matches with capture groups
+func TestFindAllSubmatch(t *testing.T) {
+	re := MustCompile(`(\w+)=(\d+)`)
+	input := []byte("a=1 b=2 c=3")
+
+	matches := re.FindAllSubmatch(input, -1)
+	if len(matches) != 3 {
+		t.Fatalf("expected 3 matches, got %d", len(matches))
+	}
+
+	// Check first match
+	if string(matches[0][0]) != "a=1" {
+		t.Errorf("match[0][0] = %q, want %q", string(matches[0][0]), "a=1")
+	}
+	if string(matches[0][1]) != "a" {
+		t.Errorf("match[0][1] = %q, want %q", string(matches[0][1]), "a")
+	}
+	if string(matches[0][2]) != "1" {
+		t.Errorf("match[0][2] = %q, want %q", string(matches[0][2]), "1")
+	}
+
+	// Check second match
+	if string(matches[1][0]) != "b=2" {
+		t.Errorf("match[1][0] = %q, want %q", string(matches[1][0]), "b=2")
+	}
+}
+
+// TestFindAllStringSubmatch tests finding all string matches with capture groups
+func TestFindAllStringSubmatch(t *testing.T) {
+	re := MustCompile(`(\w+)@(\w+)`)
+	input := "a@b c@d"
+
+	matches := re.FindAllStringSubmatch(input, -1)
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches, got %d", len(matches))
+	}
+
+	// Check first match
+	if matches[0][0] != "a@b" {
+		t.Errorf("match[0][0] = %q, want %q", matches[0][0], "a@b")
+	}
+	if matches[0][1] != "a" {
+		t.Errorf("match[0][1] = %q, want %q", matches[0][1], "a")
+	}
+
+	// Check second match
+	if matches[1][0] != "c@d" {
+		t.Errorf("match[1][0] = %q, want %q", matches[1][0], "c@d")
+	}
+}
+
+// TestFindAllSubmatchIndex tests index pairs for all matches with captures
+func TestFindAllSubmatchIndex(t *testing.T) {
+	re := MustCompile(`(\w+)=(\d+)`)
+	input := []byte("a=1 b=2")
+
+	indices := re.FindAllSubmatchIndex(input, -1)
+	if len(indices) != 2 {
+		t.Fatalf("expected 2 index slices, got %d", len(indices))
+	}
+
+	// First match "a=1" at position 0-3
+	// Group 0 (entire): 0-3
+	// Group 1 (a): 0-1
+	// Group 2 (1): 2-3
+	if indices[0][0] != 0 || indices[0][1] != 3 {
+		t.Errorf("indices[0][0:2] = [%d, %d], want [0, 3]", indices[0][0], indices[0][1])
+	}
+}
