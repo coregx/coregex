@@ -47,6 +47,7 @@ import (
 //   - An optional prefilter for fast candidate finding
 //   - A PikeVM for NFA fallback
 //   - A StartTable for caching start states by look-behind context
+//   - ByteClasses for alphabet reduction (used by advanced optimizations)
 //
 // Thread safety: Not thread-safe. Each goroutine should use its own DFA instance.
 // The underlying NFA can be shared (it's immutable), but the DFA's cache and
@@ -66,6 +67,11 @@ type DFA struct {
 	// This enables correct handling of assertions (^, \b, etc.) and
 	// avoids recomputing epsilon closures on every search
 	startTable *StartTable
+
+	// byteClasses maps bytes to equivalence classes for alphabet reduction.
+	// Bytes in the same class have identical transitions in all DFA states.
+	// This enables memory optimization from 256 to ~8-16 transitions per state.
+	byteClasses *nfa.ByteClasses
 }
 
 // Find returns the index of the first match in the haystack, or -1 if no match.
@@ -734,4 +740,22 @@ func (d *DFA) ResetCache() {
 
 	// Cache the default start state in StartTable
 	d.startTable.Set(StartText, false, startState.ID())
+}
+
+// ByteClasses returns the byte equivalence classes for this DFA.
+// Bytes in the same class have identical transitions in all DFA states.
+// This can be used for memory optimization (256 → ~8-16 classes).
+//
+// Returns nil if ByteClasses are not available (e.g., NFA without byte classes).
+func (d *DFA) ByteClasses() *nfa.ByteClasses {
+	return d.byteClasses
+}
+
+// AlphabetLen returns the number of equivalence classes in the alphabet.
+// Returns 256 if ByteClasses are not available (no alphabet reduction).
+func (d *DFA) AlphabetLen() int {
+	if d.byteClasses == nil {
+		return 256
+	}
+	return d.byteClasses.AlphabetLen()
 }

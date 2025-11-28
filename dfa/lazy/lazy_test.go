@@ -436,3 +436,114 @@ func BenchmarkLazyDFARepetition(t *testing.B) {
 		_ = dfa.Find(input)
 	}
 }
+
+// TestByteClassesIntegration tests that ByteClasses are correctly propagated
+// from NFA compilation through DFA and are available for alphabet reduction.
+func TestByteClassesIntegration(t *testing.T) {
+	tests := []struct {
+		pattern       string
+		name          string
+		minClasses    int
+		maxClasses    int
+		sameClassLo   byte
+		sameClassHi   byte
+		diffClassByte byte
+	}{
+		{
+			pattern:       "[a-z]+",
+			name:          "lowercase letters",
+			minClasses:    3, // before a, a-z, after z
+			maxClasses:    5,
+			sameClassLo:   'a',
+			sameClassHi:   'z',
+			diffClassByte: '0',
+		},
+		{
+			pattern:       "[0-9]+",
+			name:          "digits",
+			minClasses:    3, // before 0, 0-9, after 9
+			maxClasses:    5,
+			sameClassLo:   '0',
+			sameClassHi:   '9',
+			diffClassByte: 'a',
+		},
+		{
+			pattern:       "[a-zA-Z0-9]+",
+			name:          "alphanumeric",
+			minClasses:    5, // multiple ranges
+			maxClasses:    10,
+			sameClassLo:   'a',
+			sameClassHi:   'z',
+			diffClassByte: '!',
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dfa, err := CompilePattern(tt.pattern)
+			if err != nil {
+				t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
+			}
+
+			// Verify ByteClasses is available
+			bc := dfa.ByteClasses()
+			if bc == nil {
+				t.Fatal("ByteClasses() returned nil")
+			}
+
+			// Check alphabet length is reduced
+			alphabetLen := dfa.AlphabetLen()
+			if alphabetLen < tt.minClasses || alphabetLen > tt.maxClasses {
+				t.Errorf("AlphabetLen() = %d, want between %d and %d",
+					alphabetLen, tt.minClasses, tt.maxClasses)
+			}
+
+			// Verify bytes in same range have same class
+			classLo := bc.Get(tt.sameClassLo)
+			classHi := bc.Get(tt.sameClassHi)
+			if classLo != classHi {
+				t.Errorf("ByteClasses: '%c' and '%c' should be same class, got %d and %d",
+					tt.sameClassLo, tt.sameClassHi, classLo, classHi)
+			}
+
+			// Verify different range has different class
+			classDiff := bc.Get(tt.diffClassByte)
+			if classDiff == classLo {
+				t.Errorf("ByteClasses: '%c' should be different class from '%c', both got %d",
+					tt.diffClassByte, tt.sameClassLo, classDiff)
+			}
+
+			// Verify DFA still works correctly with ByteClasses
+			// This ensures the integration doesn't break matching
+			input := []byte("test abc 123 xyz")
+			if got := dfa.Find(input); got < 0 {
+				t.Errorf("Find() = %d, expected match for pattern %q", got, tt.pattern)
+			}
+		})
+	}
+}
+
+// TestByteClassesLiteralPattern tests ByteClasses for literal patterns
+func TestByteClassesLiteralPattern(t *testing.T) {
+	dfa, err := CompilePattern("hello")
+	if err != nil {
+		t.Fatalf("CompilePattern error: %v", err)
+	}
+
+	bc := dfa.ByteClasses()
+	if bc == nil {
+		t.Fatal("ByteClasses() returned nil")
+	}
+
+	alphabetLen := dfa.AlphabetLen()
+	// "hello" has 4 distinct bytes (h, e, l, o) creating ~5-9 classes
+	// (before h, h, between, e, between, l, between, o, after o)
+	if alphabetLen < 5 || alphabetLen > 12 {
+		t.Errorf("AlphabetLen() = %d, expected 5-12 for literal 'hello'", alphabetLen)
+	}
+
+	// Verify matching still works
+	if got := dfa.Find([]byte("say hello")); got != 9 {
+		t.Errorf("Find() = %d, want 9", got)
+	}
+}

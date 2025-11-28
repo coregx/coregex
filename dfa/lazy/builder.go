@@ -68,13 +68,14 @@ func (b *Builder) Build() (*DFA, error) {
 
 	// Create DFA
 	dfa := &DFA{
-		nfa:        b.nfa,
-		cache:      cache,
-		config:     b.config,
-		prefilter:  pf,
-		pikevm:     nfa.NewPikeVM(b.nfa),
-		stateByID:  make(map[StateID]*State, b.config.MaxStates),
-		startTable: startTable,
+		nfa:         b.nfa,
+		cache:       cache,
+		config:      b.config,
+		prefilter:   pf,
+		pikevm:      nfa.NewPikeVM(b.nfa),
+		stateByID:   make(map[StateID]*State, b.config.MaxStates),
+		startTable:  startTable,
+		byteClasses: b.nfa.ByteClasses(),
 	}
 
 	// Register start state in ID lookup map

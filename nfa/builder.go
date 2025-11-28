@@ -10,6 +10,7 @@ type Builder struct {
 	states          []State
 	startAnchored   StateID
 	startUnanchored StateID
+	byteClassSet    *ByteClassSet // Tracks byte class boundaries for DFA optimization
 }
 
 // NewBuilder creates a new NFA builder with default capacity
@@ -23,6 +24,7 @@ func NewBuilderWithCapacity(capacity int) *Builder {
 		states:          make([]State, 0, capacity),
 		startAnchored:   InvalidState,
 		startUnanchored: InvalidState,
+		byteClassSet:    NewByteClassSet(),
 	}
 }
 
@@ -40,6 +42,9 @@ func (b *Builder) AddMatch() StateID {
 // AddByteRange adds a state that transitions on a single byte or byte range [lo, hi].
 // For a single byte, set lo == hi.
 func (b *Builder) AddByteRange(lo, hi byte, next StateID) StateID {
+	// Track byte class boundaries for DFA optimization
+	b.byteClassSet.SetRange(lo, hi)
+
 	//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 	id := StateID(len(b.states))
 	b.states = append(b.states, State{
@@ -55,6 +60,11 @@ func (b *Builder) AddByteRange(lo, hi byte, next StateID) StateID {
 // AddSparse adds a state with multiple byte range transitions (character class).
 // The transitions slice is copied to avoid aliasing issues.
 func (b *Builder) AddSparse(transitions []Transition) StateID {
+	// Track byte class boundaries for each transition range
+	for _, tr := range transitions {
+		b.byteClassSet.SetRange(tr.Lo, tr.Hi)
+	}
+
 	//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 	id := StateID(len(b.states))
 	// Copy transitions to avoid aliasing
@@ -262,6 +272,7 @@ func (b *Builder) Build(opts ...BuildOption) (*NFA, error) {
 		anchored:        false,
 		utf8:            true,
 		patternCount:    1,
+		byteClasses:     b.byteClassSet.ByteClasses(), // Finalize byte classes
 	}
 
 	// Apply user options

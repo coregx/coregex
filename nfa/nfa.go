@@ -212,6 +212,11 @@ type NFA struct {
 	// captureCount is the number of capture groups in the pattern
 	// Group 0 is the entire match, groups 1+ are explicit captures
 	captureCount int
+
+	// byteClasses maps bytes to equivalence classes for DFA optimization.
+	// Bytes in the same class always have identical transitions in any DFA state.
+	// This reduces DFA state size from 256 transitions to ~8-16 transitions.
+	byteClasses ByteClasses
 }
 
 // Start returns the starting state ID of the NFA
@@ -279,6 +284,12 @@ func (n *NFA) PatternCount() int {
 // For a pattern like "(a)(b)", this returns 3 (entire match + 2 groups).
 func (n *NFA) CaptureCount() int {
 	return n.captureCount
+}
+
+// ByteClasses returns the byte equivalence classes for this NFA.
+// Used by DFA to reduce transition table size from 256 to ~8-16 entries.
+func (n *NFA) ByteClasses() *ByteClasses {
+	return &n.byteClasses
 }
 
 // Iter returns an iterator over all states in the NFA
