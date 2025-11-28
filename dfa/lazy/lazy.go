@@ -36,6 +36,7 @@ package lazy
 import (
 	"github.com/coregx/coregex/nfa"
 	"github.com/coregx/coregex/prefilter"
+	"github.com/coregx/coregex/simd"
 )
 
 // DFA is a Lazy DFA engine that performs on-demand determinization.
@@ -198,7 +199,21 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 	}
 
 	// Scan input byte by byte with early termination
-	for pos := startPos; pos < len(haystack); pos++ {
+	for pos := startPos; pos < len(haystack); {
+		// Try lazy acceleration detection if not yet checked
+		d.tryDetectAcceleration(currentState)
+
+		// State acceleration: if current state is accelerable, use SIMD to skip ahead
+		if exitBytes := currentState.AccelExitBytes(); len(exitBytes) > 0 {
+			nextPos := d.accelerate(haystack, pos, exitBytes)
+			if nextPos == -1 {
+				// No exit byte found - can't match
+				return false
+			}
+			// Skip to the exit byte position
+			pos = nextPos
+		}
+
 		b := haystack[pos]
 
 		// Get next state
@@ -230,6 +245,8 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 				return matched && start >= 0 && end >= start
 			}
 		}
+
+		pos++
 
 		// Early termination: return true immediately on any match
 		if currentState.IsMatch() {
@@ -402,6 +419,20 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 	// Scan input byte by byte
 	pos := startPos
 	for pos < len(haystack) {
+		// Try lazy acceleration detection if not yet checked
+		d.tryDetectAcceleration(currentState)
+
+		// State acceleration: if current state is accelerable, use SIMD to skip ahead
+		if exitBytes := currentState.AccelExitBytes(); len(exitBytes) > 0 {
+			nextPos := d.accelerate(haystack, pos, exitBytes)
+			if nextPos == -1 {
+				// No exit byte found in remainder - no match possible from here
+				return lastMatch
+			}
+			// Skip to the exit byte position
+			pos = nextPos
+		}
+
 		b := haystack[pos]
 
 		// Check if current state has a transition for this byte
@@ -618,6 +649,57 @@ func (d *DFA) matchesEmpty() bool {
 	// Fall back to NFA for empty match check
 	start, end, matched := d.pikevm.Search([]byte{})
 	return matched && start == 0 && end == 0
+}
+
+// tryDetectAcceleration attempts lazy acceleration detection for a state.
+// This is called when a state has enough cached transitions to detect reliably.
+// It only runs once per state (tracked via AccelChecked flag).
+func (d *DFA) tryDetectAcceleration(state *State) {
+	if state == nil || state.AccelChecked() {
+		return
+	}
+
+	// Try lazy detection from cached transitions
+	if exitBytes := DetectAccelerationFromCached(state); len(exitBytes) > 0 {
+		state.SetAccelBytes(exitBytes)
+	} else {
+		state.MarkAccelChecked()
+	}
+}
+
+// accelerate uses SIMD to skip ahead in the input when in an accelerable state.
+//
+// An accelerable state has 1-3 "exit bytes" - the only bytes that can transition
+// to a different state. All other bytes either loop back to self or go dead.
+//
+// This uses memchr/memchr2/memchr3 to find the next exit byte position,
+// allowing us to skip large portions of input that would just self-loop.
+//
+// Returns the position of the next exit byte, or -1 if none found.
+func (d *DFA) accelerate(haystack []byte, pos int, exitBytes []byte) int {
+	if pos >= len(haystack) {
+		return -1
+	}
+
+	remaining := haystack[pos:]
+	var found int
+
+	switch len(exitBytes) {
+	case 1:
+		found = simd.Memchr(remaining, exitBytes[0])
+	case 2:
+		found = simd.Memchr2(remaining, exitBytes[0], exitBytes[1])
+	case 3:
+		found = simd.Memchr3(remaining, exitBytes[0], exitBytes[1], exitBytes[2])
+	default:
+		return pos // Not accelerable, stay at current position
+	}
+
+	if found == -1 {
+		return -1
+	}
+
+	return pos + found
 }
 
 // CacheStats returns statistics about the DFA cache.

@@ -311,3 +311,130 @@ func BuildPrefilterFromLiterals(prefixes, suffixes *literal.Seq) prefilter.Prefi
 	builder := prefilter.NewBuilder(prefixes, suffixes)
 	return builder.Build()
 }
+
+// DetectAccelerationFromCached analyzes a state's CACHED transitions only.
+//
+// This is a lazy version that only checks already-computed transitions.
+// It requires most transitions (240+) to be cached for accurate detection.
+// This avoids the performance hit of computing all 256 transitions upfront.
+//
+// A state is accelerable if:
+//  1. Most bytes (252+) loop back to self or go to dead state
+//  2. Only 1-3 bytes cause a transition to a different non-dead state
+//
+// Returns the exit bytes (1-3) or nil if not accelerable or insufficient data.
+func DetectAccelerationFromCached(state *State) []byte {
+	if state == nil {
+		return nil
+	}
+
+	// Need most transitions cached to detect accurately
+	// With < 240 transitions cached, we can't know the full picture
+	transitionCount := state.TransitionCount()
+	if transitionCount < 240 {
+		return nil
+	}
+
+	selfID := state.ID()
+	var exitBytes []byte
+	uncachedCount := 0
+
+	// Scan only the CACHED transitions (read-only, no move computation)
+	for i := 0; i < 256; i++ {
+		inputByte := byte(i)
+
+		nextID, ok := state.Transition(inputByte)
+		if !ok {
+			// Not cached yet - count as unknown
+			uncachedCount++
+			// Too many unknowns means we can't detect reliably
+			if uncachedCount > 16 {
+				return nil
+			}
+			continue
+		}
+
+		// Transition is cached
+		if nextID == selfID || nextID == DeadState {
+			// Self-loop or dead - counts as "skip"
+			continue
+		}
+
+		// Transition to a different state - it's an exit byte
+		exitBytes = append(exitBytes, inputByte)
+		if len(exitBytes) > 3 {
+			// Too many exit bytes - not accelerable
+			return nil
+		}
+	}
+
+	// Accelerable if we have 1-3 exit bytes
+	if len(exitBytes) >= 1 && len(exitBytes) <= 3 {
+		return exitBytes
+	}
+
+	return nil
+}
+
+// DetectAcceleration analyzes a state by computing all 256 byte transitions.
+//
+// WARNING: This is expensive! It computes move() for every byte value.
+// Only call this when you're sure the state is worth optimizing (hot state).
+//
+// A state is accelerable if:
+//  1. Most bytes (252+) loop back to self or go to dead state
+//  2. Only 1-3 bytes cause a transition to a different non-dead state
+//
+// Returns the exit bytes (1-3) or nil if not accelerable.
+func (b *Builder) DetectAcceleration(state *State) []byte {
+	if state == nil {
+		return nil
+	}
+
+	selfID := state.ID()
+	var exitBytes []byte
+
+	// Check all 256 byte values
+	for i := 0; i < 256; i++ {
+		inputByte := byte(i)
+
+		// Check if transition is already cached
+		nextID, ok := state.Transition(inputByte)
+		if !ok {
+			// Need to compute this transition
+			nextNFAStates := b.move(state.NFAStates(), inputByte)
+			if len(nextNFAStates) == 0 {
+				// Dead state - counts as "skip"
+				continue
+			}
+
+			// This leads to a non-dead state - it's an exit byte
+			exitBytes = append(exitBytes, inputByte)
+			if len(exitBytes) > 3 {
+				// Too many exit bytes - not accelerable
+				return nil
+			}
+			continue
+		}
+
+		// Transition is cached
+		if nextID == selfID || nextID == DeadState {
+			// Self-loop or dead - counts as "skip"
+			continue
+		}
+
+		// Transition to a different state - it's an exit byte
+		exitBytes = append(exitBytes, inputByte)
+		if len(exitBytes) > 3 {
+			// Too many exit bytes - not accelerable
+			return nil
+		}
+	}
+
+	// Accelerable if we have 1-3 exit bytes
+	if len(exitBytes) >= 1 && len(exitBytes) <= 3 {
+		return exitBytes
+	}
+
+	return nil
+}

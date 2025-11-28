@@ -47,6 +47,17 @@ type State struct {
 	// This is used during determinization to compute transitions.
 	// Pre-allocated to avoid heap allocations during search.
 	nfaStates []nfa.StateID
+
+	// accelBytes contains 1-3 exit bytes for accelerable states.
+	// An accelerable state is one where most bytes loop back to self,
+	// and only 1-3 bytes cause a transition to a different state.
+	// This allows using memchr/memchr2/memchr3 to skip ahead in the input.
+	// nil means the state is not accelerable.
+	accelBytes []byte
+
+	// accelChecked is true if acceleration detection has been attempted.
+	// This prevents repeated detection attempts on non-accelerable states.
+	accelChecked bool
 }
 
 // NewState creates a new DFA state with the given ID and NFA state set
@@ -104,6 +115,44 @@ func (s *State) TransitionCount() int {
 func (s *State) String() string {
 	return fmt.Sprintf("DFAState(id=%d, isMatch=%v, transitions=%d, nfaStates=%v)",
 		s.id, s.isMatch, len(s.transitions), s.nfaStates)
+}
+
+// IsAccelerable returns true if this state can use SIMD acceleration.
+//
+// An accelerable state is one where:
+//   - Most bytes (252+) loop back to self
+//   - Only 1-3 bytes cause a transition to a different state
+//
+// This allows using memchr/memchr2/memchr3 to skip ahead in the input.
+func (s *State) IsAccelerable() bool {
+	return len(s.accelBytes) > 0 && len(s.accelBytes) <= 3
+}
+
+// AccelExitBytes returns the 1-3 exit bytes for an accelerable state.
+// Returns nil if the state is not accelerable.
+func (s *State) AccelExitBytes() []byte {
+	return s.accelBytes
+}
+
+// SetAccelBytes sets the acceleration bytes for this state.
+// Called during state construction when acceleration is detected.
+func (s *State) SetAccelBytes(bytes []byte) {
+	s.accelChecked = true
+	if len(bytes) > 0 && len(bytes) <= 3 {
+		s.accelBytes = make([]byte, len(bytes))
+		copy(s.accelBytes, bytes)
+	}
+}
+
+// AccelChecked returns true if acceleration detection has been attempted.
+func (s *State) AccelChecked() bool {
+	return s.accelChecked
+}
+
+// MarkAccelChecked marks that acceleration detection has been attempted.
+// Call this even if no acceleration was found to avoid re-checking.
+func (s *State) MarkAccelChecked() {
+	s.accelChecked = true
 }
 
 // StateKey uniquely identifies a DFA state based on its NFA state set.
