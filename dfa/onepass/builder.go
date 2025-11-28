@@ -11,19 +11,21 @@ type Builder struct {
 	nfa *nfa.NFA
 
 	// Working state for DFS during one-pass check
-	seen    *sparse.SparseSet // visited NFA states during epsilon closure
-	stack   []stackEntry      // DFS stack
-	matched bool              // true if we've reached a match state in current closure
+	seen      *sparse.SparseSet // visited NFA states during epsilon closure
+	stack     []stackEntry      // DFS stack
+	matched   bool              // true if we've reached a match state in current closure
+	matchMask uint32            // slot mask accumulated to reach match state
 
 	// DFA state being built
-	numStates  int                      // number of DFA states created
-	table      []Transition             // transition table
-	matchFlags []bool                   // match state flags
-	nfaToDFA   map[nfa.StateID]StateID  // maps NFA state to DFA state ID
+	numStates  int                     // number of DFA states created
+	table      []Transition            // transition table
+	matchFlags []bool                  // match state flags
+	matchSlots []uint32                // slots to apply at each match state
+	nfaToDFA   map[nfa.StateID]StateID // maps NFA state to DFA state ID
 
 	// Configuration
-	stride     int
-	stride2    uint
+	stride  int
+	stride2 uint
 }
 
 // stackEntry represents an entry in the DFS stack during epsilon closure.
@@ -49,10 +51,10 @@ func Build(n *nfa.NFA) (*DFA, error) {
 	// Create builder
 	//nolint:gosec // G115: n.States() is bounded by NFA construction, safe conversion
 	b := &Builder{
-		nfa:        n,
-		seen:       sparse.NewSparseSet(uint32(n.States())),
-		stack:      make([]stackEntry, 0, 16),
-		nfaToDFA:   make(map[nfa.StateID]StateID, n.States()),
+		nfa:      n,
+		seen:     sparse.NewSparseSet(uint32(n.States())),
+		stack:    make([]stackEntry, 0, 16),
+		nfaToDFA: make(map[nfa.StateID]StateID, n.States()),
 	}
 
 	// Get alphabet size from byte classes
@@ -84,6 +86,7 @@ func Build(n *nfa.NFA) (*DFA, error) {
 		stride2:     b.stride2,
 		startState:  startDFA,
 		matchStates: b.matchFlags,
+		matchSlots:  b.matchSlots,
 		stateCount:  b.numStates,
 	}
 
@@ -124,6 +127,12 @@ func (b *Builder) buildState(nfaRoot nfa.StateID) (StateID, error) {
 
 	b.numStates++
 	b.matchFlags = append(b.matchFlags, isMatch)
+	// Store match slots (slots to apply when reaching this match state)
+	if isMatch {
+		b.matchSlots = append(b.matchSlots, b.matchMask)
+	} else {
+		b.matchSlots = append(b.matchSlots, 0)
+	}
 	b.nfaToDFA[nfaRoot] = sid
 
 	// Allocate transition row (initialize to dead state)
@@ -149,9 +158,11 @@ type closureEntry struct {
 
 // epsilonClosureOnePass computes epsilon closure while checking one-pass property.
 // Returns (closure entries with slots, isMatch, error).
+// If isMatch is true, b.matchMask contains the slot mask to apply at match.
 func (b *Builder) epsilonClosureOnePass(root nfa.StateID) ([]closureEntry, bool, error) {
 	b.seen.Clear()
 	b.matched = false
+	b.matchMask = 0
 	b.stack = b.stack[:0]
 
 	// Start DFS from root
@@ -184,6 +195,9 @@ func (b *Builder) epsilonClosureOnePass(root nfa.StateID) ([]closureEntry, bool,
 				return nil, false, ErrNotOnePass
 			}
 			b.matched = true
+			// Save the slots accumulated to reach match state
+			// These are the capture END positions
+			b.matchMask = slots
 
 		case nfa.StateSplit:
 			// Follow both epsilon paths
@@ -216,8 +230,8 @@ func (b *Builder) epsilonClosureOnePass(root nfa.StateID) ([]closureEntry, bool,
 				return nil, false, err
 			}
 
-		// ByteRange and Sparse are not epsilon transitions
-		// They will be handled in buildTransitions
+			// ByteRange and Sparse are not epsilon transitions
+			// They will be handled in buildTransitions
 		}
 	}
 
@@ -238,14 +252,24 @@ func (b *Builder) stackPush(nfaID nfa.StateID, slots uint32) error {
 	return nil
 }
 
+// transInfo tracks byte transition info including source slots.
+type transInfo struct {
+	targetNFA nfa.StateID
+	slots     uint32 // Slots accumulated from SOURCE epsilon closure
+}
+
 // buildTransitions builds byte transitions for a DFA state.
 // For each NFA state in the closure, add its byte transitions.
+//
+// IMPORTANT: Slots are collected from the SOURCE state's epsilon closure
+// (entry.slots), not from the target state. These slots represent capture
+// positions that should be recorded BEFORE consuming the byte.
 //
 //nolint:gocognit // complexity inherent to DFA construction algorithm
 func (b *Builder) buildTransitions(tableIdx int, closure []closureEntry) error {
 	// Track which byte classes have transitions
-	// Key: byte class, Value: target NFA state (slots come from target's epsilon closure)
-	byteTransitions := make(map[byte]nfa.StateID)
+	// Key: byte class, Value: target NFA state + source slots
+	byteTransitions := make(map[byte]transInfo)
 
 	for _, entry := range closure {
 		state := b.nfa.State(entry.nfaID)
@@ -260,11 +284,19 @@ func (b *Builder) buildTransitions(tableIdx int, closure []closureEntry) error {
 				class := b.nfa.ByteClasses().Get(by)
 				// Check for conflict
 				if existing, ok := byteTransitions[class]; ok {
-					if existing != next {
+					if existing.targetNFA != next {
 						return ErrNotOnePass
 					}
+					// Merge source slots (multiple paths to same transition)
+					byteTransitions[class] = transInfo{
+						targetNFA: next,
+						slots:     existing.slots | entry.slots,
+					}
 				} else {
-					byteTransitions[class] = next
+					byteTransitions[class] = transInfo{
+						targetNFA: next,
+						slots:     entry.slots, // SOURCE slots!
+					}
 				}
 			}
 
@@ -274,11 +306,18 @@ func (b *Builder) buildTransitions(tableIdx int, closure []closureEntry) error {
 					class := b.nfa.ByteClasses().Get(by)
 					// Check for conflict
 					if existing, ok := byteTransitions[class]; ok {
-						if existing != trans.Next {
+						if existing.targetNFA != trans.Next {
 							return ErrNotOnePass
 						}
+						byteTransitions[class] = transInfo{
+							targetNFA: trans.Next,
+							slots:     existing.slots | entry.slots,
+						}
 					} else {
-						byteTransitions[class] = trans.Next
+						byteTransitions[class] = transInfo{
+							targetNFA: trans.Next,
+							slots:     entry.slots, // SOURCE slots!
+						}
 					}
 				}
 			}
@@ -286,28 +325,15 @@ func (b *Builder) buildTransitions(tableIdx int, closure []closureEntry) error {
 	}
 
 	// Build DFA transitions from byte transitions
-	for class, targetNFA := range byteTransitions {
-		// Compute epsilon closure of target to get slot updates
-		// These slots are saved AFTER consuming the byte
-		targetClosure, _, err := b.epsilonClosureOnePass(targetNFA)
-		if err != nil {
-			return err
-		}
-
-		// Merge all slot masks from target's epsilon closure
-		var slots uint32
-		for _, entry := range targetClosure {
-			slots |= entry.slots
-		}
-
+	for class, info := range byteTransitions {
 		// Recursively build target DFA state
-		nextDFA, err := b.buildState(targetNFA)
+		nextDFA, err := b.buildState(info.targetNFA)
 		if err != nil {
 			return err
 		}
 
-		// Create transition with slots from target's epsilon closure
-		trans := NewTransition(nextDFA, false, slots)
+		// Create transition with SOURCE slots (applied at current position BEFORE consuming byte)
+		trans := NewTransition(nextDFA, false, info.slots)
 
 		// Store in table
 		idx := tableIdx + int(class)

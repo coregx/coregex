@@ -38,18 +38,21 @@ func (d *DFA) Search(input []byte, cache *Cache) []int {
 			return nil
 		}
 
-		// Consume the byte
-		pos++
-
-		// Update capture slots AFTER consuming byte
-		// All slots in the transition are saved at current position (after the byte)
+		// Update capture slots BEFORE consuming byte
+		// Slots represent epsilon transitions leading TO this byte transition
+		// They should be recorded at the current position (before advancing)
 		trans.UpdateSlots(cache.slots, pos)
+
+		// Consume the byte AFTER updating slots
+		pos++
 
 		// Transition to next state
 		nextState := trans.NextState()
 
 		// Check for match (leftmost-first: return on first match if match-wins)
 		if trans.IsMatchWins() && d.isMatchState(nextState) {
+			// Apply match slots (capture END positions from match state's epsilon closure)
+			applyMatchSlots(cache.slots, d.getMatchSlots(nextState), pos)
 			// Set end of entire match (group 0)
 			if len(cache.slots) >= 2 {
 				cache.slots[1] = pos
@@ -62,6 +65,8 @@ func (d *DFA) Search(input []byte, cache *Cache) []int {
 
 	// Check final state for match
 	if d.isMatchState(state) {
+		// Apply match slots at end of input (capture END positions)
+		applyMatchSlots(cache.slots, d.getMatchSlots(state), len(input))
 		// Set end of entire match to end of input
 		if len(cache.slots) >= 2 {
 			cache.slots[1] = len(input)
@@ -70,6 +75,17 @@ func (d *DFA) Search(input []byte, cache *Cache) []int {
 	}
 
 	return nil
+}
+
+// applyMatchSlots applies the slot mask at the given position.
+// This is used to set capture END positions when reaching a match state.
+func applyMatchSlots(slots []int, mask uint32, pos int) {
+	for i := 0; mask != 0 && i < len(slots); i++ {
+		if mask&1 != 0 {
+			slots[i] = pos
+		}
+		mask >>= 1
+	}
 }
 
 // SearchAt performs an anchored search starting at input[start:].

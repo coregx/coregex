@@ -47,7 +47,8 @@ type StateID uint32
 // ~10-20x speedup over PikeVM for patterns with capture groups.
 //
 // The transition table is organized as:
-//   table[stateID * stride + byteClass] → Transition
+//
+//	table[stateID * stride + byteClass] → Transition
 //
 // where stride is the next power of 2 >= alphabetLen.
 type DFA struct {
@@ -76,6 +77,11 @@ type DFA struct {
 	// Match states bitmap for O(1) match detection
 	// matchStates[sid] is true if state sid is a match state
 	matchStates []bool
+
+	// Match slots: slots to apply when reaching each match state
+	// matchSlots[sid] contains the slot mask for match state sid
+	// These slots represent capture positions at the match (END positions)
+	matchSlots []uint32
 
 	// Minimum match state ID for fast match detection
 	// States with ID >= minMatchID are match states
@@ -161,6 +167,15 @@ func (d *DFA) isMatchState(state StateID) bool {
 		return false
 	}
 	return d.matchStates[state]
+}
+
+// getMatchSlots returns the slot mask to apply when reaching the given match state.
+// These slots represent capture END positions.
+func (d *DFA) getMatchSlots(state StateID) uint32 {
+	if int(state) >= len(d.matchSlots) {
+		return 0
+	}
+	return d.matchSlots[state]
 }
 
 // nextPowerOf2 returns the next power of 2 >= n.

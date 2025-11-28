@@ -140,39 +140,34 @@ func TestIsMatch(t *testing.T) {
 }
 
 func TestSearch(t *testing.T) {
-	// NOTE: Capture group slot tracking has a known limitation in v0.7.0:
-	// Opening capture slots are not saved correctly at state entry.
-	// This will be fixed in a future version by adding state-entry slot updates.
-	// For now, tests verify that basic matching works even if slot positions are approximate.
-
 	tests := []struct {
-		pattern string
-		input   string
-		wantMatch bool // just verify match works for now
+		pattern   string
+		input     string
+		wantMatch bool
 	}{
 		{
-			pattern: `a`,
-			input:   "a",
+			pattern:   `a`,
+			input:     "a",
 			wantMatch: true,
 		},
 		{
-			pattern: `abc`,
-			input:   "abc",
+			pattern:   `abc`,
+			input:     "abc",
 			wantMatch: true,
 		},
 		{
-			pattern: `(\d+)-(\d+)`,
-			input:   "123-456",
+			pattern:   `(\d+)-(\d+)`,
+			input:     "123-456",
 			wantMatch: true,
 		},
 		{
-			pattern: `([a-z]+)\s+([a-z]+)`,
-			input:   "hello world",
+			pattern:   `([a-z]+)\s+([a-z]+)`,
+			input:     "hello world",
 			wantMatch: true,
 		},
 		{
-			pattern: `a`,
-			input:   "b",
+			pattern:   `a`,
+			input:     "b",
 			wantMatch: false,
 		},
 	}
@@ -265,6 +260,69 @@ func TestUpdateSlots(t *testing.T) {
 		if slots[i] != want[i] {
 			t.Errorf("slots[%d] = %d, want %d", i, slots[i], want[i])
 		}
+	}
+}
+
+// TestCaptureSlotTiming verifies that capture groups are positioned correctly.
+// This is the key test for the slot timing fix.
+func TestCaptureSlotTiming(t *testing.T) {
+	tests := []struct {
+		pattern  string
+		input    string
+		expected []int // [start0, end0, start1, end1, ...]
+	}{
+		{
+			pattern:  `([a-z]+)`,
+			input:    "abc",
+			expected: []int{0, 3, 0, 3},
+		},
+		{
+			pattern:  `(\d+)-(\d+)`,
+			input:    "123-456",
+			expected: []int{0, 7, 0, 3, 4, 7},
+		},
+		{
+			pattern:  `([a-z]+)\s+([a-z]+)`,
+			input:    "hello world",
+			expected: []int{0, 11, 0, 5, 6, 11},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern+"_"+tt.input, func(t *testing.T) {
+			n := compilePattern(t, tt.pattern)
+			dfa, err := Build(n)
+			if err != nil {
+				t.Fatalf("failed to build DFA: %v", err)
+			}
+
+			cache := NewCache(dfa.NumCaptures())
+			got := dfa.Search([]byte(tt.input), cache)
+
+			if got == nil {
+				t.Fatalf("expected match, got nil")
+			}
+
+			if len(got) != len(tt.expected) {
+				t.Fatalf("slot count mismatch: got %d, want %d", len(got), len(tt.expected))
+			}
+
+			for i := range tt.expected {
+				if got[i] != tt.expected[i] {
+					t.Errorf("slots[%d] = %d, want %d", i, got[i], tt.expected[i])
+				}
+			}
+
+			// Log extracted substrings for debugging
+			input := []byte(tt.input)
+			for g := 0; g < len(tt.expected)/2; g++ {
+				start := got[g*2]
+				end := got[g*2+1]
+				if start >= 0 && end >= 0 && end <= len(input) {
+					t.Logf("Group %d: [%d,%d] = %q", g, start, end, string(input[start:end]))
+				}
+			}
+		})
 	}
 }
 

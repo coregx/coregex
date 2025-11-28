@@ -4,6 +4,7 @@ import (
 	"regexp/syntax"
 
 	"github.com/coregx/coregex/dfa/lazy"
+	"github.com/coregx/coregex/dfa/onepass"
 	"github.com/coregx/coregex/literal"
 	"github.com/coregx/coregex/nfa"
 	"github.com/coregx/coregex/prefilter"
@@ -44,6 +45,11 @@ type Engine struct {
 	strategy              Strategy
 	config                Config
 
+	// OnePass DFA for anchored patterns with captures (optional optimization)
+	// This is independent of strategy - used by FindSubmatch when available
+	onepass      *onepass.DFA
+	onepassCache *onepass.Cache
+
 	// Statistics (useful for debugging and tuning)
 	stats Stats
 }
@@ -55,6 +61,9 @@ type Stats struct {
 
 	// DFASearches counts DFA searches
 	DFASearches uint64
+
+	// OnePassSearches counts OnePass DFA searches (for FindSubmatch)
+	OnePassSearches uint64
 
 	// PrefilterHits counts successful prefilter matches
 	PrefilterHits uint64
@@ -164,6 +173,30 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Build PikeVM (always needed for fallback)
 	pikevm := nfa.NewPikeVM(nfaEngine)
 
+	// Try to build OnePass DFA for anchored patterns with capture groups
+	// This is an optional optimization for FindSubmatch (10-20x faster)
+	var onepassDFA *onepass.DFA
+	var onepassCache *onepass.Cache
+	if config.EnableDFA && nfaEngine.CaptureCount() > 1 {
+		// Compile anchored NFA for OnePass (requires Anchored: true)
+		anchoredCompiler := nfa.NewCompiler(nfa.CompilerConfig{
+			UTF8:              true,
+			Anchored:          true, // Required for one-pass
+			DotNewline:        false,
+			MaxRecursionDepth: config.MaxRecursionDepth,
+		})
+		anchoredNFA, err := anchoredCompiler.CompileRegexp(re)
+		if err == nil {
+			// Try to build one-pass DFA
+			onepassDFA, err = onepass.Build(anchoredNFA)
+			if err == nil {
+				// Success! Create cache for reuse
+				onepassCache = onepass.NewCache(onepassDFA.NumCaptures())
+			}
+			// If onepass.Build fails (ErrNotOnePass), silently fall back to PikeVM
+		}
+	}
+
 	// Build DFA if strategy requires it
 	var dfaEngine *lazy.DFA
 	var reverseSearcher *ReverseAnchoredSearcher
@@ -221,6 +254,8 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		prefilter:             pf,
 		strategy:              strategy,
 		config:                config,
+		onepass:               onepassDFA,
+		onepassCache:          onepassCache,
 		stats:                 Stats{},
 	}, nil
 }
@@ -327,6 +362,9 @@ func (e *Engine) isMatchAdaptive(haystack []byte) bool {
 // Group 0 is always the entire match. Groups 1+ are explicit capture groups.
 // Unmatched optional groups will have nil values.
 //
+// When a one-pass DFA is available (for anchored patterns), this method
+// is 10-20x faster than PikeVM for capture group extraction.
+//
 // Example:
 //
 //	engine, _ := meta.Compile(`(\w+)@(\w+)\.(\w+)`)
@@ -338,15 +376,45 @@ func (e *Engine) isMatchAdaptive(haystack []byte) bool {
 //	    fmt.Println(match.Group(3)) // "com"
 //	}
 func (e *Engine) FindSubmatch(haystack []byte) *MatchWithCaptures {
+	// Try OnePass DFA if available (10-20x faster for anchored patterns)
+	if e.onepass != nil && e.onepassCache != nil {
+		e.stats.OnePassSearches++
+		slots := e.onepass.Search(haystack, e.onepassCache)
+		if slots != nil {
+			// Convert flat slots [start0, end0, start1, end1, ...] to nested captures
+			captures := slotsToCaptures(slots)
+			return NewMatchWithCaptures(haystack, captures)
+		}
+		// OnePass failed (input doesn't match from position 0)
+		// Fall through to PikeVM which can find match anywhere
+	}
+
 	e.stats.NFASearches++
 
-	// Always use PikeVM for capture group extraction
+	// Use PikeVM for capture group extraction
 	nfaMatch := e.pikevm.SearchWithCaptures(haystack)
 	if nfaMatch == nil {
 		return nil
 	}
 
 	return NewMatchWithCaptures(haystack, nfaMatch.Captures)
+}
+
+// slotsToCaptures converts flat slots [start0, end0, start1, end1, ...]
+// to nested captures [[start0, end0], [start1, end1], ...].
+func slotsToCaptures(slots []int) [][]int {
+	numCaptures := len(slots) / 2
+	captures := make([][]int, numCaptures)
+	for i := 0; i < numCaptures; i++ {
+		start := slots[i*2]
+		end := slots[i*2+1]
+		if start >= 0 && end >= 0 {
+			captures[i] = []int{start, end}
+		} else {
+			captures[i] = nil // Unmatched capture
+		}
+	}
+	return captures
 }
 
 // NumCaptures returns the number of capture groups in the pattern.

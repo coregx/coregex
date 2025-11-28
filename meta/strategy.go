@@ -54,6 +54,15 @@ const (
 	//   - Has good suffix literal for prefiltering
 	//   - Speedup: 10-100x for patterns like `.*\.txt`
 	UseReverseSuffix
+
+	// UseOnePass uses one-pass DFA for anchored patterns with capture groups.
+	// Selected for:
+	//   - Pattern is always anchored (^ or implicit anchor)
+	//   - Pattern is "one-pass" (no ambiguity in matching paths)
+	//   - Pattern has capture groups (otherwise lazy DFA is faster)
+	//   - Speedup: 10-20x over PikeVM for capture group extraction
+	//   - Only used for FindSubmatch, not Find
+	UseOnePass
 )
 
 // String returns a human-readable representation of the Strategy.
@@ -69,6 +78,8 @@ func (s Strategy) String() string {
 		return "UseReverseAnchored"
 	case UseReverseSuffix:
 		return "UseReverseSuffix"
+	case UseOnePass:
+		return "UseOnePass"
 	default:
 		return "Unknown"
 	}
@@ -270,6 +281,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseReverseSuffix:
 		return "suffix literal prefilter + reverse DFA (10-100x for patterns like .*\\.txt)"
+
+	case UseOnePass:
+		return "one-pass DFA for anchored pattern with captures (10-20x over PikeVM)"
 
 	default:
 		return "unknown strategy"
