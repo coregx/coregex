@@ -21,15 +21,14 @@ A **production-grade regex engine** for Go with dramatic performance improvement
 - 🚀 **Up to 263x faster** than Go's `regexp` package (case-insensitive patterns)
 - 🎯 **SIMD-accelerated** search with AVX2/SSSE3 assembly (10-15x faster substring search)
 - 📊 **Multi-pattern search** (Teddy SIMD algorithm for 2-8 literals)
-- 🔍 **Aho-Corasick** for many literals
 - 💾 **Zero allocations** in hot paths through object pooling
 
 🏗️ **Architecture**
 - 🧠 **Meta-engine** orchestrates strategy selection (DFA/NFA/ReverseAnchored)
 - ⚡ **Lazy DFA** with configurable caching (on-demand state construction)
 - 🔄 **Pike VM** (Thompson's NFA) for guaranteed O(n×m) performance
-- 🔙 **Reverse Search** for `$` anchor patterns (**78,000x speedup** for end-anchored patterns)
-- 📌 **Prefilter coordination** (memchr/memmem/teddy/aho-corasick)
+- 🔙 **Reverse Search** for `$` anchor patterns (O(m) instead of O(n*m))
+- 📌 **Prefilter coordination** (memchr/memmem/teddy)
 
 🎯 **API Design**
 - Simple, drop-in replacement for `regexp` package

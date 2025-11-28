@@ -7,10 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v0.6.0
+### Planned for v0.7.0
+- OnePass DFA for simple patterns
+- ReverseInner strategy for `prefix.*keyword.*suffix`
 - ARM NEON SIMD support
-- Advanced reverse strategies (ReverseSuffix, ReverseInner)
-- OnePass DFA optimization
+
+---
+
+## [0.6.0] - 2025-11-28
+
+### Added
+- **ReverseSuffix Strategy (OPT-009)**: Zero-allocation reverse DFA for suffix patterns
+  - Suffix literal prefilter + reverse DFA for patterns like `.*\.txt`
+  - `SearchReverse()` / `IsMatchReverse()` - backward scanning without byte reversal
+  - Greedy (leftmost-longest) matching semantics
+  - Smart strategy selection: prefers prefix literals when available
+
+### Performance
+- **IsMatch speedup** (suffix patterns):
+  - `.*\.txt` 1KB: **131x faster** than stdlib
+  - `.*\.txt` 32KB: **1,549x faster** than stdlib
+  - `.*\.txt` 1MB: **1,314x faster** than stdlib
+- **Find speedup**: up to 1.6x faster than stdlib
+- **Zero heap allocations** in hot path
+
+### Technical
+- New files: `meta/reverse_suffix.go`, `meta/reverse_suffix_test.go`, `meta/reverse_suffix_bench_test.go`
+- Modified: `dfa/lazy/lazy.go` (SearchReverse/IsMatchReverse), `meta/strategy.go`, `meta/meta.go`
+- Code: +1,058 lines for ReverseSuffix implementation
+- Tests: 8 new tests, all passing
+- Linter: 0 issues
 
 ---
 
@@ -133,18 +159,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-### Planned for v0.5.0
-- Named capture groups (`(?P<name>...)`)
-- Advanced reverse strategies (ReverseSuffix, ReverseInner)
-
-### Planned for v0.6.0
-- OnePass DFA for simple patterns
-- Memory layout optimizations
-- Aho-Corasick for large multi-pattern sets
-
 ### Planned for v0.7.0
+- OnePass DFA for simple patterns
+- ReverseInner strategy for `prefix.*keyword.*suffix`
+
+### Planned for v0.8.0
 - ARM NEON SIMD support
-- UTF-8 automata optimization
+- Aho-Corasick for large multi-pattern sets
+- Memory layout optimizations
 
 ### Planned for v1.0.0
 - API stability guarantee
@@ -354,12 +376,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 v0.1.0 → Initial release (DONE ✅)
 v0.2.0 → Capture groups support (DONE ✅)
 v0.3.0 → Replace/Split functions (DONE ✅)
-v0.4.0 → Reverse Search + Core Optimizations (DONE ✅) ← YOU ARE HERE
-v0.5.0 → Named captures, Advanced reverse strategies
-v0.6.0 → OnePass DFA, Aho-Corasick
-v0.7.0 → ARM NEON SIMD, UTF-8 optimization
-v0.8.0 → Beta testing period
-v0.9.0 → Release candidate
+v0.4.0 → Reverse Search + Core Optimizations (DONE ✅)
+v0.5.0 → Named captures (DONE ✅)
+v0.6.0 → ReverseSuffix optimization (DONE ✅) ← YOU ARE HERE
+v0.7.0 → OnePass DFA, ReverseInner strategy
+v0.8.0 → ARM NEON SIMD, Aho-Corasick
+v0.9.0 → Beta testing period
 v1.0.0 → Stable release (API frozen)
 ```
 
