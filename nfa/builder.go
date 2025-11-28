@@ -318,3 +318,15 @@ func WithCaptureCount(count int) BuildOption {
 		n.captureCount = count
 	}
 }
+
+// WithCaptureNames sets the names of capture groups in the NFA.
+// The slice should have length equal to captureCount.
+// Index 0 should be "" (entire match), named groups have their names, unnamed groups are "".
+func WithCaptureNames(names []string) BuildOption {
+	return func(n *NFA) {
+		if len(names) > 0 {
+			n.captureNames = make([]string, len(names))
+			copy(n.captureNames, names)
+		}
+	}
+}

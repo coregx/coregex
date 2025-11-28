@@ -314,6 +314,23 @@ func (r *Regex) NumSubexp() int {
 	return r.engine.NumCaptures()
 }
 
+// SubexpNames returns the names of the parenthesized subexpressions in this Regex.
+// The name for the first sub-expression is names[1], so that if m is a match slice,
+// the name for m[i] is SubexpNames()[i].
+// Since the Regexp as a whole cannot be named, names[0] is always the empty string.
+// The slice returned is shared and must not be modified.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(?P<year>\d+)-(?P<month>\d+)`)
+//	names := re.SubexpNames()
+//	// names[0] = ""
+//	// names[1] = "year"
+//	// names[2] = "month"
+func (r *Regex) SubexpNames() []string {
+	return r.engine.SubexpNames()
+}
+
 // FindSubmatch returns a slice holding the text of the leftmost match
 // and the matches of all capture groups.
 //

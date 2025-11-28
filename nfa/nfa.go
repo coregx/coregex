@@ -213,6 +213,12 @@ type NFA struct {
 	// Group 0 is the entire match, groups 1+ are explicit captures
 	captureCount int
 
+	// captureNames stores the names of named capture groups.
+	// Index 0 is always "" (entire match), subsequent indices correspond to capture groups.
+	// For unnamed captures, the name is "".
+	// Example: pattern `(?P<year>\d+)-(\d+)` → ["", "year", ""]
+	captureNames []string
+
 	// byteClasses maps bytes to equivalence classes for DFA optimization.
 	// Bytes in the same class always have identical transitions in any DFA state.
 	// This reduces DFA state size from 256 transitions to ~8-16 transitions.
@@ -284,6 +290,28 @@ func (n *NFA) PatternCount() int {
 // For a pattern like "(a)(b)", this returns 3 (entire match + 2 groups).
 func (n *NFA) CaptureCount() int {
 	return n.captureCount
+}
+
+// SubexpNames returns the names of capture groups in the pattern.
+// Index 0 is always "" (representing the entire match).
+// Named groups return their names, unnamed groups return "".
+//
+// Example:
+//
+//	pattern: `(?P<year>\d+)-(\d+)-(?P<day>\d+)`
+//	returns: ["", "year", "", "day"]
+//
+// This matches stdlib regexp.Regexp.SubexpNames() behavior.
+func (n *NFA) SubexpNames() []string {
+	if len(n.captureNames) == 0 {
+		// No capture names stored - return empty strings for all groups
+		names := make([]string, n.captureCount)
+		return names
+	}
+	// Return a copy to prevent external modification
+	names := make([]string, len(n.captureNames))
+	copy(names, n.captureNames)
+	return names
 }
 
 // ByteClasses returns the byte equivalence classes for this NFA.

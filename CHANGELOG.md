@@ -7,10 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v0.5.0
-- Named capture groups (`(?P<name>...)`)
+### Planned for v0.6.0
 - ARM NEON SIMD support
 - Advanced reverse strategies (ReverseSuffix, ReverseInner)
+- OnePass DFA optimization
+
+---
+
+## [0.5.0] - 2025-11-28
+
+### Added
+- **Named Capture Groups**: Full support for `(?P<name>...)` syntax
+  - `SubexpNames()` API in `Regex`, `Engine`, and `NFA`
+  - Compatible with stdlib `regexp.Regexp.SubexpNames()` behavior
+  - Returns slice of capture group names (index 0 = entire match)
+- **NFA Compiler Enhancement**: `collectCaptureInfo()` collects capture names during compilation
+  - Two-pass algorithm: count captures, then collect names
+  - Stores names from `syntax.Regexp.Name` field
+- **Builder Enhancement**: `WithCaptureNames()` BuildOption for passing names to NFA
+
+### Technical
+- New files: `nfa/named_captures_test.go`, `example_subexpnames_test.go`
+- Modified files: `nfa/nfa.go`, `nfa/compile.go`, `nfa/builder.go`, `meta/meta.go`, `regex.go`
+- Code: +200 lines for named captures implementation
+- Tests: 18 new tests for named captures, all passing
+- Examples: 2 integration examples demonstrating SubexpNames() usage
 
 ---
 

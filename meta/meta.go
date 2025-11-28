@@ -331,6 +331,13 @@ func (e *Engine) NumCaptures() int {
 	return e.nfa.CaptureCount()
 }
 
+// SubexpNames returns the names of capture groups in the pattern.
+// Index 0 is always "" (entire match). Named groups return their names, unnamed groups return "".
+// This matches stdlib regexp.Regexp.SubexpNames() behavior.
+func (e *Engine) SubexpNames() []string {
+	return e.nfa.SubexpNames()
+}
+
 // findNFA searches using NFA (PikeVM) directly.
 func (e *Engine) findNFA(haystack []byte) *Match {
 	e.stats.NFASearches++

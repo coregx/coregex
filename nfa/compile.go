@@ -36,8 +36,9 @@ func DefaultCompilerConfig() CompilerConfig {
 type Compiler struct {
 	config       CompilerConfig
 	builder      *Builder
-	depth        int // current recursion depth
-	captureCount int // number of capture groups (1-based, group 0 is entire match)
+	depth        int      // current recursion depth
+	captureCount int      // number of capture groups (1-based, group 0 is entire match)
+	captureNames []string // names of capture groups (index 0 = "", rest from pattern)
 }
 
 // NewCompiler creates a new NFA compiler with the given configuration
@@ -76,9 +77,10 @@ func (c *Compiler) CompileRegexp(re *syntax.Regexp) (*NFA, error) {
 	c.builder = NewBuilder()
 	c.depth = 0
 	c.captureCount = 0
+	c.captureNames = nil
 
-	// Count capture groups in the pattern
-	c.countCaptures(re)
+	// Count capture groups and collect their names
+	c.collectCaptureInfo(re)
 
 	// Determine if pattern is inherently anchored (has ^ or \A prefix)
 	allAnchored := c.isPatternAnchored(re)
@@ -125,6 +127,7 @@ func (c *Compiler) CompileRegexp(re *syntax.Regexp) (*NFA, error) {
 		WithUTF8(c.config.UTF8),
 		WithAnchored(c.config.Anchored || allAnchored),
 		WithCaptureCount(c.captureCount+1),
+		WithCaptureNames(c.captureNames),
 	)
 	if err != nil {
 		return nil, &CompileError{
@@ -666,24 +669,63 @@ func (c *Compiler) compileCapture(re *syntax.Regexp) (start, end StateID, err er
 	return openCapture, closeCapture, nil
 }
 
-// countCaptures counts the number of capture groups in a pattern.
-// This must be called before compilation to know the total count.
-func (c *Compiler) countCaptures(re *syntax.Regexp) {
+// collectCaptureInfo counts the number of capture groups and collects their names.
+// This must be called before compilation to know the total count and names.
+// After calling this:
+//   - c.captureCount contains the highest capture group number
+//   - c.captureNames is initialized with length captureCount+1
+//   - c.captureNames[0] = "" (entire match)
+//   - c.captureNames[i] = name or "" for group i
+func (c *Compiler) collectCaptureInfo(re *syntax.Regexp) {
+	// First pass: count captures
+	c.countCapturesRecursive(re)
+
+	// Initialize captureNames slice (index 0 = entire match "")
+	c.captureNames = make([]string, c.captureCount+1)
+
+	// Second pass: collect names
+	c.collectNamesRecursive(re)
+}
+
+// countCapturesRecursive counts capture groups recursively
+func (c *Compiler) countCapturesRecursive(re *syntax.Regexp) {
 	switch re.Op {
 	case syntax.OpCapture:
 		if re.Cap > c.captureCount {
 			c.captureCount = re.Cap
 		}
 		for _, sub := range re.Sub {
-			c.countCaptures(sub)
+			c.countCapturesRecursive(sub)
 		}
 	case syntax.OpConcat, syntax.OpAlternate:
 		for _, sub := range re.Sub {
-			c.countCaptures(sub)
+			c.countCapturesRecursive(sub)
 		}
 	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
 		if len(re.Sub) > 0 {
-			c.countCaptures(re.Sub[0])
+			c.countCapturesRecursive(re.Sub[0])
+		}
+	}
+}
+
+// collectNamesRecursive collects capture group names recursively
+func (c *Compiler) collectNamesRecursive(re *syntax.Regexp) {
+	switch re.Op {
+	case syntax.OpCapture:
+		// Store the name (may be empty string for unnamed captures)
+		if re.Cap >= 0 && re.Cap < len(c.captureNames) {
+			c.captureNames[re.Cap] = re.Name
+		}
+		for _, sub := range re.Sub {
+			c.collectNamesRecursive(sub)
+		}
+	case syntax.OpConcat, syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			c.collectNamesRecursive(sub)
+		}
+	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		if len(re.Sub) > 0 {
+			c.collectNamesRecursive(re.Sub[0])
 		}
 	}
 }
