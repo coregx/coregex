@@ -407,6 +407,9 @@ See package documentation on [pkg.go.dev](https://pkg.go.dev/github.com/coregx/c
 Part of the [CoreGX](https://github.com/coregx) (Core Go eXtensions) ecosystem:
 - More projects coming soon!
 
+**Community:**
+- [golang/go#26623](https://github.com/golang/go/issues/26623) - Go stdlib regexp performance discussion (we posted there!)
+
 **Inspired by:**
 - [Rust regex crate](https://github.com/rust-lang/regex) - Architecture and design
 - [RE2](https://github.com/google/re2) - O(n) performance guarantees
