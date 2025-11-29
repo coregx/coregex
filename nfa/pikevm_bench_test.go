@@ -83,3 +83,48 @@ func mustCompileBench(b *testing.B, pattern string) *NFA {
 	}
 	return nfa
 }
+
+// BenchmarkPikeVM_Captures tests COW captures optimization
+func BenchmarkPikeVM_Captures(b *testing.B) {
+	benchmarks := []struct {
+		name    string
+		pattern string
+		input   string
+	}{
+		{"simple_1group", `(foo)`, "xxxfooyyy"},
+		{"simple_3groups", `(\w+)-(\w+)-(\w+)`, "abc-def-ghi"},
+		{"nested_groups", `(a(b(c)))`, "xxxabcyyy"},
+		{"alternation_groups", `(foo|bar)-(baz|qux)`, "foo-baz"},
+		{"quantifier_groups", `(\w+)+`, "abcdefghij"},
+		{"many_splits", `(a|b)(c|d)(e|f)(g|h)`, "aceg"},
+	}
+
+	for _, tc := range benchmarks {
+		nfa := mustCompileBench(b, tc.pattern)
+		vm := NewPikeVM(nfa)
+		input := []byte(tc.input)
+
+		b.Run(tc.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				vm.SearchWithCaptures(input)
+			}
+		})
+	}
+}
+
+// BenchmarkPikeVM_CapturesLargeInput tests COW with larger input and many potential match positions
+func BenchmarkPikeVM_CapturesLargeInput(b *testing.B) {
+	pattern := `(\d+)-(\d+)-(\d+)`
+	nfa := mustCompileBench(b, pattern)
+	vm := NewPikeVM(nfa)
+
+	// Input with match near the end
+	input := append(bytes.Repeat([]byte("xxx"), 1000), []byte("123-456-789")...)
+
+	b.Run("3groups_3KB", func(b *testing.B) {
+		b.SetBytes(int64(len(input)))
+		for i := 0; i < b.N; i++ {
+			vm.SearchWithCaptures(input)
+		}
+	})
+}
