@@ -1,6 +1,6 @@
 # coregex - Production-Grade Regex Engine for Go
 
-> **3-1000x+ faster than stdlib through multi-engine architecture and SIMD optimizations**
+> **3-3000x+ faster than stdlib through multi-engine architecture and SIMD optimizations**
 
 [![GitHub Release](https://img.shields.io/github/v/release/coregx/coregex?include_prereleases&style=flat-square&logo=github&color=blue)](https://github.com/coregx/coregex/releases/latest)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/coregx/coregex?style=flat-square&logo=go)](https://go.dev/dl/)
@@ -14,7 +14,7 @@
 
 ---
 
-A **production-grade regex engine** for Go with dramatic performance improvements over the standard library. Inspired by Rust's regex crate, coregex uses a multi-engine architecture with SIMD-accelerated prefilters to achieve **3-1000x+ speedup** depending on pattern type (especially suffix patterns like `.*\.txt`).
+A **production-grade regex engine** for Go with dramatic performance improvements over the standard library. Inspired by Rust's regex crate, coregex uses a multi-engine architecture with SIMD-accelerated prefilters to achieve **3-3000x+ speedup** depending on pattern type (especially suffix patterns like `.*\.txt` and inner literal patterns like `.*keyword.*`).
 
 ## Features
 
@@ -25,10 +25,12 @@ A **production-grade regex engine** for Go with dramatic performance improvement
 - 💾 **Zero allocations** in hot paths through object pooling
 
 🏗️ **Architecture**
-- 🧠 **Meta-engine** orchestrates strategy selection (DFA/NFA/ReverseAnchored)
+- 🧠 **Meta-engine** orchestrates strategy selection (DFA/NFA/ReverseAnchored/ReverseInner)
 - ⚡ **Lazy DFA** with configurable caching (on-demand state construction)
 - 🔄 **Pike VM** (Thompson's NFA) for guaranteed O(n×m) performance
-- 🔙 **Reverse Search** for `$` anchor patterns (O(m) instead of O(n*m))
+- 🔙 **Reverse Search** for `$` anchor and suffix patterns (1000x+ speedup)
+- 🎯 **ReverseInner** for `.*keyword.*` patterns with bidirectional DFA (3000x+ speedup)
+- ⚡ **OnePass DFA** for simple anchored patterns (10x faster captures, 0 allocs)
 - 📌 **Prefilter coordination** (memchr/memmem/teddy)
 
 🎯 **API Design**
@@ -167,9 +169,12 @@ func benchmarkSearch(pattern string, text []byte) {
 | **Case-insensitive** | 32KB | 1,229,521 ns | **4,669 ns** | **263x faster** |
 | **`.*\.txt` IsMatch** | 32KB | 1.3 ms | **855 ns** | **1,549x faster** |
 | **`.*\.txt` IsMatch** | 1MB | 27 ms | **21 µs** | **1,314x faster** |
+| **`.*keyword.*` IsMatch** | 250KB | 12.6 ms | **4 µs** | **3,154x faster** |
+| **`.*keyword.*` Find** | 250KB | 15.2 ms | **8 µs** | **1,894x faster** |
 
 **Key insights:**
-- **Suffix patterns** (`.*\.txt`) see the largest speedups (1000x+) through ReverseSuffix optimization
+- **Inner literal patterns** (`.*keyword.*`) see massive speedups (2000-3000x+) through ReverseInner optimization (v0.8.0)
+- **Suffix patterns** (`.*\.txt`) see 1000x+ speedups through ReverseSuffix optimization
 - **Case-insensitive** patterns (`(?i)...`) are also excellent (100-263x) - stdlib backtracking is slow, our DFA is fast
 - **Simple patterns** see 1-5x improvement depending on literals
 
@@ -187,7 +192,8 @@ See [benchmark/](benchmark/) for detailed comparisons.
 | **Meta-Engine**      | ✅     | DFA/NFA/ReverseAnchored orchestration |
 | **Lazy DFA**         | ✅     | On-demand state construction |
 | **Pike VM (NFA)**    | ✅     | Thompson's construction |
-| **Reverse Search**   | ✅     | ReverseAnchored (v0.4.0) + **ReverseSuffix (v0.6.0)** |
+| **Reverse Search**   | ✅     | ReverseAnchored (v0.4.0), ReverseSuffix (v0.6.0), **ReverseInner (v0.8.0)** |
+| **OnePass DFA**      | ✅     | **NEW in v0.7.0** - 10x faster captures, 0 allocs |
 | **Unicode support**  | ✅     | Via `regexp/syntax` |
 | **Capture groups**   | ✅     | FindSubmatch, FindSubmatchIndex |
 | **Replace/Split**    | ✅     | ReplaceAll, ReplaceAllFunc, Split |
@@ -320,9 +326,8 @@ Contributions are welcome! This is an experimental project and we'd love your he
 **Priority areas:**
 - Look-around assertions
 - ARM NEON SIMD implementation
-- OnePass DFA for simple patterns
-- ReverseInner strategy for `prefix.*keyword.*suffix`
 - More comprehensive benchmarks
+- Performance profiling and optimization
 
 ---
 
@@ -330,7 +335,7 @@ Contributions are welcome! This is an experimental project and we'd love your he
 
 | Feature | coregex | stdlib `regexp` | regexp2 |
 |---------|---------|----------------|---------|
-| **Performance** | 🚀 3-263x faster | Baseline | Slower (backtracking) |
+| **Performance** | 🚀 3-3000x faster | Baseline | Slower (backtracking) |
 | **SIMD acceleration** | ✅ AVX2/SSSE3 | ❌ No | ❌ No |
 | **Prefilters** | ✅ Automatic | ❌ No | ❌ No |
 | **Multi-engine** | ✅ DFA/NFA/PikeVM | ❌ Single | ❌ Backtracking only |
@@ -339,8 +344,10 @@ Contributions are welcome! This is an experimental project and we'd love your he
 | **Capture groups** | ✅ Supported | ✅ Supported | ✅ Supported |
 | **Named captures** | ✅ Supported | ✅ Supported | ✅ Supported |
 | **Look-around** | 📅 Planned | ❌ Limited | ✅ Supported |
-| **API compatibility** | ⚠️ Similar | - | Different |
+| **API compatibility** | ✅ Drop-in replacement | - | Different |
 | **Maintained** | ✅ Active | ✅ Stdlib | ✅ Active |
+
+> **Note on Backreferences**: Both `coregex` and stdlib `regexp` do NOT support backreferences (like `\1`, `\2`) because they are fundamentally incompatible with guaranteed O(n) linear time complexity. Backreferences require backtracking which can lead to exponential worst-case performance (ReDoS vulnerability). If you absolutely need backreferences, use `regexp2`, but be aware of the performance trade-offs.
 
 **When to use coregex:**
 - ✅ Performance-critical applications (log parsing, text processing)
@@ -362,10 +369,10 @@ Contributions are welcome! This is an experimental project and we'd love your he
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Meta-Engine                          │
-│  (Strategy Selection: DFA/NFA/ReverseAnchored)              │
-└────────────┬────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                        Meta-Engine                              │
+│  (Strategy: DFA/NFA/ReverseAnchored/ReverseInner/OnePass)       │
+└────────────┬────────────────────────────────────────────────────┘
              │
      ┌───────┴───────┐
      │  Prefilter    │ ──► memchr (single byte)
@@ -373,17 +380,20 @@ Contributions are welcome! This is an experimental project and we'd love your he
      └───────┬───────┘ ──► teddy (2-8 patterns, SIMD)
              │         ──► aho-corasick (many patterns)
              │
-┌────────────┼─────────────────────────────────────────────────┐
-│            │                                                 │
-│  ┌─────────┴─────────┬─────────────────┬─────────────────┐   │
-│  │                   │                 │                 │   │
-│  ▼                   ▼                 ▼                 ▼   │
-│ ┌─────────┐  ┌──────────┐  ┌─────────────────┐  ┌──────────┐ │
-│ │  Lazy   │  │ Pike VM  │  │    Reverse      │  │ Literal  │ │
-│ │  DFA    │  │  (NFA)   │  │ Anchored (v0.4) │  │ Extract  │ │
-│ └─────────┘  └──────────┘  └─────────────────┘  └──────────┘ │
-│      │            │               │                  │       │
-└──────┴────────────┴───────────────┴──────────────────┴───────┘
+┌────────────┼─────────────────────────────────────────────────────┐
+│            │                                                     │
+│  ┌─────────┴─────────┬──────────┬──────────┬──────────┬────────┐│
+│  │                   │          │          │          │        ││
+│  ▼                   ▼          ▼          ▼          ▼        ││
+│ ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────┐│
+│ │  Lazy   │  │ Pike VM  │  │ Reverse  │  │ Reverse  │  │OnePass│
+│ │  DFA    │  │  (NFA)   │  │ Anchored │  │  Inner   │  │ DFA  ││
+│ │         │  │          │  │ (v0.4.0) │  │ (v0.8.0) │  │(v0.7)││
+│ └─────────┘  └──────────┘  └──────────┘  └──────────┘  └──────┘│
+│      │            │               │            │            │   │
+│      │            │               └────────────┴────────────┘   │
+│      │            │                    ReverseSuffix (v0.6.0)   │
+└──────┴────────────┴─────────────────────────────────────────────┘
                        │
               ┌────────┴────────┐
               │ SIMD Primitives │
@@ -395,9 +405,11 @@ Contributions are welcome! This is an experimental project and we'd love your he
 1. **Meta-Engine** - Intelligent strategy selection based on pattern analysis
 2. **Prefilter System** - Fast rejection of non-matching candidates
 3. **Multi-Engine Execution** - DFA for speed, NFA for correctness
-4. **ReverseAnchored** - For `$` patterns (v0.4.0)
-5. **ReverseSuffix** - 1000x+ speedup for `.*\.txt` patterns (v0.6.0)
-6. **SIMD Primitives** - 10-15x faster byte/substring search
+4. **ReverseAnchored** - For `$` anchor patterns (v0.4.0)
+5. **ReverseSuffix** - 1000x+ speedup for `.*\.txt` suffix patterns (v0.6.0)
+6. **OnePass DFA** - 10x faster captures with 0 allocations (v0.7.0)
+7. **ReverseInner** - 3000x+ speedup for `.*keyword.*` patterns (v0.8.0)
+8. **SIMD Primitives** - 10-15x faster byte/substring search
 
 See package documentation on [pkg.go.dev](https://pkg.go.dev/github.com/coregx/coregex) for API details.
 

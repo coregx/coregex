@@ -7,10 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v0.7.0
-- OnePass DFA for simple patterns
-- ReverseInner strategy for `prefix.*keyword.*suffix`
-- ARM NEON SIMD support
+### Planned
+- Look-around assertions
+- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
+- UTF-8 Automata optimization
+
+---
+
+## [0.8.0] - 2025-11-29
+
+### Added
+- **ReverseInner Strategy (OPT-010, OPT-012)**: Bidirectional DFA for `.*keyword.*` patterns
+  - AST splitting: separate prefix/suffix NFAs for bidirectional search
+  - Universal match detection: skip DFA scans for `.*` prefix/suffix
+  - Early return on first confirmed match (leftmost-first semantics)
+  - Prefilter finds inner literal, reverse DFA confirms prefix, forward DFA confirms suffix
+
+### Performance
+- **IsMatch speedup** (inner literal patterns):
+  - `.*connection.*` 250KB: **3,154x faster** than stdlib (12.6ms → 4µs)
+  - `.*database.*` 120KB: **1,174x faster** than stdlib
+  - Many candidates (100 occurrences): **25x faster** than stdlib
+- **Find speedup** (inner literal patterns):
+  - `.*connection.*` 250KB: **1,894x faster** than stdlib (15.2ms → 8µs)
+  - `.*database.*` 120KB: **2,857x faster** than stdlib (5.7ms → 2µs)
+  - Many candidates (100 occurrences): **13x faster** than stdlib
+- **Zero heap allocations** in hot path
+
+### Technical
+- New files: `meta/reverse_inner.go`, `meta/reverse_inner_test.go`
+- Modified: `literal/extractor.go` (AST splitting), `meta/strategy.go`, `meta/meta.go`
+- Code: +1,348 lines for ReverseInner implementation
+- Tests: 7 new test suites, all passing
+- Linter: 0 issues
+
+---
+
+## [0.7.0] - 2025-11-28
+
+### Added
+- **OnePass DFA (OPT-011)**: Zero-allocation captures for simple patterns
+  - Automatically selected for anchored patterns with linear structure
+  - 10x faster than PikeVM for capture group extraction
+  - Zero allocations (vs PikeVM's 2-4 allocs per match)
+  - Implemented using onepass compiler from stdlib
+
+### Performance
+- **FindSubmatch speedup**: ~700ns → 70ns (**10x faster**)
+- **Zero allocations** vs 2-4 allocs with PikeVM
+- Applicable to patterns like `^(prefix)([a-z]+)(suffix)$`
+
+### Technical
+- New package: `dfa/onepass/` with compiler and executor
+- Modified: `meta/strategy.go`, `meta/meta.go`
+- Tests: Comprehensive onepass test suite
+- Linter: 0 issues
 
 ---
 
