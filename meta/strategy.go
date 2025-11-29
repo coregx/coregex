@@ -63,6 +63,16 @@ const (
 	//   - Speedup: 10-20x over PikeVM for capture group extraction
 	//   - Only used for FindSubmatch, not Find
 	UseOnePass
+
+	// UseReverseInner uses inner literal prefilter + bidirectional DFA search.
+	// Selected for:
+	//   - Patterns with inner literal (e.g., `prefix.*inner.*suffix`)
+	//   - NOT start-anchored (^) or end-anchored ($)
+	//   - Has good inner literal for prefiltering
+	//   - NO good prefix or suffix literals (otherwise prefer UseDFA/UseReverseSuffix)
+	//   - Has wildcards both before AND after inner literal
+	//   - Speedup: 10-100x for patterns like `ERROR.*connection.*timeout`
+	UseReverseInner
 )
 
 // String returns a human-readable representation of the Strategy.
@@ -80,9 +90,80 @@ func (s Strategy) String() string {
 		return "UseReverseSuffix"
 	case UseOnePass:
 		return "UseOnePass"
+	case UseReverseInner:
+		return "UseReverseInner"
 	default:
 		return "Unknown"
 	}
+}
+
+// selectReverseStrategy selects reverse-based strategies (ReverseSuffix, ReverseInner).
+// Returns 0 if no reverse strategy is suitable.
+//
+// This is a helper function to reduce cyclomatic complexity in SelectStrategy.
+func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config Config) Strategy {
+	// Only applicable if DFA and prefilter enabled, not anchored
+	if re == nil || !config.EnableDFA || !config.EnablePrefilter {
+		return 0
+	}
+
+	isStartAnchored := n.IsAlwaysAnchored()
+	isEndAnchored := nfa.IsPatternEndAnchored(re)
+
+	if isStartAnchored || isEndAnchored {
+		return 0 // Anchored patterns use other strategies
+	}
+
+	// Check if we have good PREFIX literals - if so, prefer UseDFA
+	// Prefix literals enable effective forward prefiltering
+	hasGoodPrefixLiterals := false
+	if literals != nil && !literals.IsEmpty() {
+		lcp := literals.LongestCommonPrefix()
+		if len(lcp) >= config.MinLiteralLen {
+			hasGoodPrefixLiterals = true
+		}
+	}
+
+	// If good prefix exists, use forward DFA (most efficient)
+	if hasGoodPrefixLiterals {
+		return 0 // Prefix literals available - use forward DFA
+	}
+
+	// No good prefix - check suffix and inner literals
+	extractor := literal.New(literal.ExtractorConfig{
+		MaxLiterals:   config.MaxLiterals,
+		MaxLiteralLen: 64,
+		MaxClassSize:  10,
+	})
+
+	// Check suffix literals (for patterns like `.*\.txt`)
+	suffixLiterals := extractor.ExtractSuffixes(re)
+	hasGoodSuffixLiterals := false
+	if suffixLiterals != nil && !suffixLiterals.IsEmpty() {
+		lcs := suffixLiterals.LongestCommonSuffix()
+		if len(lcs) >= config.MinLiteralLen {
+			hasGoodSuffixLiterals = true
+		}
+	}
+
+	if hasGoodSuffixLiterals {
+		// Good suffix literal available - use ReverseSuffix
+		return UseReverseSuffix
+	}
+
+	// No prefix or suffix - try inner literal (for patterns like `.*keyword.*`)
+	// Uses AST splitting to build separate NFAs for prefix and suffix portions,
+	// enabling true bidirectional search with 10-100x speedup.
+	innerInfo := extractor.ExtractInnerForReverseSearch(re)
+	if innerInfo != nil {
+		lcp := innerInfo.Literals.LongestCommonPrefix()
+		if len(lcp) >= config.MinLiteralLen {
+			// Good inner literal available - use ReverseInner with AST splitting
+			return UseReverseInner
+		}
+	}
+
+	return 0 // No suitable reverse strategy
 }
 
 // SelectStrategy analyzes the NFA and literals to choose the best execution strategy.
@@ -138,56 +219,10 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		}
 	}
 
-	// Check for suffix literal optimization (second priority)
-	// Pattern must:
-	//   1. NOT be start-anchored (^ or \A)
-	//   2. NOT be end-anchored ($ or \z) - already handled above
-	//   3. Have good suffix literals for prefiltering
-	//   4. NOT have good prefix literals (prefer prefix search with UseDFA)
-	//   5. Have DFA enabled
-	// This converts O(n*m) to O(k*m) where k=suffix candidates
-	//
-	// IMPORTANT: Only use ReverseSuffix for patterns like `.*\.txt` where:
-	//   - Prefix is a wildcard (no good prefix literal)
-	//   - Suffix is a concrete literal
-	// For pure literals like "hello", use UseDFA with prefix prefilter (much faster).
-	//
-	// ZERO-ALLOCATION: Uses IsMatchReverse for backward scanning without byte reversal
-	if re != nil && config.EnableDFA && config.EnablePrefilter {
-		isStartAnchored := n.IsAlwaysAnchored()
-		isEndAnchored := nfa.IsPatternEndAnchored(re)
-
-		if !isStartAnchored && !isEndAnchored {
-			// First check if we have good PREFIX literals - if so, prefer UseDFA
-			hasGoodPrefixLiterals := false
-			if literals != nil && !literals.IsEmpty() {
-				lcp := literals.LongestCommonPrefix()
-				if len(lcp) >= config.MinLiteralLen {
-					hasGoodPrefixLiterals = true
-				}
-			}
-
-			// Only use ReverseSuffix if NO good prefix literals (i.e., prefix is wildcard)
-			if !hasGoodPrefixLiterals {
-				// Extract suffix literals
-				extractor := literal.New(literal.ExtractorConfig{
-					MaxLiterals:   config.MaxLiterals,
-					MaxLiteralLen: 64,
-					MaxClassSize:  10,
-				})
-				suffixLiterals := extractor.ExtractSuffixes(re)
-
-				// Check if we have good suffix literals
-				if suffixLiterals != nil && !suffixLiterals.IsEmpty() {
-					lcs := suffixLiterals.LongestCommonSuffix()
-					if len(lcs) >= config.MinLiteralLen {
-						// Good suffix literal available - use ReverseSuffix
-						// Example: ".*\.txt" with suffix ".txt"
-						return UseReverseSuffix
-					}
-				}
-			}
-		}
+	// Check for inner/suffix literal optimizations (second priority)
+	// Delegated to helper function to reduce cyclomatic complexity
+	if strategy := selectReverseStrategy(n, re, literals, config); strategy != 0 {
+		return strategy
 	}
 
 	// If DFA disabled, always use NFA
@@ -284,6 +319,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseOnePass:
 		return "one-pass DFA for anchored pattern with captures (10-20x over PikeVM)"
+
+	case UseReverseInner:
+		return "inner literal prefilter + bidirectional DFA (10-100x for patterns like ERROR.*connection.*timeout)"
 
 	default:
 		return "unknown strategy"

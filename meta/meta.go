@@ -41,6 +41,7 @@ type Engine struct {
 	pikevm                *nfa.PikeVM
 	reverseSearcher       *ReverseAnchoredSearcher
 	reverseSuffixSearcher *ReverseSuffixSearcher
+	reverseInnerSearcher  *ReverseInnerSearcher
 	prefilter             prefilter.Prefilter
 	strategy              Strategy
 	config                Config
@@ -201,8 +202,9 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	var dfaEngine *lazy.DFA
 	var reverseSearcher *ReverseAnchoredSearcher
 	var reverseSuffixSearcher *ReverseSuffixSearcher
+	var reverseInnerSearcher *ReverseInnerSearcher
 
-	if strategy == UseDFA || strategy == UseBoth || strategy == UseReverseAnchored || strategy == UseReverseSuffix {
+	if strategy == UseDFA || strategy == UseBoth || strategy == UseReverseAnchored || strategy == UseReverseSuffix || strategy == UseReverseInner {
 		dfaConfig := lazy.Config{
 			MaxStates:            config.MaxDFAStates,
 			DeterminizationLimit: config.DeterminizationLimit,
@@ -234,6 +236,27 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 			}
 		}
 
+		// For reverse inner search, build reverse inner searcher
+		if strategy == UseReverseInner {
+			// Extract inner literals
+			extractor := literal.New(literal.ExtractorConfig{
+				MaxLiterals:   config.MaxLiterals,
+				MaxLiteralLen: 64,
+				MaxClassSize:  10,
+			})
+			innerInfo := extractor.ExtractInnerForReverseSearch(re)
+			if innerInfo != nil {
+				reverseInnerSearcher, err = NewReverseInnerSearcher(nfaEngine, innerInfo, dfaConfig)
+				if err != nil {
+					// ReverseInner compilation failed: fall back to forward DFA
+					strategy = UseDFA
+				}
+			} else {
+				// No inner literals available: fall back to forward DFA
+				strategy = UseDFA
+			}
+		}
+
 		// Build forward DFA for non-reverse strategies
 		if strategy == UseDFA || strategy == UseBoth {
 			// Pass prefilter to DFA for start-state skip optimization
@@ -251,6 +274,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		pikevm:                pikevm,
 		reverseSearcher:       reverseSearcher,
 		reverseSuffixSearcher: reverseSuffixSearcher,
+		reverseInnerSearcher:  reverseInnerSearcher,
 		prefilter:             pf,
 		strategy:              strategy,
 		config:                config,
@@ -287,6 +311,8 @@ func (e *Engine) Find(haystack []byte) *Match {
 		return e.findReverseAnchored(haystack)
 	case UseReverseSuffix:
 		return e.findReverseSuffix(haystack)
+	case UseReverseInner:
+		return e.findReverseInner(haystack)
 	default:
 		return e.findNFA(haystack)
 	}
@@ -317,6 +343,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchReverseAnchored(haystack)
 	case UseReverseSuffix:
 		return e.isMatchReverseSuffix(haystack)
+	case UseReverseInner:
+		return e.isMatchReverseInner(haystack)
 	default:
 		return e.isMatchNFA(haystack)
 	}
@@ -540,6 +568,27 @@ func (e *Engine) isMatchReverseSuffix(haystack []byte) bool {
 
 	e.stats.DFASearches++
 	return e.reverseSuffixSearcher.IsMatch(haystack)
+}
+
+// findReverseInner searches using inner literal prefilter + bidirectional DFA.
+func (e *Engine) findReverseInner(haystack []byte) *Match {
+	if e.reverseInnerSearcher == nil {
+		// Fallback to NFA if reverse inner searcher not available
+		return e.findNFA(haystack)
+	}
+
+	e.stats.DFASearches++
+	return e.reverseInnerSearcher.Find(haystack)
+}
+
+// isMatchReverseInner checks for match using inner prefilter + bidirectional DFA.
+func (e *Engine) isMatchReverseInner(haystack []byte) bool {
+	if e.reverseInnerSearcher == nil {
+		return e.isMatchNFA(haystack)
+	}
+
+	e.stats.DFASearches++
+	return e.reverseInnerSearcher.IsMatch(haystack)
 }
 
 // Strategy returns the execution strategy selected for this engine.

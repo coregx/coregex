@@ -466,6 +466,247 @@ func (e *Extractor) expandCharClass(re *syntax.Regexp) *Seq {
 	return NewSeq(lits...)
 }
 
+// InnerLiteralInfo contains information about an inner literal and its position.
+// Used for ReverseInner strategy to identify literals suitable for bidirectional search.
+//
+// The key insight from rust-regex: we need to split the AST into three parts:
+//   - PrefixAST: the portion BEFORE the inner literal (for reverse NFA)
+//   - Inner literal: for SIMD prefiltering
+//   - SuffixAST: the portion FROM the inner literal onward (for forward NFA)
+type InnerLiteralInfo struct {
+	// Literals contains the inner literals for prefiltering
+	Literals *Seq
+
+	// InnerIdx is the index in concatenation where inner literal was found
+	InnerIdx int
+
+	// PrefixAST is the regex AST for the portion BEFORE the inner literal.
+	// This is used to build a reverse NFA for finding match start.
+	// For pattern `ERROR.*connection.*timeout`, PrefixAST represents `ERROR.*`
+	PrefixAST *syntax.Regexp
+
+	// SuffixAST is the regex AST for the portion FROM the inner literal onward.
+	// This is used to build a forward NFA for finding match end.
+	// For pattern `ERROR.*connection.*timeout`, SuffixAST represents `connection.*timeout`
+	SuffixAST *syntax.Regexp
+}
+
+// ExtractInnerForReverseSearch extracts inner literals suitable for ReverseInner strategy.
+// Returns nil if no suitable inner literal found (only prefix/suffix available).
+//
+// "Inner" means:
+//   - NOT at the very start (otherwise use prefix strategy)
+//   - NOT at the very end (otherwise use suffix strategy)
+//   - Has wildcards/repetitions both before AND after
+//
+// This is specifically for patterns like:
+//   - `ERROR.*connection.*timeout` → inner literal: "connection"
+//   - `func.*Error.*return` → inner literal: "Error"
+//   - `prefix.*middle.*suffix` → inner literal: "middle"
+//
+// Algorithm:
+//  1. Pattern must be OpConcat (concatenation of parts)
+//  2. Find the first literal that is:
+//     a. NOT at position 0 (has content before)
+//     b. NOT at last position (has content after)
+//     c. Both before and after have wildcards (.*|.+|.?)
+//  3. Prefer longer literals
+//
+// Returns nil if:
+//   - Not a concat pattern
+//   - Only prefix or suffix literals available
+//   - No wildcards before/after literals
+//
+// Example:
+//
+//	// Pattern: `ERROR.*connection.*timeout`
+//	re, _ := syntax.Parse(`ERROR.*connection.*timeout`, syntax.Perl)
+//	extractor := literal.New(literal.DefaultConfig())
+//	innerInfo := extractor.ExtractInnerForReverseSearch(re)
+//	// innerInfo.Literals = ["connection"]
+//	// innerInfo.InnerIdx = 2 (position in concat)
+func (e *Extractor) ExtractInnerForReverseSearch(re *syntax.Regexp) *InnerLiteralInfo {
+	// Only works on concatenation patterns
+	if re.Op != syntax.OpConcat || len(re.Sub) < 3 {
+		// Need at least 3 parts: prefix + inner + suffix
+		return nil
+	}
+
+	// Find the first good inner literal
+	// Criteria:
+	//  1. Index > 0 (not first position - has prefix)
+	//  2. Index < len-1 (not last position - has suffix)
+	//  3. Has wildcards before it
+	//  4. Has wildcards after it
+	for i := 1; i < len(re.Sub)-1; i++ {
+		// Check if this sub-expression has extractable literals
+		literals := e.extractInner(re.Sub[i], 0)
+		if literals.IsEmpty() {
+			continue
+		}
+
+		// Check if there are wildcards/repetitions before this position
+		hasWildcardBefore := false
+		for j := 0; j < i; j++ {
+			if isWildcardOrRepetition(re.Sub[j]) {
+				hasWildcardBefore = true
+				break
+			}
+		}
+
+		// Check if there are wildcards/repetitions after this position
+		hasWildcardAfter := false
+		for j := i + 1; j < len(re.Sub); j++ {
+			if isWildcardOrRepetition(re.Sub[j]) {
+				hasWildcardAfter = true
+				break
+			}
+		}
+
+		// If both before and after have wildcards, this is a good inner literal
+		if hasWildcardBefore && hasWildcardAfter {
+			return &InnerLiteralInfo{
+				Literals:  literals,
+				InnerIdx:  i,
+				PrefixAST: buildPrefixAST(re, i),
+				SuffixAST: buildSuffixAST(re, i),
+			}
+		}
+	}
+
+	// No suitable inner literal found
+	return nil
+}
+
+// buildPrefixAST creates a new Regexp that matches only the prefix portion.
+// This is concat[0:splitIdx] - the part BEFORE the inner literal.
+// Used for building reverse NFA in ReverseInner strategy.
+func buildPrefixAST(concat *syntax.Regexp, splitIdx int) *syntax.Regexp {
+	if splitIdx <= 0 {
+		return &syntax.Regexp{Op: syntax.OpEmptyMatch}
+	}
+
+	if splitIdx == 1 {
+		return cloneRegexp(concat.Sub[0])
+	}
+
+	// Multiple elements - create new concat
+	prefix := &syntax.Regexp{
+		Op:    syntax.OpConcat,
+		Flags: concat.Flags,
+		Sub:   make([]*syntax.Regexp, splitIdx),
+	}
+	for i := 0; i < splitIdx; i++ {
+		prefix.Sub[i] = cloneRegexp(concat.Sub[i])
+	}
+
+	return prefix
+}
+
+// buildSuffixAST creates a new Regexp that matches the suffix portion.
+// This is concat[splitIdx:] - includes the inner literal and everything after.
+// Used for building forward NFA in ReverseInner strategy.
+func buildSuffixAST(concat *syntax.Regexp, splitIdx int) *syntax.Regexp {
+	remaining := len(concat.Sub) - splitIdx
+	if remaining <= 0 {
+		return &syntax.Regexp{Op: syntax.OpEmptyMatch}
+	}
+
+	if remaining == 1 {
+		return cloneRegexp(concat.Sub[splitIdx])
+	}
+
+	suffix := &syntax.Regexp{
+		Op:    syntax.OpConcat,
+		Flags: concat.Flags,
+		Sub:   make([]*syntax.Regexp, remaining),
+	}
+	for i := 0; i < remaining; i++ {
+		suffix.Sub[i] = cloneRegexp(concat.Sub[splitIdx+i])
+	}
+
+	return suffix
+}
+
+// cloneRegexp creates a deep copy of a syntax.Regexp.
+// This is necessary because Go's syntax.Regexp is mutable and we don't
+// want to modify the original AST.
+func cloneRegexp(re *syntax.Regexp) *syntax.Regexp {
+	if re == nil {
+		return nil
+	}
+
+	clone := &syntax.Regexp{
+		Op:    re.Op,
+		Flags: re.Flags,
+		Min:   re.Min,
+		Max:   re.Max,
+		Cap:   re.Cap,
+		Name:  re.Name,
+	}
+
+	// Clone Rune slice
+	if len(re.Rune) > 0 {
+		clone.Rune = make([]rune, len(re.Rune))
+		copy(clone.Rune, re.Rune)
+	}
+
+	// Clone Rune0 (inline storage for small literals)
+	clone.Rune0 = re.Rune0
+
+	// Clone Sub slice (recursively)
+	if len(re.Sub) > 0 {
+		clone.Sub = make([]*syntax.Regexp, len(re.Sub))
+		for i, sub := range re.Sub {
+			clone.Sub[i] = cloneRegexp(sub)
+		}
+	}
+
+	// Clone Sub0 (inline storage)
+	for i := range re.Sub0 {
+		if re.Sub0[i] != nil {
+			clone.Sub0[i] = cloneRegexp(re.Sub0[i])
+		}
+	}
+
+	return clone
+}
+
+// isWildcardOrRepetition checks if a regexp node is a wildcard or repetition.
+// These indicate variable-length matching before/after inner literal.
+func isWildcardOrRepetition(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		return true
+	case syntax.OpAnyChar, syntax.OpAnyCharNotNL:
+		return true
+	case syntax.OpConcat:
+		// Check if any sub-expression is wildcard
+		for _, sub := range re.Sub {
+			if isWildcardOrRepetition(sub) {
+				return true
+			}
+		}
+		return false
+	case syntax.OpAlternate:
+		// Check if any alternative is wildcard
+		for _, sub := range re.Sub {
+			if isWildcardOrRepetition(sub) {
+				return true
+			}
+		}
+		return false
+	case syntax.OpCapture:
+		// Check captured content
+		if len(re.Sub) > 0 {
+			return isWildcardOrRepetition(re.Sub[0])
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 // Helper functions
 
 // runeSliceToBytes converts []rune to []byte using UTF-8 encoding.

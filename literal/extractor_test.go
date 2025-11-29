@@ -494,6 +494,163 @@ func TestExtractPrefixesRecursionLimit(t *testing.T) {
 	}
 }
 
+// TestExtractInnerForReverseSearch tests inner literal extraction for ReverseInner strategy
+func TestExtractInnerForReverseSearch(t *testing.T) {
+	tests := []struct {
+		name            string
+		pattern         string
+		expectNil       bool
+		expectedLiteral string
+	}{
+		{
+			name:            "inner literal with wildcards before and after",
+			pattern:         `.*connection.*`,
+			expectNil:       false,
+			expectedLiteral: "connection",
+		},
+		{
+			name:            "ERROR prefix inner suffix pattern",
+			pattern:         `ERROR.*connection.*timeout`,
+			expectNil:       false,
+			expectedLiteral: "connection",
+		},
+		{
+			name:            "func inner return pattern",
+			pattern:         `func.*Error.*return`,
+			expectNil:       false,
+			expectedLiteral: "Error",
+		},
+		{
+			name:            "prefix middle suffix pattern",
+			pattern:         `prefix.*middle.*suffix`,
+			expectNil:       false,
+			expectedLiteral: "middle",
+		},
+		{
+			name:      "prefix only pattern (no inner)",
+			pattern:   `hello.*`,
+			expectNil: true,
+		},
+		{
+			name:      "suffix only pattern (no inner)",
+			pattern:   `.*world`,
+			expectNil: true,
+		},
+		{
+			name:      "simple literal (no wildcards)",
+			pattern:   `hello`,
+			expectNil: true,
+		},
+		{
+			name:      "no wildcards before",
+			pattern:   `helloconnectionworld`,
+			expectNil: true,
+		},
+		{
+			name:      "wildcard only before, not after",
+			pattern:   `.*connection`,
+			expectNil: true,
+		},
+		{
+			name:      "wildcard only after, not before",
+			pattern:   `connection.*`,
+			expectNil: true,
+		},
+		{
+			name:            "alternation with inner",
+			pattern:         `.*(foo|bar).*`,
+			expectNil:       false,
+			expectedLiteral: "foo", // first alternative
+		},
+		{
+			name:      "too short concat (< 3 parts)",
+			pattern:   `a.*b`,
+			expectNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re, err := syntax.Parse(tt.pattern, syntax.Perl)
+			if err != nil {
+				t.Fatalf("Failed to parse regex %q: %v", tt.pattern, err)
+			}
+
+			extractor := New(DefaultConfig())
+			innerInfo := extractor.ExtractInnerForReverseSearch(re)
+
+			//nolint:nestif // Test validation logic requires nested conditions
+			if tt.expectNil {
+				if innerInfo != nil {
+					t.Errorf("Expected nil, got inner info with literal %q",
+						string(innerInfo.Literals.Get(0).Bytes))
+				}
+			} else {
+				if innerInfo == nil {
+					t.Errorf("Expected inner info, got nil")
+					return
+				}
+				if innerInfo.Literals.IsEmpty() {
+					t.Errorf("Expected non-empty literals")
+					return
+				}
+				got := string(innerInfo.Literals.Get(0).Bytes)
+				if got != tt.expectedLiteral {
+					t.Errorf("Expected literal %q, got %q", tt.expectedLiteral, got)
+				}
+			}
+		})
+	}
+}
+
+// TestExtractInnerForReverseSearchEdgeCases tests edge cases
+func TestExtractInnerForReverseSearchEdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		pattern   string
+		expectNil bool
+	}{
+		{
+			name:      "empty pattern",
+			pattern:   ``,
+			expectNil: true,
+		},
+		{
+			name:      "only wildcard",
+			pattern:   `.*`,
+			expectNil: true,
+		},
+		{
+			name:      "nested captures with inner",
+			pattern:   `.*(a(b)c).*`,
+			expectNil: false,
+		},
+		{
+			name:      "multiple wildcards before and after",
+			pattern:   `.*.*connection.*.*`,
+			expectNil: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re, err := syntax.Parse(tt.pattern, syntax.Perl)
+			if err != nil {
+				t.Fatalf("Failed to parse regex %q: %v", tt.pattern, err)
+			}
+
+			extractor := New(DefaultConfig())
+			innerInfo := extractor.ExtractInnerForReverseSearch(re)
+
+			if tt.expectNil && innerInfo != nil {
+				t.Errorf("Expected nil, got inner info")
+			} else if !tt.expectNil && innerInfo == nil {
+				t.Errorf("Expected inner info, got nil")
+			}
+		})
+	}
+}
+
 // BenchmarkExtractPrefixes benchmarks prefix extraction performance
 func BenchmarkExtractPrefixes(b *testing.B) {
 	patterns := []string{
@@ -516,6 +673,31 @@ func BenchmarkExtractPrefixes(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
 				_ = extractor.ExtractPrefixes(re)
+			}
+		})
+	}
+}
+
+// BenchmarkExtractInnerForReverseSearch benchmarks inner literal extraction
+func BenchmarkExtractInnerForReverseSearch(b *testing.B) {
+	patterns := []string{
+		".*connection.*",
+		"ERROR.*connection.*timeout",
+		"prefix.*middle.*suffix",
+	}
+
+	extractor := New(DefaultConfig())
+
+	for _, pattern := range patterns {
+		re, err := syntax.Parse(pattern, syntax.Perl)
+		if err != nil {
+			b.Fatalf("Parse failed for %q: %v", pattern, err)
+		}
+
+		b.Run(pattern, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = extractor.ExtractInnerForReverseSearch(re)
 			}
 		})
 	}
