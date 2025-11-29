@@ -10,6 +10,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/stargazers)
 [![GitHub Issues](https://img.shields.io/github/issues/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/issues)
+[![GitHub discussions](https://img.shields.io/github/discussions/coregx/coregex)](https://github.com/coregx/coregex/discussions)
 
 ---
 
@@ -441,16 +442,12 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Status**: ⚠️ **EXPERIMENTAL** - v0.6.0 released, API may change in 0.x versions
-
-**Current Version**: v0.6.0 (2025-11-28)
+**Status**: ⚠️ **Pre-1.0** - API may change before v1.0.0
 
 **Ready for:** Testing, benchmarking, feedback, and experimental use
-**Production readiness:** API stability expected in v1.0.0
 
-**Current Release:** v0.6.0 - ReverseSuffix optimization (1000x+ speedup for `.*\.txt` patterns)
-**Next Release:** v0.7.0 - OnePass DFA + ReverseInner strategy
+See [Releases](https://github.com/coregx/coregex/releases) for the latest version and [Discussions](https://github.com/coregx/coregex/discussions/3) for roadmap.
 
 ---
 
-*Built with performance and correctness in mind by the CoreGX community* 🚀
+*Built with performance and correctness in mind by the coregex community*
