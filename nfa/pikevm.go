@@ -27,8 +27,70 @@ type PikeVM struct {
 // Each thread tracks a position in the NFA state graph and capture positions.
 type thread struct {
 	state    StateID
-	startPos int   // Position where this thread's match attempt started
-	captures []int // Capture positions: [start0, end0, start1, end1, ...] (-1 = not set)
+	startPos int         // Position where this thread's match attempt started
+	captures cowCaptures // COW capture positions: [start0, end0, start1, end1, ...] (-1 = not set)
+}
+
+// cowCaptures implements copy-on-write semantics for capture slots.
+// Multiple threads can share the same underlying data until modification.
+// This reduces allocations in PikeVM when threads split but don't modify captures.
+type cowCaptures struct {
+	shared *sharedCaptures
+}
+
+type sharedCaptures struct {
+	data []int
+	refs int
+}
+
+// clone increments ref count and returns a reference to the same data (no copy)
+func (c cowCaptures) clone() cowCaptures {
+	if c.shared == nil {
+		return cowCaptures{}
+	}
+	c.shared.refs++
+	return cowCaptures{shared: c.shared}
+}
+
+// update modifies a capture slot, copying only if refs > 1 (copy-on-write)
+func (c cowCaptures) update(slotIndex, value int) cowCaptures {
+	if c.shared == nil || slotIndex < 0 || slotIndex >= len(c.shared.data) {
+		return c
+	}
+	if c.shared.refs > 1 {
+		// shared - copy before write
+		c.shared.refs--
+		newData := make([]int, len(c.shared.data))
+		copy(newData, c.shared.data)
+		newData[slotIndex] = value
+		return cowCaptures{
+			shared: &sharedCaptures{
+				data: newData,
+				refs: 1,
+			},
+		}
+	}
+	// exclusive owner - modify in place
+	c.shared.data[slotIndex] = value
+	return c
+}
+
+// get returns the capture data (may be nil)
+func (c cowCaptures) get() []int {
+	if c.shared == nil {
+		return nil
+	}
+	return c.shared.data
+}
+
+// copyData returns a copy of the underlying data (for saving best match)
+func (c cowCaptures) copyData() []int {
+	if c.shared == nil {
+		return nil
+	}
+	dst := make([]int, len(c.shared.data))
+	copy(dst, c.shared.data)
+	return dst
 }
 
 // Match represents a successful regex match with start and end positions
@@ -63,43 +125,31 @@ func NewPikeVM(nfa *NFA) *PikeVM {
 	}
 }
 
-// newCaptures creates a new capture slots array initialized to -1 (unset)
-func (p *PikeVM) newCaptures() []int {
+// newCaptures creates a new COW capture slots initialized to -1 (unset)
+func (p *PikeVM) newCaptures() cowCaptures {
 	numSlots := p.nfa.CaptureCount() * 2 // Each group has start and end
 	if numSlots == 0 {
-		return nil
+		return cowCaptures{}
 	}
-	caps := make([]int, numSlots)
-	for i := range caps {
-		caps[i] = -1
+	data := make([]int, numSlots)
+	for i := range data {
+		data[i] = -1
 	}
-	return caps
+	return cowCaptures{
+		shared: &sharedCaptures{
+			data: data,
+			refs: 1,
+		},
+	}
 }
 
-// copyCaptures creates a copy of capture slots
-func copyCaptures(src []int) []int {
-	if src == nil {
-		return nil
-	}
-	dst := make([]int, len(src))
-	copy(dst, src)
-	return dst
-}
-
-// updateCapture updates a capture slot in a copy of the captures array
-func updateCapture(caps []int, groupIndex uint32, isStart bool, pos int) []int {
-	if caps == nil {
-		return nil
-	}
-	newCaps := copyCaptures(caps)
+// updateCapture updates a capture slot using COW semantics
+func updateCapture(caps cowCaptures, groupIndex uint32, isStart bool, pos int) cowCaptures {
 	slotIndex := int(groupIndex) * 2
 	if !isStart {
 		slotIndex++
 	}
-	if slotIndex < len(newCaps) {
-		newCaps[slotIndex] = pos
-	}
-	return newCaps
+	return caps.update(slotIndex, pos)
 }
 
 // Search finds the first match in the haystack.
@@ -263,7 +313,7 @@ func (p *PikeVM) searchUnanchoredWithCaptures(haystack []byte) *MatchWithCapture
 					(t.startPos == bestStart && pos > bestEnd) {
 					bestStart = t.startPos
 					bestEnd = pos
-					bestCaptures = copyCaptures(t.captures)
+					bestCaptures = t.captures.copyData()
 				}
 			}
 		}
@@ -327,7 +377,7 @@ func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithC
 		for _, t := range p.queue {
 			if p.nfa.IsMatch(t.state) {
 				lastMatchPos = pos
-				lastMatchCaptures = copyCaptures(t.captures)
+				lastMatchCaptures = t.captures.copyData()
 				break
 			}
 		}
