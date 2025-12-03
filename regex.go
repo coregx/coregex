@@ -65,6 +65,17 @@ type Regex struct {
 	pattern string
 }
 
+// Regexp is an alias for Regex to provide drop-in compatibility with stdlib regexp.
+// This allows replacing `import "regexp"` with `import regexp "github.com/coregx/coregex"`
+// without changing type names in existing code.
+//
+// Example:
+//
+//	import regexp "github.com/coregx/coregex"
+//
+//	var re *regexp.Regexp = regexp.MustCompile(`\d+`)
+type Regexp = Regex
+
 // Compile compiles a regular expression pattern.
 //
 // Syntax is Perl-compatible (same as Go's stdlib regexp).

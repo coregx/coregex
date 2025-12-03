@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.1] - 2025-12-03
+
+### Added
+- **Type alias `Regexp`**: Drop-in compatibility with stdlib `regexp` package
+  - `type Regexp = Regex` allows using `*regexp.Regexp` in existing code
+  - Simply replace `import "regexp"` with `import regexp "github.com/coregx/coregex"`
+  - Resolves [#5](https://github.com/coregx/coregex/issues/5)
+
+---
+
 ## [0.8.0] - 2025-11-29
 
 ### Added
