@@ -14,6 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.2] - 2025-12-03
+
+### Fixed
+- **Critical: Infinite loop in `onepass.Build()` for patterns like `(.*)`**
+  - Bug: byte overflow when iterating ranges with hi=255 caused hang
+  - Affected patterns: `(.*)`, `^(.*)$`, `([_a-zA-Z][_a-zA-Z0-9]*)=(.*)`
+  - Thanks to Ben Hoyt (GoAWK) for reporting!
+
+### Added
+- **`Longest()` method**: API compatibility with stdlib `regexp.Regexp`
+- **`QuoteMeta()` function**: Escape regex metacharacters in strings
+
+---
+
 ## [0.8.1] - 2025-12-03
 
 ### Added
