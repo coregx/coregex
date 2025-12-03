@@ -364,18 +364,21 @@ func (r *Regex) String() string {
 	return r.pattern
 }
 
-// Longest makes future searches prefer the longest match.
+// Longest makes future searches prefer the leftmost-longest match.
 //
-// Note: coregex already uses leftmost-longest semantics by default for DFA-based
-// matching, so this method is provided for API compatibility with stdlib regexp.
-// It returns the receiver to allow method chaining.
+// Note: coregex already uses leftmost-longest semantics by default for all
+// matching strategies (DFA, NFA, OnePass), so this method is a no-op provided
+// for API compatibility with stdlib regexp.
+//
+// Unlike stdlib regexp, calling this method has no effect and is safe to call
+// concurrently.
 //
 // Example:
 //
 //	re := coregex.MustCompile(`a+`)
-//	re.Longest()
+//	re.Longest() // no-op, already leftmost-longest
 func (r *Regex) Longest() {
-	// No-op: coregex DFA already uses leftmost-longest semantics
+	// No-op: coregex already uses leftmost-longest semantics
 }
 
 // NumSubexp returns the number of parenthesized subexpressions (capture groups).
