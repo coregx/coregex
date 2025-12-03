@@ -120,8 +120,7 @@ func NewPikeVM(nfa *NFA) *PikeVM {
 		nfa:       nfa,
 		queue:     make([]thread, 0, capacity),
 		nextQueue: make([]thread, 0, capacity),
-		//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
-		visited: sparse.NewSparseSet(uint32(capacity)),
+		visited:   sparse.NewSparseSet(uint32(capacity)),
 	}
 }
 

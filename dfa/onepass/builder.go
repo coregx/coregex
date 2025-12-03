@@ -49,7 +49,6 @@ func Build(n *nfa.NFA) (*DFA, error) {
 	}
 
 	// Create builder
-	//nolint:gosec // G115: n.States() is bounded by NFA construction, safe conversion
 	b := &Builder{
 		nfa:      n,
 		seen:     sparse.NewSparseSet(uint32(n.States())),
@@ -91,11 +90,9 @@ func Build(n *nfa.NFA) (*DFA, error) {
 	}
 
 	// Find minimum match state ID for fast detection
-	//nolint:gosec // G115: matchStates length is bounded by DFA construction, safe conversion
 	dfa.minMatchID = StateID(len(dfa.matchStates))
 	for i := len(dfa.matchStates) - 1; i >= 0; i-- {
 		if dfa.matchStates[i] {
-			//nolint:gosec // G115: i is non-negative loop counter, safe conversion
 			dfa.minMatchID = StateID(i)
 			break
 		}
@@ -119,7 +116,6 @@ func (b *Builder) buildState(nfaRoot nfa.StateID) (StateID, error) {
 	}
 
 	// Allocate new DFA state
-	//nolint:gosec // G115: numStates is validated against MaxStateID below, safe conversion
 	sid := StateID(b.numStates)
 	if sid > MaxStateID {
 		return 0, fmt.Errorf("too many DFA states (max %d)", MaxStateID)

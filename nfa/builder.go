@@ -30,7 +30,6 @@ func NewBuilderWithCapacity(capacity int) *Builder {
 
 // AddMatch adds a match (accepting) state and returns its ID
 func (b *Builder) AddMatch() StateID {
-	//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 	id := StateID(len(b.states))
 	b.states = append(b.states, State{
 		id:   id,
@@ -45,7 +44,6 @@ func (b *Builder) AddByteRange(lo, hi byte, next StateID) StateID {
 	// Track byte class boundaries for DFA optimization
 	b.byteClassSet.SetRange(lo, hi)
 
-	//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 	id := StateID(len(b.states))
 	b.states = append(b.states, State{
 		id:   id,
@@ -65,7 +63,6 @@ func (b *Builder) AddSparse(transitions []Transition) StateID {
 		b.byteClassSet.SetRange(tr.Lo, tr.Hi)
 	}
 
-	//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 	id := StateID(len(b.states))
 	// Copy transitions to avoid aliasing
 	trans := make([]Transition, len(transitions))
@@ -81,7 +78,6 @@ func (b *Builder) AddSparse(transitions []Transition) StateID {
 // AddSplit adds a state with epsilon transitions to two states (alternation).
 // This is used for alternation (a|b) and optional patterns.
 func (b *Builder) AddSplit(left, right StateID) StateID {
-	//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 	id := StateID(len(b.states))
 	b.states = append(b.states, State{
 		id:    id,
@@ -94,7 +90,6 @@ func (b *Builder) AddSplit(left, right StateID) StateID {
 
 // AddEpsilon adds a state with a single epsilon transition (no input consumed)
 func (b *Builder) AddEpsilon(next StateID) StateID {
-	//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 	id := StateID(len(b.states))
 	b.states = append(b.states, State{
 		id:   id,
@@ -106,7 +101,6 @@ func (b *Builder) AddEpsilon(next StateID) StateID {
 
 // AddFail adds a dead state with no transitions
 func (b *Builder) AddFail() StateID {
-	//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 	id := StateID(len(b.states))
 	b.states = append(b.states, State{
 		id:   id,
@@ -120,7 +114,6 @@ func (b *Builder) AddFail() StateID {
 // isStart is true for opening boundary '(', false for closing ')'.
 // next is the state to transition to after recording the capture position.
 func (b *Builder) AddCapture(captureIndex uint32, isStart bool, next StateID) StateID {
-	//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 	id := StateID(len(b.states))
 	b.states = append(b.states, State{
 		id:           id,
@@ -223,7 +216,6 @@ func (b *Builder) Validate() error {
 
 	// Check all states have valid target references
 	for i, s := range b.states {
-		//nolint:gosec // G115: StateID is uint32, this conversion is safe for realistic NFA sizes
 		id := StateID(i)
 		switch s.kind {
 		case StateByteRange, StateEpsilon, StateCapture:

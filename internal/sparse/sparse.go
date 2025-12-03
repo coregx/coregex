@@ -49,7 +49,6 @@ func (s *SparseSet) Contains(value uint32) bool {
 	if len(s.sparse) > 0x7FFFFFFF {
 		return false // len too large for safe conversion
 	}
-	//nolint:gosec // G115: len is checked above for safe conversion to uint32
 	sparseLen := uint32(len(s.sparse))
 	if value >= sparseLen {
 		return false

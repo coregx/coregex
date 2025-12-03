@@ -78,7 +78,6 @@ func (c *Cache) Insert(key StateKey, state *State) (StateID, error) {
 	}
 
 	// Check capacity
-	//nolint:gosec // G115: len() returns int, safe to convert to uint32 for cache size comparison
 	if uint32(len(c.states)) >= c.maxStates {
 		c.misses++
 		return InvalidState, ErrCacheFull
@@ -143,7 +142,6 @@ func (c *Cache) Size() int {
 func (c *Cache) IsFull() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	//nolint:gosec // G115: len() returns int, safe to convert to uint32 for cache size comparison
 	return uint32(len(c.states)) >= c.maxStates
 }
 
