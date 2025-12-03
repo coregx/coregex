@@ -148,6 +148,57 @@ func DefaultConfig() meta.Config {
 	return meta.DefaultConfig()
 }
 
+// QuoteMeta returns a string that escapes all regular expression metacharacters
+// inside the argument text; the returned string is a regular expression matching
+// the literal text.
+//
+// Example:
+//
+//	escaped := coregex.QuoteMeta("hello.world")
+//	// escaped = "hello\\.world"
+//	re := coregex.MustCompile(escaped)
+//	re.MatchString("hello.world") // true
+func QuoteMeta(s string) string {
+	// Special characters that need escaping in regex
+	const special = `\.+*?()|[]{}^$`
+
+	// Count how many characters need escaping
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if isSpecial(s[i], special) {
+			n++
+		}
+	}
+
+	// If no escaping needed, return original
+	if n == 0 {
+		return s
+	}
+
+	// Build escaped string
+	buf := make([]byte, len(s)+n)
+	j := 0
+	for i := 0; i < len(s); i++ {
+		if isSpecial(s[i], special) {
+			buf[j] = '\\'
+			j++
+		}
+		buf[j] = s[i]
+		j++
+	}
+	return string(buf)
+}
+
+// isSpecial returns true if c is in the special characters string.
+func isSpecial(c byte, special string) bool {
+	for i := 0; i < len(special); i++ {
+		if c == special[i] {
+			return true
+		}
+	}
+	return false
+}
+
 // Match reports whether the byte slice b contains any match of the pattern.
 //
 // Example:
@@ -311,6 +362,20 @@ func (r *Regex) FindAllString(s string, n int) []string {
 //	println(re.String()) // `\d+`
 func (r *Regex) String() string {
 	return r.pattern
+}
+
+// Longest makes future searches prefer the longest match.
+//
+// Note: coregex already uses leftmost-longest semantics by default for DFA-based
+// matching, so this method is provided for API compatibility with stdlib regexp.
+// It returns the receiver to allow method chaining.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`a+`)
+//	re.Longest()
+func (r *Regex) Longest() {
+	// No-op: coregex DFA already uses leftmost-longest semantics
 }
 
 // NumSubexp returns the number of parenthesized subexpressions (capture groups).

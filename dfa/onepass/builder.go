@@ -280,8 +280,9 @@ func (b *Builder) buildTransitions(tableIdx int, closure []closureEntry) error {
 		switch state.Kind() {
 		case nfa.StateByteRange:
 			lo, hi, next := state.ByteRange()
-			for by := lo; by <= hi; by++ {
-				class := b.nfa.ByteClasses().Get(by)
+			// Use int to avoid overflow when hi=255 (byte wraps to 0)
+			for by := int(lo); by <= int(hi); by++ {
+				class := b.nfa.ByteClasses().Get(byte(by))
 				// Check for conflict
 				if existing, ok := byteTransitions[class]; ok {
 					if existing.targetNFA != next {
@@ -302,8 +303,9 @@ func (b *Builder) buildTransitions(tableIdx int, closure []closureEntry) error {
 
 		case nfa.StateSparse:
 			for _, trans := range state.Transitions() {
-				for by := trans.Lo; by <= trans.Hi; by++ {
-					class := b.nfa.ByteClasses().Get(by)
+				// Use int to avoid overflow when trans.Hi=255 (byte wraps to 0)
+				for by := int(trans.Lo); by <= int(trans.Hi); by++ {
+					class := b.nfa.ByteClasses().Get(byte(by))
 					// Check for conflict
 					if existing, ok := byteTransitions[class]; ok {
 						if existing.targetNFA != trans.Next {
