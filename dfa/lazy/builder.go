@@ -47,7 +47,13 @@ func (b *Builder) Build() (*DFA, error) {
 
 	// Create start state from NFA unanchored start (for O(n) unanchored search)
 	// Use StartUnanchored() which includes the implicit (?s:.)*? prefix
-	startStateSet := b.epsilonClosure([]nfa.StateID{b.nfa.StartUnanchored()})
+	//
+	// For the default start state (StartText), both \A and ^ are satisfied.
+	// This enables proper handling of patterns like "^abc" - the DFA will
+	// only match at the true start of input because the StateLook for ^
+	// will only be followed when LookStartLine is in the LookSet.
+	startLook := LookSetFromStartKind(StartText)
+	startStateSet := b.epsilonClosure([]nfa.StateID{b.nfa.StartUnanchored()}, startLook)
 	isMatch := b.containsMatchState(startStateSet)
 	startState := NewState(StartState, startStateSet, isMatch)
 
@@ -112,16 +118,23 @@ func (b *Builder) buildPrefilter() prefilter.Prefilter {
 // epsilonClosure computes the epsilon-closure of a set of NFA states.
 //
 // The epsilon-closure is the set of all NFA states reachable from the input
-// states via epsilon transitions (Split, Epsilon states).
+// states via epsilon transitions (Split, Epsilon states) and satisfied
+// look-around assertions (StateLook).
 //
 // This is a fundamental operation in NFA → DFA conversion.
+//
+// The lookHave parameter specifies which look assertions are currently satisfied.
+// For example, at the start of input both LookStartText and LookStartLine
+// are satisfied. StateLook transitions are only followed if their assertion
+// is in the lookHave set.
 //
 // Algorithm: Iterative DFS with visited set
 //  1. Start with input states
 //  2. Follow all epsilon transitions (Split, Epsilon)
-//  3. Collect all reachable states
-//  4. Return sorted list for consistent ordering
-func (b *Builder) epsilonClosure(states []nfa.StateID) []nfa.StateID {
+//  3. Follow StateLook transitions only if assertion is satisfied
+//  4. Collect all reachable states
+//  5. Return sorted list for consistent ordering
+func (b *Builder) epsilonClosure(states []nfa.StateID, lookHave LookSet) []nfa.StateID {
 	// Use StateSet for efficient membership testing and deduplication
 	closure := NewStateSetWithCapacity(len(states) * 2)
 	stack := make([]nfa.StateID, 0, len(states)*2)
@@ -165,6 +178,17 @@ func (b *Builder) epsilonClosure(states []nfa.StateID) []nfa.StateID {
 				closure.Add(right)
 				stack = append(stack, right)
 			}
+
+		case nfa.StateLook:
+			// CRITICAL: Only follow if the look assertion is satisfied
+			// This is the key fix for proper ^ and $ handling in DFA.
+			// Without this check, the DFA would incorrectly match patterns
+			// like "^abc" at any position in the input.
+			look, next := state.Look()
+			if lookHave.Contains(look) && next != nfa.InvalidState && !closure.Contains(next) {
+				closure.Add(next)
+				stack = append(stack, next)
+			}
 		}
 	}
 
@@ -178,8 +202,12 @@ func (b *Builder) epsilonClosure(states []nfa.StateID) []nfa.StateID {
 //  1. For each NFA state in the input set
 //  2. Check if it has a transition on byte b
 //  3. Collect all target states
-//  4. Compute epsilon-closure of targets
+//  4. Compute epsilon-closure of targets with appropriate look assertions
 //  5. Return the resulting state set
+//
+// The look assertions after a byte transition depend on the byte:
+//   - After '\n': LookStartLine is satisfied (multiline ^ matches after newline)
+//   - After other bytes: No line-start assertions satisfied
 //
 // This effectively simulates one step of the NFA for all active states.
 func (b *Builder) move(states []nfa.StateID, input byte) []nfa.StateID {
@@ -213,8 +241,18 @@ func (b *Builder) move(states []nfa.StateID, input byte) []nfa.StateID {
 		return nil
 	}
 
-	// Compute epsilon-closure of target states
-	return b.epsilonClosure(targets.ToSlice())
+	// Determine look assertions satisfied after this byte transition.
+	// After '\n', multiline ^ (LookStartLine) is satisfied.
+	// This enables patterns like "(?m)^abc" to match at line starts.
+	var lookAfter LookSet
+	if input == '\n' {
+		lookAfter = LookStartLine
+	} else {
+		lookAfter = LookNone
+	}
+
+	// Compute epsilon-closure of target states with appropriate look assertions
+	return b.epsilonClosure(targets.ToSlice(), lookAfter)
 }
 
 // containsMatchState returns true if any state in the set is a match state

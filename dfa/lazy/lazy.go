@@ -730,8 +730,10 @@ func (d *DFA) ResetCache() {
 	d.startTable = NewStartTable()
 
 	// Recreate start state using unanchored start (with implicit (?s:.)*? prefix)
+	// Use StartText look assertions (both \A and ^ are satisfied at position 0)
 	builder := NewBuilder(d.nfa, d.config)
-	startStateSet := builder.epsilonClosure([]nfa.StateID{d.nfa.StartUnanchored()})
+	startLook := LookSetFromStartKind(StartText)
+	startStateSet := builder.epsilonClosure([]nfa.StateID{d.nfa.StartUnanchored()}, startLook)
 	isMatch := builder.containsMatchState(startStateSet)
 	startState := NewState(StartState, startStateSet, isMatch)
 	key := ComputeStateKey(startStateSet)

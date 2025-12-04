@@ -151,9 +151,13 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	}
 
 	// Extract literals for prefiltering
+	// NOTE: Don't build prefilter for start-anchored patterns (^...).
+	// A prefilter for "^abc" would find "abc" anywhere in input, bypassing the anchor.
+	// The prefilter's IsComplete() would return true, causing false positives.
 	var literals *literal.Seq
 	var pf prefilter.Prefilter
-	if config.EnablePrefilter {
+	isStartAnchored := nfaEngine.IsAlwaysAnchored()
+	if config.EnablePrefilter && !isStartAnchored {
 		extractor := literal.New(literal.ExtractorConfig{
 			MaxLiterals:   config.MaxLiterals,
 			MaxLiteralLen: 64,

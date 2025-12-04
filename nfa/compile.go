@@ -108,13 +108,14 @@ func (c *Compiler) CompileRegexp(re *syntax.Regexp) (*NFA, error) {
 	// Anchored start always points to pattern
 	anchoredStart := patternStart
 
-	// Unanchored start: add implicit (?s:.)*? prefix unless pattern is anchored
+	// Unanchored start: compile the (?s:.)*? prefix for DFA and other engines
+	// that need it. PikeVM simulates this prefix in its search loop instead
+	// (like Rust regex-automata) for correct startPos tracking.
+	// If pattern is anchored, unanchored start equals anchored start.
 	var unanchoredStart StateID
 	if c.config.Anchored || allAnchored {
-		// Pattern is anchored: unanchored and anchored starts are the same
 		unanchoredStart = anchoredStart
 	} else {
-		// Add unanchored prefix (?s:.)*?
 		unanchoredStart = c.compileUnanchoredPrefix(patternStart)
 	}
 
@@ -174,13 +175,24 @@ func (c *Compiler) compileRegexp(re *syntax.Regexp) (start, end StateID, err err
 		return c.compileRepeat(re.Sub[0], re.Min, re.Max)
 	case syntax.OpCapture:
 		return c.compileCapture(re)
-	case syntax.OpBeginLine, syntax.OpBeginText:
-		// Anchors - for MVP, just pass through (handled by anchored flag)
-		// In future, implement as zero-width assertions
-		return c.compileEmptyMatch()
-	case syntax.OpEndLine, syntax.OpEndText:
-		// End anchors - for MVP, just pass through
-		return c.compileEmptyMatch()
+	case syntax.OpBeginText:
+		// ^ or \A - Go's parser converts both to OpBeginText
+		// Implement as ^ (start of line) for compatibility with $ behavior
+		id := c.builder.AddLook(LookStartLine, InvalidState)
+		return id, id, nil
+	case syntax.OpEndText:
+		// $ or \z - Go's parser converts both to OpEndText
+		// Implement as $ (end of line with newline awareness)
+		id := c.builder.AddLook(LookEndLine, InvalidState)
+		return id, id, nil
+	case syntax.OpBeginLine:
+		// Explicit ^ (though parser converts to OpBeginText)
+		id := c.builder.AddLook(LookStartLine, InvalidState)
+		return id, id, nil
+	case syntax.OpEndLine:
+		// Explicit $ (though parser converts to OpEndText)
+		id := c.builder.AddLook(LookEndLine, InvalidState)
+		return id, id, nil
 	case syntax.OpEmptyMatch:
 		return c.compileEmptyMatch()
 	default:
@@ -840,6 +852,10 @@ func encodeRune(buf []byte, r rune) int {
 }
 
 // compileUnanchoredPrefix creates the unanchored prefix (?s:.)*? for O(n) unanchored search.
+//
+// Deprecated: This function is no longer used by PikeVM. Instead, unanchored search
+// simulates the prefix explicitly in the search loop (matching Rust regex-automata
+// and Go stdlib approach) to ensure correct startPos tracking.
 //
 // The prefix is a non-greedy loop that matches any byte zero or more times:
 //

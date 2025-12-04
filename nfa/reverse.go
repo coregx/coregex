@@ -121,6 +121,12 @@ func collectEdgesFromState(state *State, from StateID, reverseEdges map[StateID]
 		if to != InvalidState {
 			reverseEdges[to] = append(reverseEdges[to], reverseEdge{from: from, kind: edgeEpsilon})
 		}
+	case StateLook:
+		// Look assertions are zero-width, treat as epsilon for edge collection
+		_, to := state.Look()
+		if to != InvalidState {
+			reverseEdges[to] = append(reverseEdges[to], reverseEdge{from: from, kind: edgeEpsilon})
+		}
 	}
 }
 

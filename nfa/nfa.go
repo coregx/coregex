@@ -45,6 +45,10 @@ const (
 
 	// StateFail represents a dead state (no valid transitions)
 	StateFail
+
+	// StateLook represents a zero-width assertion (look-around)
+	// Examples: ^, $, \A, \z (word boundaries \b, \B in future)
+	StateLook
 )
 
 // String returns a human-readable representation of the StateKind
@@ -64,10 +68,31 @@ func (k StateKind) String() string {
 		return "Capture"
 	case StateFail:
 		return "Fail"
+	case StateLook:
+		return "Look"
 	default:
 		return fmt.Sprintf("Unknown(%d)", k)
 	}
 }
+
+// Look represents a zero-width assertion type (look-around)
+type Look uint8
+
+const (
+	// LookStartText matches the start of input (\A)
+	LookStartText Look = iota
+
+	// LookEndText matches the end of input (\z)
+	LookEndText
+
+	// LookStartLine matches the start of a line (^)
+	// Matches at position 0 or after a newline
+	LookStartLine
+
+	// LookEndLine matches the end of a line ($)
+	// Matches at end of input or before a newline
+	LookEndLine
+)
 
 // State represents a single NFA state with its transitions.
 // The state's kind determines which fields are valid.
@@ -77,7 +102,7 @@ type State struct {
 
 	// For ByteRange: single byte or range [lo, hi]
 	lo, hi byte
-	next   StateID // target state for ByteRange/Epsilon
+	next   StateID // target state for ByteRange/Epsilon/Look
 
 	// For Sparse: multiple byte ranges with corresponding targets
 	// Pre-allocated to avoid heap allocations during search
@@ -89,6 +114,9 @@ type State struct {
 	// For Capture: capture group index and whether this is opening/closing
 	captureIndex uint32
 	captureStart bool // true = opening boundary, false = closing boundary
+
+	// For Look: zero-width assertion type
+	look Look
 }
 
 // Transition represents a byte range and target state for sparse transitions.
@@ -160,6 +188,15 @@ func (s *State) Capture() (index uint32, isStart bool, next StateID) {
 	return 0, false, InvalidState
 }
 
+// Look returns the look-around assertion type and target state for Look states.
+// Returns (0, InvalidState) for non-Look states.
+func (s *State) Look() (Look, StateID) {
+	if s.kind == StateLook {
+		return s.look, s.next
+	}
+	return 0, InvalidState
+}
+
 // String returns a human-readable representation of the state
 func (s *State) String() string {
 	switch s.kind {
@@ -178,6 +215,13 @@ func (s *State) String() string {
 		return fmt.Sprintf("State(%d, Epsilon -> %d)", s.id, s.next)
 	case StateFail:
 		return fmt.Sprintf("State(%d, Fail)", s.id)
+	case StateLook:
+		lookNames := []string{"StartText", "EndText", "StartLine", "EndLine"}
+		lookName := "Unknown"
+		if int(s.look) < len(lookNames) {
+			lookName = lookNames[s.look]
+		}
+		return fmt.Sprintf("State(%d, Look(%s) -> %d)", s.id, lookName, s.next)
 	default:
 		return fmt.Sprintf("State(%d, Unknown)", s.id)
 	}

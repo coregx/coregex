@@ -170,10 +170,16 @@ type StartConfig struct {
 //
 // The builder and NFA are used to:
 //  1. Get the appropriate NFA start state (anchored or unanchored)
-//  2. Compute the epsilon closure
+//  2. Compute the epsilon closure with appropriate look assertions
 //  3. Create the DFA state
 //
-// In the future, this will also handle assertion filtering based on StartKind.
+// The StartKind determines which look assertions are satisfied at the start position:
+//   - StartText: Both \A (LookStartText) and ^ (LookStartLine) are satisfied
+//   - StartLineLF: Only ^ (LookStartLine) is satisfied (multiline mode after \n)
+//   - Other kinds: No line-start assertions are satisfied
+//
+// This enables correct handling of patterns like "^abc" - the DFA will only
+// match at positions where the ^ assertion is satisfied.
 func ComputeStartState(builder *Builder, n *nfa.NFA, config StartConfig) (*State, StateKey) {
 	// Select NFA start state based on anchored flag
 	var nfaStart nfa.StateID
@@ -183,22 +189,25 @@ func ComputeStartState(builder *Builder, n *nfa.NFA, config StartConfig) (*State
 		nfaStart = n.StartUnanchored()
 	}
 
-	// Compute epsilon closure from NFA start state
-	startStateSet := builder.epsilonClosure([]nfa.StateID{nfaStart})
-
-	// TODO: Filter states based on StartKind for assertion handling
-	// For now, all start kinds use the same NFA state set.
-	// In the future, we would filter out NFA states that require
-	// assertions that don't match the current StartKind.
+	// Determine which look assertions are satisfied at this start position.
+	// This is the key to correct anchor handling in the DFA.
 	//
-	// Example: For pattern "^\w+", if StartKind is StartWord,
-	// the ^ assertion doesn't match (we're not at start of line).
-	// We would filter out states that require ^ to be satisfied.
+	// For pattern "^abc":
+	//   - At StartText (pos 0): LookStartLine satisfied → StateLook traversed → match possible
+	//   - At StartLineLF (after \n): LookStartLine satisfied → StateLook traversed → match possible
+	//   - At other positions: LookStartLine NOT satisfied → StateLook NOT traversed → no match
+	lookHave := LookSetFromStartKind(config.Kind)
+
+	// Compute epsilon closure from NFA start state with look assertions
+	startStateSet := builder.epsilonClosure([]nfa.StateID{nfaStart}, lookHave)
 
 	// Check if start state is a match state
 	isMatch := builder.containsMatchState(startStateSet)
 
 	// Compute state key for caching
+	// Note: The key includes all NFA states, which now depends on lookHave.
+	// Different start kinds will produce different state sets (and keys) for
+	// patterns with look assertions.
 	key := ComputeStateKey(startStateSet)
 
 	// Create DFA state (ID will be assigned by caller)

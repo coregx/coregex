@@ -195,15 +195,20 @@ func (p *PikeVM) searchUnanchored(haystack []byte) (int, int, bool) {
 	bestStart := -1
 	bestEnd := -1
 
+	// Check if NFA is anchored at start (e.g., reverse NFA for $ patterns)
+	isAnchored := p.nfa.IsAnchored()
+
 	// Process each byte position once
 	for pos := 0; pos <= len(haystack); pos++ {
 		// Add new start thread at current position (simulates .*? prefix)
-		// We must clear visited BEFORE adding to allow the same NFA state
-		// to be reached from different starting positions
+		// We use StartAnchored() here (not StartUnanchored()) because the prefix
+		// is simulated by restarting at each position, not embedded in the NFA.
+		// This ensures correct startPos tracking (set to current pos).
 		// Stop adding new starts once we've found a match (non-greedy behavior)
-		if bestStart == -1 {
+		// For anchored NFA, only try at position 0 (like ^ anchor behavior)
+		if bestStart == -1 && (!isAnchored || pos == 0) {
 			p.visited.Clear()
-			p.addThread(thread{state: p.nfa.Start(), startPos: pos}, haystack, pos)
+			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos}, haystack, pos)
 		}
 
 		// Check for matches in current generation
@@ -240,16 +245,15 @@ func (p *PikeVM) searchUnanchored(haystack []byte) (int, int, bool) {
 			}
 		}
 
-		// If no threads, stop
-		if len(p.queue) == 0 {
-			break
-		}
-
 		// Process current byte for all active threads
-		b := haystack[pos]
-		p.visited.Clear() // Clear before processing to track visited states for epsilon closures
-		for _, t := range p.queue {
-			p.step(t, b, haystack, pos+1)
+		// Note: We continue even if queue is empty because we might add
+		// new start threads at the next position (unanchored search)
+		if len(p.queue) > 0 {
+			b := haystack[pos]
+			p.visited.Clear() // Clear before processing to track visited states for epsilon closures
+			for _, t := range p.queue {
+				p.step(t, b, haystack, pos+1)
+			}
 		}
 
 		// Swap queues for next iteration
@@ -299,10 +303,11 @@ func (p *PikeVM) searchUnanchoredWithCaptures(haystack []byte) *MatchWithCapture
 	// Process each byte position once
 	for pos := 0; pos <= len(haystack); pos++ {
 		// Add new start thread at current position (simulates .*? prefix)
+		// Use StartAnchored() to ensure correct startPos tracking
 		if bestStart == -1 {
 			p.visited.Clear()
 			caps := p.newCaptures()
-			p.addThread(thread{state: p.nfa.Start(), startPos: pos, captures: caps}, haystack, pos)
+			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, captures: caps}, haystack, pos)
 		}
 
 		// Check for matches in current generation
@@ -335,15 +340,14 @@ func (p *PikeVM) searchUnanchoredWithCaptures(haystack []byte) *MatchWithCapture
 			}
 		}
 
-		if len(p.queue) == 0 {
-			break
-		}
-
-		// Process current byte
-		b := haystack[pos]
-		p.visited.Clear()
-		for _, t := range p.queue {
-			p.step(t, b, haystack, pos+1)
+		// Process current byte for all active threads
+		// Continue even if queue is empty (unanchored search may add new starts)
+		if len(p.queue) > 0 {
+			b := haystack[pos]
+			p.visited.Clear()
+			for _, t := range p.queue {
+				p.step(t, b, haystack, pos+1)
+			}
 		}
 
 		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
@@ -367,7 +371,7 @@ func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithC
 	p.visited.Clear()
 
 	caps := p.newCaptures()
-	p.addThread(thread{state: p.nfa.Start(), startPos: startPos, captures: caps}, haystack, startPos)
+	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos, captures: caps}, haystack, startPos)
 
 	lastMatchPos := -1
 	var lastMatchCaptures []int
@@ -477,7 +481,7 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 	p.visited.Clear()
 
 	// Initialize with start state
-	p.addThread(thread{state: p.nfa.Start(), startPos: startPos}, haystack, startPos)
+	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos}, haystack, startPos)
 
 	// Track the last position where we had a match
 	lastMatchPos := -1
@@ -529,8 +533,6 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 }
 
 // addThread adds a new thread to the current queue, following epsilon transitions
-//
-//nolint:unparam // haystack parameter reserved for future use
 func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 	// Check if we've already visited this state in this generation
 	if p.visited.Contains(uint32(t.state)) {
@@ -578,6 +580,13 @@ func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 			p.addThread(thread{state: next, startPos: t.startPos, captures: newCaps}, haystack, pos)
 		}
 
+	case StateLook:
+		// Check zero-width assertion at current position
+		look, next := state.Look()
+		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+			p.addThread(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
+		}
+
 	case StateFail:
 		// Dead state - don't add to queue
 	}
@@ -610,8 +619,6 @@ func (p *PikeVM) step(t thread, b byte, haystack []byte, nextPos int) {
 }
 
 // addThreadToNext adds a thread to the next generation queue
-//
-//nolint:unparam // haystack parameter reserved for future use
 func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 	// CRITICAL: Check if we've already visited this state in this generation
 	// Without this check, patterns with multiple character classes like
@@ -654,6 +661,14 @@ func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: newCaps}, haystack, pos)
 		}
 		return
+
+	case StateLook:
+		// Check zero-width assertion at current position
+		look, next := state.Look()
+		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
+		}
+		return
 	}
 
 	// Add to next queue
@@ -668,8 +683,8 @@ func (p *PikeVM) matchesEmpty() bool {
 
 	// Check if we can reach a match state via epsilon transitions only
 	var stack []StateID
-	stack = append(stack, p.nfa.Start())
-	p.visited.Insert(uint32(p.nfa.Start()))
+	stack = append(stack, p.nfa.StartAnchored())
+	p.visited.Insert(uint32(p.nfa.StartAnchored()))
 
 	for len(stack) > 0 {
 		// Pop state from stack
@@ -703,8 +718,36 @@ func (p *PikeVM) matchesEmpty() bool {
 				p.visited.Insert(uint32(right))
 				stack = append(stack, right)
 			}
+
+		case StateLook:
+			// For empty string matching, check if assertion holds at position 0
+			look, next := state.Look()
+			if checkLookAssertion(look, nil, 0) && next != InvalidState && !p.visited.Contains(uint32(next)) {
+				p.visited.Insert(uint32(next))
+				stack = append(stack, next)
+			}
 		}
 	}
 
+	return false
+}
+
+// checkLookAssertion checks if a zero-width assertion holds at the given position
+func checkLookAssertion(look Look, haystack []byte, pos int) bool {
+	switch look {
+	case LookStartText:
+		// \A - matches only at start of input
+		return pos == 0
+	case LookEndText:
+		// \z - matches only at end of input
+		return pos == len(haystack)
+	case LookStartLine:
+		// ^ - matches at start of input or after newline
+		return pos == 0 || (pos > 0 && haystack[pos-1] == '\n')
+	case LookEndLine:
+		// $ - matches ONLY at end of input in Go's regexp
+		// Unlike Perl/PCRE, Go's $ does NOT match before a trailing newline
+		return pos == len(haystack)
+	}
 	return false
 }

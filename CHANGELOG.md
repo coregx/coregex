@@ -14,6 +14,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.4] - 2025-12-04
+
+### Fixed
+- **Bug #10: `^` anchor not working correctly in MatchString**
+  - Patterns like `^abc` were incorrectly matching at any position (e.g., "xabc")
+  - Root cause: DFA's `epsilonClosure` didn't handle `StateLook` assertions properly
+  - **Professional fix** following Rust regex-automata approach:
+    - New `LookSet` type for tracking satisfied look assertions (`dfa/lazy/look.go`)
+    - `epsilonClosure` now accepts `lookHave LookSet` parameter
+    - Different start states for different positions (StartText, StartWord, StartLineLF, etc.)
+    - Multiline `^` support: `LookStartLine` satisfied after `\n`
+  - Fixed prefilter bypass bug: don't use prefilter for start-anchored patterns
+  - Resolves [#10](https://github.com/coregx/coregex/issues/10)
+  - Thanks to Ben Hoyt (GoAWK) for reporting!
+
+### Changed
+- DFA now correctly handles start-anchored patterns (no NFA fallback needed)
+- Strategy selection no longer forces NFA for `^` patterns
+
+### Technical Details
+- `StateLook` transitions only followed when look assertion is satisfied
+- `LookSetFromStartKind()` maps start positions to satisfied assertions
+- `ComputeStartState()` uses look-aware epsilon closure
+- All tests passing with race detector enabled
+- golangci-lint: 0 issues
+
+---
+
 ## [0.8.3] - 2025-12-04
 
 ### Fixed

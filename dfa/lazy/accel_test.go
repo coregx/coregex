@@ -71,7 +71,8 @@ func TestDetectAcceleration(t *testing.T) {
 	}
 
 	builder := NewBuilder(nfaObj, DefaultConfig())
-	startStates := builder.epsilonClosure([]nfa.StateID{nfaObj.StartUnanchored()})
+	startLook := LookSetFromStartKind(StartText)
+	startStates := builder.epsilonClosure([]nfa.StateID{nfaObj.StartUnanchored()}, startLook)
 	startState := NewState(StateID(0), startStates, false)
 
 	// Full detection (computes all transitions)

@@ -125,6 +125,20 @@ func (b *Builder) AddCapture(captureIndex uint32, isStart bool, next StateID) St
 	return id
 }
 
+// AddLook adds a zero-width assertion state (look-around).
+// look is the assertion type (start/end of text/line).
+// next is the state to transition to if the assertion succeeds.
+func (b *Builder) AddLook(look Look, next StateID) StateID {
+	id := StateID(len(b.states))
+	b.states = append(b.states, State{
+		id:   id,
+		kind: StateLook,
+		look: look,
+		next: next,
+	})
+	return id
+}
+
 // Patch updates a state's target. This is used during compilation to handle
 // forward references (e.g., loops, alternations).
 // This only works for states with a single 'next' target (ByteRange, Epsilon).
@@ -138,7 +152,7 @@ func (b *Builder) Patch(stateID, target StateID) error {
 
 	s := &b.states[stateID]
 	switch s.kind {
-	case StateByteRange, StateEpsilon, StateCapture:
+	case StateByteRange, StateEpsilon, StateCapture, StateLook:
 		s.next = target
 		return nil
 	default:
@@ -218,7 +232,7 @@ func (b *Builder) Validate() error {
 	for i, s := range b.states {
 		id := StateID(i)
 		switch s.kind {
-		case StateByteRange, StateEpsilon, StateCapture:
+		case StateByteRange, StateEpsilon, StateCapture, StateLook:
 			if s.next != InvalidState && int(s.next) >= len(b.states) {
 				return &BuildError{
 					Message: fmt.Sprintf("invalid next state %d", s.next),
