@@ -14,6 +14,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.3] - 2025-12-04
+
+### Fixed
+- **Bug #6: Crash on negated character classes** like `[^,]*`, `[^\n]`
+  - Large complement classes (e.g., `[^\n]` = 1.1M codepoints) now use efficient Sparse state representation
+  - Prevents memory explosion and "character class too large" errors
+  - Optimized range-based compilation for classes >256 runes
+  - Thanks to Ben Hoyt (GoAWK) for reporting!
+
+- **Bug #7: Case-insensitive character class matching** `[oO]+d` didn't match "food"
+  - `compileLiteral()` now respects `FoldCase` flag from `regexp/syntax` parser
+  - ASCII letters create proper alternation between upper/lower variants
+  - Fixes patterns like `[oO]`, `[aA][bB]`, etc.
+  - Thanks to Ben Hoyt (GoAWK) for reporting!
+
+### Tests
+- Added comprehensive test suite `nfa/compile_bug_test.go` (402 lines, 33 test cases)
+- All tests passing with race detector enabled
+
+### Maintenance
+- Removed 21 unused linter directives (gosec, nestif)
+- Code formatting cleanup
+- golangci-lint: 0 issues
+
+---
+
 ## [0.8.2] - 2025-12-03
 
 ### Fixed
