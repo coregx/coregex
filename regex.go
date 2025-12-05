@@ -109,7 +109,7 @@ func Compile(pattern string) (*Regex, error) {
 func MustCompile(pattern string) *Regex {
 	re, err := Compile(pattern)
 	if err != nil {
-		panic("coregex: Compile(" + pattern + "): " + err.Error())
+		panic("regexp: Compile(`" + pattern + "`): " + err.Error())
 	}
 	return re
 }

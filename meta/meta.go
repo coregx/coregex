@@ -734,9 +734,9 @@ type CompileError struct {
 // Error implements the error interface.
 func (e *CompileError) Error() string {
 	if e.Pattern != "" {
-		return "meta: failed to compile pattern \"" + e.Pattern + "\": " + e.Err.Error()
+		return "regexp: error parsing regexp: " + e.Err.Error()
 	}
-	return "meta: failed to compile: " + e.Err.Error()
+	return "regexp: " + e.Err.Error()
 }
 
 // Unwrap returns the underlying error.

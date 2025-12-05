@@ -154,5 +154,5 @@ type ConfigError struct {
 
 // Error implements the error interface.
 func (e *ConfigError) Error() string {
-	return "meta: invalid config." + e.Field + ": " + e.Message
+	return "regexp: invalid config: " + e.Field + ": " + e.Message
 }
