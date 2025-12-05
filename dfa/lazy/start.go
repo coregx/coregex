@@ -171,15 +171,18 @@ type StartConfig struct {
 // The builder and NFA are used to:
 //  1. Get the appropriate NFA start state (anchored or unanchored)
 //  2. Compute the epsilon closure with appropriate look assertions
-//  3. Create the DFA state
+//  3. Create the DFA state with word context
 //
-// The StartKind determines which look assertions are satisfied at the start position:
+// The StartKind determines:
+//   - Which look assertions are satisfied at the start position:
 //   - StartText: Both \A (LookStartText) and ^ (LookStartLine) are satisfied
 //   - StartLineLF: Only ^ (LookStartLine) is satisfied (multiline mode after \n)
 //   - Other kinds: No line-start assertions are satisfied
+//   - The isFromWord context (for \b/\B word boundary handling):
+//   - StartWord: isFromWord = true (previous byte was word char)
+//   - All others: isFromWord = false
 //
-// This enables correct handling of patterns like "^abc" - the DFA will only
-// match at positions where the ^ assertion is satisfied.
+// This enables correct handling of patterns like "^abc" and "\bword".
 func ComputeStartState(builder *Builder, n *nfa.NFA, config StartConfig) (*State, StateKey) {
 	// Select NFA start state based on anchored flag
 	var nfaStart nfa.StateID
@@ -196,6 +199,10 @@ func ComputeStartState(builder *Builder, n *nfa.NFA, config StartConfig) (*State
 	//   - At StartText (pos 0): LookStartLine satisfied → StateLook traversed → match possible
 	//   - At StartLineLF (after \n): LookStartLine satisfied → StateLook traversed → match possible
 	//   - At other positions: LookStartLine NOT satisfied → StateLook NOT traversed → no match
+	//
+	// Note: Word boundary assertions (\b, \B) are NOT resolved here because they depend
+	// on BOTH the previous byte (known) AND the current byte (unknown until move()).
+	// Word boundary StateLook states remain in the closure and are resolved in move().
 	lookHave := LookSetFromStartKind(config.Kind)
 
 	// Compute epsilon closure from NFA start state with look assertions
@@ -204,14 +211,21 @@ func ComputeStartState(builder *Builder, n *nfa.NFA, config StartConfig) (*State
 	// Check if start state is a match state
 	isMatch := builder.containsMatchState(startStateSet)
 
-	// Compute state key for caching
-	// Note: The key includes all NFA states, which now depends on lookHave.
-	// Different start kinds will produce different state sets (and keys) for
-	// patterns with look assertions.
-	key := ComputeStateKey(startStateSet)
+	// Determine isFromWord based on StartKind.
+	// This is critical for \b/\B word boundary handling:
+	//   - StartWord: previous byte was a word char → isFromWord = true
+	//   - StartText: no previous byte → isFromWord = false
+	//   - StartLineLF/CR: newline is not a word char → isFromWord = false
+	//   - StartNonWord: previous byte was non-word → isFromWord = false
+	isFromWord := config.Kind == StartWord
 
-	// Create DFA state (ID will be assigned by caller)
-	state := NewState(InvalidState, startStateSet, isMatch)
+	// Compute state key for caching
+	// The key now includes word context - states with same NFA states but
+	// different isFromWord are DIFFERENT DFA states!
+	key := ComputeStateKeyWithWord(startStateSet, isFromWord)
+
+	// Create DFA state with word context (ID will be assigned by caller)
+	state := NewStateWithWordContext(InvalidState, startStateSet, isMatch, isFromWord)
 
 	return state, key
 }

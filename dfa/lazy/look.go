@@ -30,6 +30,12 @@ const (
 
 	// LookEndLine represents $ - end of line (before \n or at input end)
 	LookEndLine
+
+	// LookWordBoundary represents \b - word/non-word transition
+	LookWordBoundary
+
+	// LookNoWordBoundary represents \B - no word/non-word transition
+	LookNoWordBoundary
 )
 
 // Contains returns true if the look assertion is in this set
@@ -43,6 +49,10 @@ func (s LookSet) Contains(look nfa.Look) bool {
 		return s&LookStartLine != 0
 	case nfa.LookEndLine:
 		return s&LookEndLine != 0
+	case nfa.LookWordBoundary:
+		return s&LookWordBoundary != 0
+	case nfa.LookNoWordBoundary:
+		return s&LookNoWordBoundary != 0
 	default:
 		return false
 	}
@@ -59,6 +69,10 @@ func (s LookSet) Insert(look nfa.Look) LookSet {
 		return s | LookStartLine
 	case nfa.LookEndLine:
 		return s | LookEndLine
+	case nfa.LookWordBoundary:
+		return s | LookWordBoundary
+	case nfa.LookNoWordBoundary:
+		return s | LookNoWordBoundary
 	default:
 		return s
 	}

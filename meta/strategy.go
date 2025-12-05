@@ -97,6 +97,35 @@ func (s Strategy) String() string {
 	}
 }
 
+// hasWordBoundary recursively checks if a syntax.Regexp contains word boundary assertions.
+// Returns true if the pattern contains \b or \B.
+//
+// Word boundary assertions don't work correctly with reverse DFA search because
+// the boundary depends on both adjacent characters, which changes meaning in reverse.
+func hasWordBoundary(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+
+	switch re.Op {
+	case syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		return true
+	case syntax.OpConcat, syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if hasWordBoundary(sub) {
+				return true
+			}
+		}
+	case syntax.OpCapture, syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		for _, sub := range re.Sub {
+			if hasWordBoundary(sub) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // selectReverseStrategy selects reverse-based strategies (ReverseSuffix, ReverseInner).
 // Returns 0 if no reverse strategy is suitable.
 //
@@ -104,6 +133,13 @@ func (s Strategy) String() string {
 func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config Config) Strategy {
 	// Only applicable if DFA and prefilter enabled, not anchored
 	if re == nil || !config.EnableDFA || !config.EnablePrefilter {
+		return 0
+	}
+
+	// Word boundary assertions (\b, \B) don't work correctly with reverse DFA search.
+	// The boundary depends on both the previous and next characters, which changes
+	// meaning when searching in reverse. Fall back to forward DFA for these patterns.
+	if hasWordBoundary(re) {
 		return 0
 	}
 

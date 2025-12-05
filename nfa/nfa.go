@@ -92,6 +92,15 @@ const (
 	// LookEndLine matches the end of a line ($)
 	// Matches at end of input or before a newline
 	LookEndLine
+
+	// LookWordBoundary matches a word boundary (\b)
+	// Matches where is_word_char(prev) != is_word_char(curr)
+	// Word chars are ASCII: [a-zA-Z0-9_]
+	LookWordBoundary
+
+	// LookNoWordBoundary matches a non-word boundary (\B)
+	// Matches where is_word_char(prev) == is_word_char(curr)
+	LookNoWordBoundary
 )
 
 // State represents a single NFA state with its transitions.

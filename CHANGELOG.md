@@ -14,6 +14,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.5] - 2025-12-05
+
+### Fixed
+- **Issue #12: Word boundary assertions `\b` and `\B` not working correctly**
+  - `FindString`/`Find` returned empty while `MatchString`/`IsMatch` worked
+  - Root causes identified and fixed:
+    1. `findWithPrefilter()` missing word boundary checks at EOI and before byte consumption
+    2. `resolveWordBoundaries()` incorrectly expanding through epsilon/split for non-boundary patterns
+    3. Reverse DFA strategies incompatible with word boundary semantics
+  - **Professional fix** following Rust regex-automata approach:
+    - Added `checkWordBoundaryMatch()` and `checkEOIMatch()` to `findWithPrefilter()`
+    - Rewrote `resolveWordBoundaries()` to only expand through actual boundary crossings
+    - Added `hasWordBoundary()` to disable reverse strategies for `\b`/`\B` patterns
+  - All word boundary patterns now match stdlib behavior exactly
+
+### Technical Details
+- `meta/strategy.go`: New `hasWordBoundary()` function detects word boundary patterns
+- `dfa/lazy/lazy.go`: `findWithPrefilter()` now handles word boundaries like `searchAt()`
+- `dfa/lazy/builder.go`: `resolveWordBoundaries()` only expands states after crossing `\b`/`\B`
+- Comprehensive test suite: `word_boundary_test.go` with stdlib comparison
+- All tests passing including race detector (via WSL2)
+- golangci-lint: 0 issues
+
+---
+
 ## [0.8.4] - 2025-12-04
 
 ### Fixed

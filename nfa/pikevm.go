@@ -732,6 +732,15 @@ func (p *PikeVM) matchesEmpty() bool {
 	return false
 }
 
+// isWordByte returns true if byte is an ASCII word character [a-zA-Z0-9_]
+// This matches Go's regexp/syntax.IsWordChar for ASCII bytes.
+func isWordByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9') ||
+		b == '_'
+}
+
 // checkLookAssertion checks if a zero-width assertion holds at the given position
 func checkLookAssertion(look Look, haystack []byte, pos int) bool {
 	switch look {
@@ -748,6 +757,18 @@ func checkLookAssertion(look Look, haystack []byte, pos int) bool {
 		// $ - matches ONLY at end of input in Go's regexp
 		// Unlike Perl/PCRE, Go's $ does NOT match before a trailing newline
 		return pos == len(haystack)
+	case LookWordBoundary:
+		// \b - matches at word/non-word boundary
+		// Word boundary exists when is_word(prev) != is_word(curr)
+		wordBefore := pos > 0 && isWordByte(haystack[pos-1])
+		wordAfter := pos < len(haystack) && isWordByte(haystack[pos])
+		return wordBefore != wordAfter
+	case LookNoWordBoundary:
+		// \B - matches where there is NO word boundary
+		// No boundary when is_word(prev) == is_word(curr)
+		wordBefore := pos > 0 && isWordByte(haystack[pos-1])
+		wordAfter := pos < len(haystack) && isWordByte(haystack[pos])
+		return wordBefore == wordAfter
 	}
 	return false
 }

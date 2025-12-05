@@ -32,6 +32,15 @@ const (
 // Memory layout is optimized for cache efficiency:
 //   - Small states (few transitions) use a map
 //   - Dense states (many transitions) could use a 256-element array (future optimization)
+//
+// Word Boundary Tracking (Rust regex-automata approach):
+// The isFromWord field tracks whether this state was entered via a word byte.
+// This is essential for correct \b and \B handling in DFA:
+//   - When computing transitions, we compare isFromWord with isWordByte(input)
+//   - If different → word boundary (\b) satisfied
+//   - If same → non-word boundary (\B) satisfied
+//
+// States with same NFA states but different isFromWord are DIFFERENT DFA states!
 type State struct {
 	// id uniquely identifies this state in the cache
 	id StateID
@@ -42,6 +51,11 @@ type State struct {
 
 	// isMatch indicates if this is an accepting state
 	isMatch bool
+
+	// isFromWord indicates if this state was entered via a word byte transition.
+	// Used for word boundary (\b, \B) assertion evaluation.
+	// At start of input, this is false (no previous byte = non-word).
+	isFromWord bool
 
 	// nfaStates is the set of NFA states this DFA state represents.
 	// This is used during determinization to compute transitions.
@@ -60,8 +74,16 @@ type State struct {
 	accelChecked bool
 }
 
-// NewState creates a new DFA state with the given ID and NFA state set
+// NewState creates a new DFA state with the given ID and NFA state set.
+// isFromWord indicates if this state was entered via a word byte (for \b/\B handling).
 func NewState(id StateID, nfaStates []nfa.StateID, isMatch bool) *State {
+	return NewStateWithWordContext(id, nfaStates, isMatch, false)
+}
+
+// NewStateWithWordContext creates a new DFA state with explicit word context.
+// isFromWord indicates if this state was entered via a word byte transition.
+// This is essential for correct word boundary (\b, \B) handling in DFA.
+func NewStateWithWordContext(id StateID, nfaStates []nfa.StateID, isMatch bool, isFromWord bool) *State {
 	// Pre-allocate transitions map with reasonable capacity
 	// Most states have few transitions (< 16)
 	transitions := make(map[byte]StateID, 16)
@@ -74,6 +96,7 @@ func NewState(id StateID, nfaStates []nfa.StateID, isMatch bool) *State {
 		id:          id,
 		transitions: transitions,
 		isMatch:     isMatch,
+		isFromWord:  isFromWord,
 		nfaStates:   nfaStatesCopy,
 	}
 }
@@ -86,6 +109,12 @@ func (s *State) ID() StateID {
 // IsMatch returns true if this is an accepting state
 func (s *State) IsMatch() bool {
 	return s.isMatch
+}
+
+// IsFromWord returns true if this state was entered via a word byte transition.
+// Used for word boundary (\b, \B) assertion evaluation.
+func (s *State) IsFromWord() bool {
+	return s.isFromWord
 }
 
 // Transition returns the next state for the given input byte.
@@ -155,20 +184,34 @@ func (s *State) MarkAccelChecked() {
 	s.accelChecked = true
 }
 
-// StateKey uniquely identifies a DFA state based on its NFA state set.
+// StateKey uniquely identifies a DFA state based on its NFA state set and word context.
 //
-// Two DFA states are equivalent if they represent the same set of NFA states.
+// Two DFA states are equivalent if they represent the same set of NFA states
+// AND have the same isFromWord value. This is critical for word boundary handling:
+// states entered via word bytes vs non-word bytes are DIFFERENT states!
+//
 // We use a hash-based key for fast lookups in the cache.
 type StateKey uint64
 
 // ComputeStateKey computes a hash-based key for a set of NFA states.
+// This version does not include word context - use ComputeStateKeyWithWord for patterns with \b/\B.
 //
 // The key must be consistent: the same set of NFA states (regardless of order)
 // should produce the same key. We achieve this by sorting the states before hashing.
 //
 // This uses FNV-1a hash for speed and decent distribution.
 func ComputeStateKey(nfaStates []nfa.StateID) StateKey {
+	return ComputeStateKeyWithWord(nfaStates, false)
+}
+
+// ComputeStateKeyWithWord computes a hash-based key including word context.
+// States with same NFA states but different isFromWord are DIFFERENT DFA states.
+// This is essential for correct \b and \B handling.
+func ComputeStateKeyWithWord(nfaStates []nfa.StateID, isFromWord bool) StateKey {
 	if len(nfaStates) == 0 {
+		if isFromWord {
+			return StateKey(1) // Distinguish empty+fromWord from empty+notFromWord
+		}
 		return StateKey(0)
 	}
 
@@ -180,6 +223,14 @@ func ComputeStateKey(nfaStates []nfa.StateID) StateKey {
 
 	// Hash the sorted states using FNV-1a
 	h := fnv.New64a()
+
+	// Include isFromWord in the hash FIRST to distinguish states
+	if isFromWord {
+		_, _ = h.Write([]byte{1})
+	} else {
+		_, _ = h.Write([]byte{0})
+	}
+
 	for _, sid := range sorted {
 		// Write each StateID as 4 bytes (uint32)
 		// hash.Hash.Write never returns an error per documentation

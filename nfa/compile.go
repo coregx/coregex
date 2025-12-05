@@ -193,6 +193,14 @@ func (c *Compiler) compileRegexp(re *syntax.Regexp) (start, end StateID, err err
 		// Explicit $ (though parser converts to OpEndText)
 		id := c.builder.AddLook(LookEndLine, InvalidState)
 		return id, id, nil
+	case syntax.OpWordBoundary:
+		// \b - word boundary (transition between word and non-word chars)
+		id := c.builder.AddLook(LookWordBoundary, InvalidState)
+		return id, id, nil
+	case syntax.OpNoWordBoundary:
+		// \B - non-word boundary (no transition between word and non-word chars)
+		id := c.builder.AddLook(LookNoWordBoundary, InvalidState)
+		return id, id, nil
 	case syntax.OpEmptyMatch:
 		return c.compileEmptyMatch()
 	default:

@@ -222,6 +222,14 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 
 		b := haystack[pos]
 
+		// Check if word boundary would result in a match BEFORE consuming the byte.
+		// This handles patterns like `test\b` where after matching "test",
+		// the next byte '!' creates a word boundary that satisfies \b.
+		// We need to detect this match before trying to consume '!'.
+		if d.checkWordBoundaryMatch(currentState, b) {
+			return true
+		}
+
 		// Get next state
 		nextID, ok := currentState.Transition(b)
 		switch {
@@ -260,8 +268,12 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 		}
 	}
 
-	// Reached end of input without finding a match
-	return false
+	// Reached end of input without finding a match in the loop.
+	// But we might still match if there are pending word boundary assertions
+	// that are satisfied at end-of-input.
+	// Example: pattern `test\b` matching "test" - the \b is satisfied at EOI
+	// because prev='t'(word), next=none(non-word) → word boundary.
+	return d.checkEOIMatch(currentState)
 }
 
 // findWithPrefilter searches using prefilter to accelerate unanchored search.
@@ -297,6 +309,13 @@ func (d *DFA) findWithPrefilter(haystack []byte) int {
 
 	for pos < len(haystack) {
 		b := haystack[pos]
+
+		// Check if word boundary would result in a match BEFORE consuming the byte.
+		// This handles patterns like `test\b` where after matching "test",
+		// the next byte '!' creates a word boundary that satisfies \b.
+		if d.checkWordBoundaryMatch(currentState, b) {
+			return pos // Return current position as match end
+		}
 
 		// Get next state
 		nextID, ok := currentState.Transition(b)
@@ -391,7 +410,14 @@ func (d *DFA) findWithPrefilter(haystack []byte) int {
 		}
 	}
 
-	// Reached end of input - return last match position
+	// Reached end of input.
+	// Check if there's a match at EOI due to pending word boundary assertions.
+	// Example: pattern `test\b` matching "test" - the \b is satisfied at EOI.
+	if d.checkEOIMatch(currentState) {
+		return len(haystack)
+	}
+
+	// Return last match position (if any)
 	return lastMatch
 }
 
@@ -441,6 +467,13 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 
 		b := haystack[pos]
 
+		// Check if word boundary would result in a match BEFORE consuming the byte.
+		// This handles patterns like `test\b` where after matching "test",
+		// the next byte '!' creates a word boundary that satisfies \b.
+		if d.checkWordBoundaryMatch(currentState, b) {
+			return pos // Return current position as match end
+		}
+
 		// Check if current state has a transition for this byte
 		nextID, ok := currentState.Transition(b)
 		switch {
@@ -484,7 +517,14 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 		}
 	}
 
-	// Reached end of input - return last match position
+	// Reached end of input.
+	// Check if there's a match at EOI due to pending word boundary assertions.
+	// Example: pattern `test\b` matching "test" - the \b is satisfied at EOI.
+	if d.checkEOIMatch(currentState) {
+		return len(haystack)
+	}
+
+	// Return last match position (if any)
 	return lastMatch
 }
 
@@ -504,8 +544,10 @@ func (d *DFA) determinize(current *State, b byte) (*State, error) {
 	// Need builder for move operations
 	builder := NewBuilder(d.nfa, d.config)
 
-	// Compute next NFA state set via move operation
-	nextNFAStates := builder.move(current.NFAStates(), b)
+	// Compute next NFA state set via move operation WITH word context
+	// This is essential for correct \b and \B handling in DFA.
+	// The current state's isFromWord tells us if the previous byte was a word char.
+	nextNFAStates := builder.moveWithWordContext(current.NFAStates(), b, current.IsFromWord())
 
 	// No transitions on this byte → dead state
 	if len(nextNFAStates) == 0 {
@@ -524,8 +566,14 @@ func (d *DFA) determinize(current *State, b byte) (*State, error) {
 		}
 	}
 
-	// Compute state key for caching
-	key := ComputeStateKey(nextNFAStates)
+	// The next state's isFromWord is determined by the CURRENT byte
+	// This is the Rust regex-automata approach: the state we're transitioning TO
+	// needs to know what byte got us there (for the next transition's word boundary check)
+	nextIsFromWord := isWordByte(b)
+
+	// Compute state key INCLUDING word context
+	// States with same NFA states but different isFromWord are DIFFERENT DFA states!
+	key := ComputeStateKeyWithWord(nextNFAStates, nextIsFromWord)
 
 	// Check if state already exists in cache
 	if existing, ok := d.cache.Get(key); ok {
@@ -534,9 +582,9 @@ func (d *DFA) determinize(current *State, b byte) (*State, error) {
 		return existing, nil
 	}
 
-	// Create new DFA state
+	// Create new DFA state with word context
 	isMatch := builder.containsMatchState(nextNFAStates)
-	newState := NewState(InvalidState, nextNFAStates, isMatch) // ID assigned by cache
+	newState := NewStateWithWordContext(InvalidState, nextNFAStates, isMatch, nextIsFromWord)
 
 	// Insert into cache
 	_, err := d.cache.Insert(key, newState)
@@ -572,6 +620,60 @@ func (d *DFA) getState(id StateID) *State {
 // registerState adds a state to the ID-based lookup map
 func (d *DFA) registerState(state *State) {
 	d.stateByID[state.ID()] = state
+}
+
+// checkEOIMatch checks if the current state would match at end-of-input.
+// This handles patterns with trailing word boundary assertions like `test\b`.
+//
+// At end-of-input:
+//   - Previous byte is known from state.IsFromWord()
+//   - "Next" byte is conceptually non-word (outside the string)
+//   - \b is satisfied if previous was word char (word → non-word transition)
+//   - \B is satisfied if previous was non-word char (non-word → non-word)
+func (d *DFA) checkEOIMatch(state *State) bool {
+	if state == nil {
+		return false
+	}
+
+	// Create a temporary builder for EOI resolution
+	builder := NewBuilder(d.nfa, d.config)
+	return builder.CheckEOIMatch(state.NFAStates(), state.IsFromWord())
+}
+
+// checkWordBoundaryMatch checks if resolving word boundary assertions with
+// the given next byte would result in a match.
+//
+// This is needed for patterns like `test\b` where after matching "test",
+// the next byte (e.g., '!') creates a word boundary that satisfies \b.
+// The \b resolves to Match state, but we shouldn't consume the '!'.
+//
+// Returns true if crossing a word boundary results in a NEW match (i.e., the current
+// state wasn't already a match, but resolving word boundaries produces one).
+// Returns false for patterns without word boundaries (e.g., `a*`).
+func (d *DFA) checkWordBoundaryMatch(state *State, nextByte byte) bool {
+	if state == nil {
+		return false
+	}
+
+	// If already a match state, don't use word boundary shortcut
+	// Let normal processing handle it (for leftmost-longest semantics)
+	if state.IsMatch() {
+		return false
+	}
+
+	builder := NewBuilder(d.nfa, d.config)
+	isFromWord := state.IsFromWord()
+	isNextWord := isWordByte(nextByte)
+	wordBoundarySatisfied := isFromWord != isNextWord
+
+	// Resolve word boundary assertions
+	// This only expands states if word boundary assertions are actually crossed
+	resolved := builder.resolveWordBoundaries(state.NFAStates(), wordBoundarySatisfied)
+
+	// Check if resolving word boundaries added any match states
+	// If resolved == original states (no word boundaries crossed), this returns false
+	// because the original states weren't matches (checked above)
+	return builder.containsMatchState(resolved)
 }
 
 // getStartState returns the appropriate start state for the given position.

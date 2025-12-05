@@ -52,13 +52,19 @@ func (b *Builder) Build() (*DFA, error) {
 	// This enables proper handling of patterns like "^abc" - the DFA will
 	// only match at the true start of input because the StateLook for ^
 	// will only be followed when LookStartLine is in the LookSet.
+	//
+	// Word context: At StartText (position 0), there's no previous byte,
+	// so isFromWord = false. Word boundary assertions will be resolved
+	// when the first byte is consumed via move().
 	startLook := LookSetFromStartKind(StartText)
 	startStateSet := b.epsilonClosure([]nfa.StateID{b.nfa.StartUnanchored()}, startLook)
 	isMatch := b.containsMatchState(startStateSet)
-	startState := NewState(StartState, startStateSet, isMatch)
+	isFromWord := false // StartText: no previous byte → not from word
+	startState := NewStateWithWordContext(StartState, startStateSet, isMatch, isFromWord)
 
 	// Insert start state into cache
-	key := ComputeStateKey(startStateSet)
+	// Key includes word context for proper state identity
+	key := ComputeStateKeyWithWord(startStateSet, isFromWord)
 	_, err := cache.Insert(key, startState)
 	if err != nil {
 		// This should never happen for start state (cache is empty)
@@ -197,24 +203,46 @@ func (b *Builder) epsilonClosure(states []nfa.StateID, lookHave LookSet) []nfa.S
 }
 
 // move computes the set of NFA states reachable from the given states on input byte b.
+// This version does not track word context - use moveWithWordContext for patterns with \b/\B.
+func (b *Builder) move(states []nfa.StateID, input byte) []nfa.StateID {
+	return b.moveWithWordContext(states, input, false)
+}
+
+// moveWithWordContext computes the set of NFA states reachable from the given states on input byte b,
+// with full word boundary tracking.
 //
 // This is the core determinization operation:
-//  1. For each NFA state in the input set
-//  2. Check if it has a transition on byte b
-//  3. Collect all target states
-//  4. Compute epsilon-closure of targets with appropriate look assertions
-//  5. Return the resulting state set
+//  1. Resolve word boundary assertions based on isFromWord and current byte
+//  2. For each NFA state in the resolved set
+//  3. Check if it has a transition on byte b
+//  4. Collect all target states
+//  5. Compute epsilon-closure of targets with appropriate look assertions
+//  6. Return the resulting state set
 //
-// The look assertions after a byte transition depend on the byte:
-//   - After '\n': LookStartLine is satisfied (multiline ^ matches after newline)
-//   - After other bytes: No line-start assertions satisfied
+// The look assertions after a byte transition depend on:
+//   - Line context: After '\n', LookStartLine is satisfied (multiline ^)
+//   - Word context: Compare isFromWord with isWordByte(input) for \b/\B
+//
+// isFromWord indicates whether the PREVIOUS byte (before this transition) was a word char.
+// This is used to compute word boundary assertions:
+//   - If isFromWord != isWordByte(input) → word boundary (\b) satisfied
+//   - If isFromWord == isWordByte(input) → non-word boundary (\B) satisfied
 //
 // This effectively simulates one step of the NFA for all active states.
-func (b *Builder) move(states []nfa.StateID, input byte) []nfa.StateID {
-	// Collect target states for this input byte
+func (b *Builder) moveWithWordContext(states []nfa.StateID, input byte, isFromWord bool) []nfa.StateID {
+	// Compute word boundary status for this transition
+	isCurrentWord := isWordByte(input)
+	wordBoundarySatisfied := isFromWord != isCurrentWord
+
+	// Step 1: Resolve word boundary assertions in the current state set.
+	// StateLook(\b) and StateLook(\B) that weren't followed during epsilon closure
+	// need to be resolved now that we know the current byte.
+	resolvedStates := b.resolveWordBoundaries(states, wordBoundarySatisfied)
+
+	// Step 2: Collect target states for this input byte
 	targets := NewStateSet()
 
-	for _, sid := range states {
+	for _, sid := range resolvedStates {
 		state := b.nfa.State(sid)
 		if state == nil {
 			continue
@@ -241,18 +269,151 @@ func (b *Builder) move(states []nfa.StateID, input byte) []nfa.StateID {
 		return nil
 	}
 
-	// Determine look assertions satisfied after this byte transition.
-	// After '\n', multiline ^ (LookStartLine) is satisfied.
-	// This enables patterns like "(?m)^abc" to match at line starts.
+	// Step 3: Determine look assertions satisfied after this byte transition.
+	// IMPORTANT: Word boundary assertions are handled in resolveWordBoundaries,
+	// NOT here. This is because word boundary is position-specific - it's resolved
+	// when we START consuming a byte, not after we've consumed it.
+	//
+	// Only line assertions (^, $) are passed to epsilonClosure because they
+	// depend only on the previous byte (was it '\n'?), not on the current byte.
 	var lookAfter LookSet
+
+	// Line boundary: After '\n', multiline ^ (LookStartLine) is satisfied.
 	if input == '\n' {
 		lookAfter = LookStartLine
-	} else {
-		lookAfter = LookNone
 	}
+
+	// Word boundary bits are NOT included here - they're handled by
+	// resolveWordBoundaries at the START of the next move() call.
+	// The isFromWord state of the target DFA state will be used to
+	// resolve word boundary assertions when the next byte is consumed.
 
 	// Compute epsilon-closure of target states with appropriate look assertions
 	return b.epsilonClosure(targets.ToSlice(), lookAfter)
+}
+
+// resolveWordBoundaries expands the NFA state set by following word boundary assertions
+// (StateLook(\b) and StateLook(\B)) that are now satisfied.
+//
+// This is necessary because word boundary assertions can't be resolved during initial
+// epsilon closure - they require knowledge of BOTH the previous byte (isFromWord) AND
+// the current byte being consumed. This function is called during move() after we know
+// both bytes.
+//
+// The expansion follows:
+//   - StateLook(\b) if wordBoundarySatisfied is true
+//   - StateLook(\B) if wordBoundarySatisfied is false
+//   - Epsilon and Split transitions (to reach consuming states after word boundaries)
+//
+// This enables patterns like \bword to work correctly:
+//  1. Start state contains StateLook(\b) but not states after it
+//  2. When consuming 'w', we check word boundary (satisfied at word start)
+//  3. resolveWordBoundaries follows StateLook(\b) → ByteRange('w')
+//  4. Now ByteRange('w') can match and continue
+//
+// IMPORTANT: This function only expands states reachable by CROSSING a word boundary assertion.
+// It does NOT follow epsilon/split transitions from states that haven't crossed a word boundary.
+// This prevents false matches in patterns without word boundaries (like `a*`).
+func (b *Builder) resolveWordBoundaries(states []nfa.StateID, wordBoundarySatisfied bool) []nfa.StateID {
+	// First, find states reachable by crossing a word boundary assertion
+	// We track states that have crossed a boundary separately
+	crossedBoundary := NewStateSetWithCapacity(len(states))
+	stack := make([]nfa.StateID, 0, len(states))
+
+	// Start by looking for word boundary assertions in input states
+	for _, sid := range states {
+		state := b.nfa.State(sid)
+		if state == nil {
+			continue
+		}
+		if state.Kind() == nfa.StateLook {
+			look, next := state.Look()
+			if next == nfa.InvalidState {
+				continue
+			}
+			// Check if word boundary assertion is satisfied
+			switch look {
+			case nfa.LookWordBoundary:
+				if wordBoundarySatisfied && !crossedBoundary.Contains(next) {
+					crossedBoundary.Add(next)
+					stack = append(stack, next)
+				}
+			case nfa.LookNoWordBoundary:
+				if !wordBoundarySatisfied && !crossedBoundary.Contains(next) {
+					crossedBoundary.Add(next)
+					stack = append(stack, next)
+				}
+			}
+		}
+	}
+
+	// If no word boundary was crossed, return original states unchanged
+	if len(stack) == 0 {
+		return states
+	}
+
+	// Now expand states reachable from crossed boundaries via epsilon/split
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		state := b.nfa.State(current)
+		if state == nil {
+			continue
+		}
+
+		switch state.Kind() {
+		case nfa.StateLook:
+			// Continue through any additional word boundary assertions
+			look, next := state.Look()
+			if next == nfa.InvalidState {
+				continue
+			}
+			switch look {
+			case nfa.LookWordBoundary:
+				if wordBoundarySatisfied && !crossedBoundary.Contains(next) {
+					crossedBoundary.Add(next)
+					stack = append(stack, next)
+				}
+			case nfa.LookNoWordBoundary:
+				if !wordBoundarySatisfied && !crossedBoundary.Contains(next) {
+					crossedBoundary.Add(next)
+					stack = append(stack, next)
+				}
+			}
+
+		case nfa.StateEpsilon:
+			// Follow epsilon transitions to reach consuming states after word boundaries
+			next := state.Epsilon()
+			if next != nfa.InvalidState && !crossedBoundary.Contains(next) {
+				crossedBoundary.Add(next)
+				stack = append(stack, next)
+			}
+
+		case nfa.StateSplit:
+			// Follow split transitions
+			left, right := state.Split()
+			if left != nfa.InvalidState && !crossedBoundary.Contains(left) {
+				crossedBoundary.Add(left)
+				stack = append(stack, left)
+			}
+			if right != nfa.InvalidState && !crossedBoundary.Contains(right) {
+				crossedBoundary.Add(right)
+				stack = append(stack, right)
+			}
+		}
+	}
+
+	// Combine original states with states reached by crossing word boundaries
+	result := NewStateSetWithCapacity(len(states) + crossedBoundary.Len())
+	for _, sid := range states {
+		result.Add(sid)
+	}
+	for _, sid := range crossedBoundary.ToSlice() {
+		result.Add(sid)
+	}
+
+	return result.ToSlice()
 }
 
 // containsMatchState returns true if any state in the set is a match state
@@ -263,6 +424,37 @@ func (b *Builder) containsMatchState(states []nfa.StateID) bool {
 		}
 	}
 	return false
+}
+
+// CheckEOIMatch checks if there's a match at end-of-input by resolving pending
+// word boundary assertions.
+//
+// At end of input:
+//   - "Previous" byte is known from isFromWord
+//   - "Next" byte is conceptually non-word (outside the string)
+//   - Word boundary (\b) is satisfied if isFromWord is true (word → non-word)
+//   - Non-word boundary (\B) is satisfied if isFromWord is false (non-word → non-word)
+//
+// This is called after the main search loop when we've exhausted input
+// but might still have pending word boundary assertions that could match.
+func (b *Builder) CheckEOIMatch(states []nfa.StateID, isFromWord bool) bool {
+	// At EOI, "next" byte is non-word, so:
+	// - \b is satisfied if isFromWord is true (transition from word to non-word)
+	// - \B is satisfied if isFromWord is false (staying in non-word)
+	wordBoundarySatisfied := isFromWord
+
+	// Resolve word boundary assertions
+	resolved := b.resolveWordBoundaries(states, wordBoundarySatisfied)
+
+	// Also check end-of-text assertions (\z, $)
+	// At EOI, both are satisfied
+	lookHave := LookSetForEOI()
+
+	// Expand with end-of-text assertions
+	final := b.epsilonClosure(resolved, lookHave)
+
+	// Check if any resulting state is a match
+	return b.containsMatchState(final)
 }
 
 // Compile is a convenience function to build a DFA from an NFA with default config
