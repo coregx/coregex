@@ -304,21 +304,60 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 //	    println(match.String()) // "hello"
 //	}
 func (e *Engine) Find(haystack []byte) *Match {
+	return e.FindAt(haystack, 0)
+}
+
+// FindAt finds the first match starting from position 'at' in the haystack.
+// Returns nil if no match is found.
+//
+// This method is used by FindAll* operations to correctly handle anchors like ^.
+// Unlike Find, it takes the FULL haystack and a starting position, so assertions
+// like ^ correctly check against the original input start, not a sliced position.
+//
+// Example:
+//
+//	engine, _ := meta.Compile("^test")
+//	match := engine.FindAt([]byte("hello test"), 0)  // matches at 0
+//	match := engine.FindAt([]byte("hello test"), 6)  // no match (^ won't match at pos 6)
+func (e *Engine) FindAt(haystack []byte, at int) *Match {
+	if at > len(haystack) {
+		return nil
+	}
+
+	// For position 0, use the optimized strategy-specific paths
+	if at == 0 {
+		switch e.strategy {
+		case UseNFA:
+			return e.findNFA(haystack)
+		case UseDFA:
+			return e.findDFA(haystack)
+		case UseBoth:
+			return e.findAdaptive(haystack)
+		case UseReverseAnchored:
+			return e.findReverseAnchored(haystack)
+		case UseReverseSuffix:
+			return e.findReverseSuffix(haystack)
+		case UseReverseInner:
+			return e.findReverseInner(haystack)
+		default:
+			return e.findNFA(haystack)
+		}
+	}
+
+	// For non-zero positions, use FindAt variants that preserve absolute positions
 	switch e.strategy {
 	case UseNFA:
-		return e.findNFA(haystack)
+		return e.findNFAAt(haystack, at)
 	case UseDFA:
-		return e.findDFA(haystack)
+		return e.findDFAAt(haystack, at)
 	case UseBoth:
-		return e.findAdaptive(haystack)
-	case UseReverseAnchored:
-		return e.findReverseAnchored(haystack)
-	case UseReverseSuffix:
-		return e.findReverseSuffix(haystack)
-	case UseReverseInner:
-		return e.findReverseInner(haystack)
+		return e.findAdaptiveAt(haystack, at)
+	case UseReverseAnchored, UseReverseSuffix, UseReverseInner:
+		// Reverse strategies should work correctly with slicing
+		// since they operate on specific ranges
+		return e.findNFAAt(haystack, at)
 	default:
-		return e.findNFA(haystack)
+		return e.findNFAAt(haystack, at)
 	}
 }
 
@@ -408,8 +447,18 @@ func (e *Engine) isMatchAdaptive(haystack []byte) bool {
 //	    fmt.Println(match.Group(3)) // "com"
 //	}
 func (e *Engine) FindSubmatch(haystack []byte) *MatchWithCaptures {
-	// Try OnePass DFA if available (10-20x faster for anchored patterns)
-	if e.onepass != nil && e.onepassCache != nil {
+	return e.FindSubmatchAt(haystack, 0)
+}
+
+// FindSubmatchAt returns the first match with capture group information,
+// starting from position 'at' in the haystack.
+// Returns nil if no match is found.
+//
+// This method is used by ReplaceAll* operations to correctly handle anchors like ^.
+// Unlike FindSubmatch, it takes the FULL haystack and a starting position.
+func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
+	// For position 0, try OnePass DFA if available (10-20x faster for anchored patterns)
+	if at == 0 && e.onepass != nil && e.onepassCache != nil {
 		e.stats.OnePassSearches++
 		slots := e.onepass.Search(haystack, e.onepassCache)
 		if slots != nil {
@@ -424,7 +473,7 @@ func (e *Engine) FindSubmatch(haystack []byte) *MatchWithCaptures {
 	e.stats.NFASearches++
 
 	// Use PikeVM for capture group extraction
-	nfaMatch := e.pikevm.SearchWithCaptures(haystack)
+	nfaMatch := e.pikevm.SearchWithCapturesAt(haystack, at)
 	if nfaMatch == nil {
 		return nil
 	}
@@ -530,6 +579,76 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 
 	// Fall back to NFA
 	return e.findNFA(haystack)
+}
+
+// findNFAAt searches using NFA starting from a specific position.
+// This preserves absolute positions for correct anchor handling.
+func (e *Engine) findNFAAt(haystack []byte, at int) *Match {
+	e.stats.NFASearches++
+	start, end, matched := e.pikevm.SearchAt(haystack, at)
+	if !matched {
+		return nil
+	}
+	return NewMatch(start, end, haystack)
+}
+
+// findDFAAt searches using DFA starting from a specific position.
+// This preserves absolute positions for correct anchor handling.
+func (e *Engine) findDFAAt(haystack []byte, at int) *Match {
+	e.stats.DFASearches++
+
+	// If prefilter available and complete, use it starting from 'at'
+	if e.prefilter != nil && e.prefilter.IsComplete() {
+		pos := e.prefilter.Find(haystack, at)
+		if pos == -1 {
+			return nil
+		}
+		e.stats.PrefilterHits++
+		// Prefilter found the literal, now get exact match bounds from NFA
+		start, end, matched := e.pikevm.SearchAt(haystack, at)
+		if !matched {
+			return nil
+		}
+		return NewMatch(start, end, haystack)
+	}
+
+	// Use DFA search with FindAt
+	pos := e.dfa.FindAt(haystack, at)
+	if pos == -1 {
+		return nil
+	}
+
+	// DFA returns end position, but doesn't track start position
+	// Fall back to NFA to get exact match bounds
+	start, end, matched := e.pikevm.SearchAt(haystack, at)
+	if !matched {
+		return nil
+	}
+	return NewMatch(start, end, haystack)
+}
+
+// findAdaptiveAt tries DFA first at a specific position, falls back to NFA on failure.
+func (e *Engine) findAdaptiveAt(haystack []byte, at int) *Match {
+	// Try DFA first
+	if e.dfa != nil {
+		e.stats.DFASearches++
+		pos := e.dfa.FindAt(haystack, at)
+		if pos != -1 {
+			// DFA succeeded - need to find start position from NFA
+			start, end, matched := e.pikevm.SearchAt(haystack, at)
+			if matched {
+				return NewMatch(start, end, haystack)
+			}
+		}
+		// DFA failed (might be cache full) - check cache stats
+		size, capacity, _, _, _ := e.dfa.CacheStats()
+		if size >= int(capacity)*9/10 { // 90% full
+			e.stats.DFACacheFull++
+		}
+	}
+
+	// Fall back to NFA
+	return e.findNFAAt(haystack, at)
 }
 
 // findReverseAnchored searches using reverse DFA for end-anchored patterns.

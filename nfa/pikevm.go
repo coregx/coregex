@@ -157,6 +157,28 @@ func updateCapture(caps cowCaptures, groupIndex uint32, isStart bool, pos int) c
 // The search is unanchored by default (matches anywhere in haystack)
 // unless the NFA was compiled with anchored mode.
 func (p *PikeVM) Search(haystack []byte) (int, int, bool) {
+	return p.SearchAt(haystack, 0)
+}
+
+// SearchAt finds the first match in the haystack starting from position 'at'.
+// Returns (start, end, true) if a match is found, or (-1, -1, false) if not.
+//
+// This method is used by FindAll* operations to correctly handle anchors like ^.
+// Unlike Search, it takes the FULL haystack and a starting position, so assertions
+// like ^ correctly check against the original input start, not a sliced position.
+func (p *PikeVM) SearchAt(haystack []byte, at int) (int, int, bool) {
+	if at > len(haystack) {
+		return -1, -1, false
+	}
+
+	if at == len(haystack) {
+		// At end of input - check if empty string matches
+		if p.matchesEmpty() {
+			return at, at, true
+		}
+		return -1, -1, false
+	}
+
 	if len(haystack) == 0 {
 		// Check if empty string matches
 		if p.matchesEmpty() {
@@ -166,26 +188,18 @@ func (p *PikeVM) Search(haystack []byte) (int, int, bool) {
 	}
 
 	if p.nfa.IsAnchored() {
-		// Anchored mode: only try position 0
-		start, end, matched := p.searchAt(haystack, 0)
+		// Anchored mode: only try the starting position
+		start, end, matched := p.searchAt(haystack, at)
 		return start, end, matched
 	}
 
-	// Unanchored mode: use O(n) parallel simulation
-	return p.searchUnanchored(haystack)
+	// Unanchored mode: use O(n) parallel simulation starting from 'at'
+	return p.searchUnanchoredAt(haystack, at)
 }
 
-// searchUnanchored implements Thompson's parallel NFA simulation for unanchored search.
-// This is O(n) because we process each byte exactly once, maintaining all possible
-// match starts simultaneously instead of restarting the search at each position.
-//
-// The algorithm simulates an implicit (?s:.)*? prefix by adding new start threads
-// at each byte position, allowing matches to begin anywhere in the input.
-//
-// Implements leftmost-longest matching semantics:
-// 1. Find the leftmost (earliest starting) match
-// 2. Among matches with the same start, find the longest
-func (p *PikeVM) searchUnanchored(haystack []byte) (int, int, bool) {
+// searchUnanchoredAt implements Thompson's parallel NFA simulation for unanchored search.
+// This is used by SearchAt to correctly handle anchors when searching from non-zero positions.
+func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, bool) {
 	// Reset state
 	p.queue = p.queue[:0]
 	p.nextQueue = p.nextQueue[:0]
@@ -198,8 +212,8 @@ func (p *PikeVM) searchUnanchored(haystack []byte) (int, int, bool) {
 	// Check if NFA is anchored at start (e.g., reverse NFA for $ patterns)
 	isAnchored := p.nfa.IsAnchored()
 
-	// Process each byte position once
-	for pos := 0; pos <= len(haystack); pos++ {
+	// Process each byte position once, starting from startAt
+	for pos := startAt; pos <= len(haystack); pos++ {
 		// Add new start thread at current position (simulates .*? prefix)
 		// We use StartAnchored() here (not StartUnanchored()) because the prefix
 		// is simulated by restarting at each position, not embedded in the NFA.
@@ -269,6 +283,32 @@ func (p *PikeVM) searchUnanchored(haystack []byte) (int, int, bool) {
 // SearchWithCaptures finds the first match with capture group positions.
 // Returns nil if no match is found.
 func (p *PikeVM) SearchWithCaptures(haystack []byte) *MatchWithCaptures {
+	return p.SearchWithCapturesAt(haystack, 0)
+}
+
+// SearchWithCapturesAt finds the first match with capture group positions,
+// starting from position 'at' in the haystack.
+// Returns nil if no match is found.
+//
+// This method is used by FindAll* operations to correctly handle anchors like ^.
+// Unlike SearchWithCaptures, it takes the FULL haystack and a starting position.
+func (p *PikeVM) SearchWithCapturesAt(haystack []byte, at int) *MatchWithCaptures {
+	if at > len(haystack) {
+		return nil
+	}
+
+	if at == len(haystack) {
+		// At end of input - check if empty string matches
+		if p.matchesEmpty() {
+			return &MatchWithCaptures{
+				Start:    at,
+				End:      at,
+				Captures: p.buildCapturesResult(nil, at, at),
+			}
+		}
+		return nil
+	}
+
 	if len(haystack) == 0 {
 		// Check if empty string matches
 		if p.matchesEmpty() {
@@ -282,14 +322,14 @@ func (p *PikeVM) SearchWithCaptures(haystack []byte) *MatchWithCaptures {
 	}
 
 	if p.nfa.IsAnchored() {
-		return p.searchAtWithCaptures(haystack, 0)
+		return p.searchAtWithCaptures(haystack, at)
 	}
 
-	return p.searchUnanchoredWithCaptures(haystack)
+	return p.searchUnanchoredWithCapturesAt(haystack, at)
 }
 
-// searchUnanchoredWithCaptures is like searchUnanchored but returns captures
-func (p *PikeVM) searchUnanchoredWithCaptures(haystack []byte) *MatchWithCaptures {
+// searchUnanchoredWithCapturesAt implements Thompson's parallel NFA simulation with capture groups.
+func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *MatchWithCaptures {
 	// Reset state
 	p.queue = p.queue[:0]
 	p.nextQueue = p.nextQueue[:0]
@@ -300,8 +340,8 @@ func (p *PikeVM) searchUnanchoredWithCaptures(haystack []byte) *MatchWithCapture
 	bestEnd := -1
 	var bestCaptures []int
 
-	// Process each byte position once
-	for pos := 0; pos <= len(haystack); pos++ {
+	// Process each byte position once, starting from startAt
+	for pos := startAt; pos <= len(haystack); pos++ {
 		// Add new start thread at current position (simulates .*? prefix)
 		// Use StartAnchored() to ensure correct startPos tracking
 		if bestStart == -1 {

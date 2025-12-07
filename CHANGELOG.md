@@ -14,6 +14,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.6] - 2025-12-07
+
+### Fixed
+- **Issue #14: FindAllIndex returns incorrect matches for `^` anchor**
+  - `FindAllIndex`/`ReplaceAll` returned matches at every position for `^` patterns
+  - Example: `FindAllIndex("12345", "^")` returned `[[0 0] [1 1] [2 2]...]` instead of `[[0 0]]`
+  - Root cause: `FindAllIndex` sliced the input `b[pos:]`, making the engine think each position was the start
+  - **Professional fix**: Added `FindAt(haystack, at)` methods throughout the engine stack
+    - `PikeVM.SearchAt()` and `SearchWithCapturesAt()` - starts unanchored search from position
+    - `DFA.FindAt()` and `findWithPrefilterAt()` - preserves absolute positions
+    - `Engine.FindAt()` and `FindSubmatchAt()` - meta-engine coordination
+  - All `FindAll*` and `ReplaceAll*` functions now use `FindAt` to preserve absolute positions
+  - Anchors like `^` now correctly check against the TRUE input start, not sliced position
+
+### Technical Details
+- `nfa/pikevm.go`: Added `SearchAt()`, `SearchWithCapturesAt()`, `searchUnanchoredAt()`, `searchUnanchoredWithCapturesAt()`
+- `dfa/lazy/lazy.go`: Added `FindAt()`, `findWithPrefilterAt()`
+- `meta/meta.go`: Added `FindAt()`, `FindSubmatchAt()`, strategy-specific `*At` methods
+- `regex.go`: Updated `FindAll`, `FindAllIndex`, `ReplaceAll` to use `FindAt` variants
+- New test file: `anchor_test.go` with comprehensive stdlib compatibility tests
+- All tests passing, golangci-lint: 0 issues
+
+---
+
 ## [0.8.5] - 2025-12-05
 
 ### Fixed

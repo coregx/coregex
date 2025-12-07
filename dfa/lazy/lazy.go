@@ -95,6 +95,28 @@ type DFA struct {
 //	pos := dfa.Find([]byte("say hello world"))
 //	// pos == 4
 func (d *DFA) Find(haystack []byte) int {
+	return d.FindAt(haystack, 0)
+}
+
+// FindAt finds a match starting from position 'at' in the haystack.
+// Returns the end position of the first match, or -1 if no match.
+//
+// This method is used by FindAll* operations to correctly handle anchors like ^.
+// Unlike Find, it takes the FULL haystack and a starting position, so assertions
+// like ^ correctly check against the original input start, not a sliced position.
+func (d *DFA) FindAt(haystack []byte, at int) int {
+	if at > len(haystack) {
+		return -1
+	}
+
+	if at == len(haystack) {
+		// At end of input - check if empty string matches
+		if d.matchesEmpty() {
+			return at
+		}
+		return -1
+	}
+
 	if len(haystack) == 0 {
 		// Check if empty string matches
 		if d.matchesEmpty() {
@@ -103,23 +125,15 @@ func (d *DFA) Find(haystack []byte) int {
 		return -1
 	}
 
-	// DEBUG: Print which path we're taking
-	// import "fmt"  // ADD THIS TO TOP OF FILE
-	//if d.prefilter != nil {
-	//	fmt.Printf("[DFA.Find] using findWithPrefilter\n")
-	//} else {
-	//	fmt.Printf("[DFA.Find] NO PREFILTER, using searchAt\n")
-	//}
-
 	// If prefilter available, use it to find candidates
 	if d.prefilter != nil {
-		return d.findWithPrefilter(haystack)
+		return d.findWithPrefilterAt(haystack, at)
 	}
 
-	// No prefilter: use DFA search from position 0
+	// No prefilter: use DFA search from position 'at'
 	// The NFA now has proper unanchored start state with implicit (?s:.)*? prefix,
 	// so DFA search is O(n) for both anchored and unanchored patterns
-	return d.searchAt(haystack, 0)
+	return d.searchAt(haystack, at)
 }
 
 // IsMatch returns true if the pattern matches anywhere in the haystack.
@@ -194,8 +208,8 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 	// Get context-aware start state
 	currentState := d.getStartStateForUnanchored(haystack, startPos)
 	if currentState == nil {
-		// Fallback to NFA
-		start, end, matched := d.pikevm.Search(haystack[startPos:])
+		// Fallback to NFA using SearchAt to preserve absolute positions
+		start, end, matched := d.pikevm.SearchAt(haystack, startPos)
 		return matched && start >= 0 && end >= start
 	}
 
@@ -238,7 +252,7 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 			nextState, err := d.determinize(currentState, b)
 			if err != nil {
 				// Dead state or cache full - try NFA fallback
-				start, end, matched := d.pikevm.Search(haystack[pos:])
+				start, end, matched := d.pikevm.SearchAt(haystack, pos)
 				return matched && start >= 0 && end >= start
 			}
 			if nextState == nil {
@@ -255,7 +269,7 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 			currentState = d.getState(nextID)
 			if currentState == nil {
 				// State not in cache - fallback to NFA
-				start, end, matched := d.pikevm.Search(haystack[pos:])
+				start, end, matched := d.pikevm.SearchAt(haystack, pos)
 				return matched && start >= 0 && end >= start
 			}
 		}
@@ -276,17 +290,16 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 	return d.checkEOIMatch(currentState)
 }
 
-// findWithPrefilter searches using prefilter to accelerate unanchored search.
-// Uses single-pass approach: when in start state, use prefilter to skip ahead.
-// Returns the end position of the leftmost-longest match.
-func (d *DFA) findWithPrefilter(haystack []byte) int {
+// findWithPrefilterAt searches using prefilter to accelerate unanchored search.
+// This is used by FindAt to correctly handle anchors when searching from non-zero positions.
+func (d *DFA) findWithPrefilterAt(haystack []byte, startAt int) int {
 	// If prefilter is complete, its match is the final match
 	if d.prefilter.IsComplete() {
-		return d.prefilter.Find(haystack, 0)
+		return d.prefilter.Find(haystack, startAt)
 	}
 
 	// Initial prefilter scan to find first candidate
-	candidate := d.prefilter.Find(haystack, 0)
+	candidate := d.prefilter.Find(haystack, startAt)
 	if candidate == -1 {
 		return -1
 	}
@@ -734,16 +747,15 @@ func (d *DFA) getStartStateForUnanchored(haystack []byte, pos int) *State {
 // nfaFallback executes the NFA (PikeVM) when DFA gives up.
 // This ensures correctness even when cache is full or pattern is too complex.
 func (d *DFA) nfaFallback(haystack []byte, startPos int) int {
-	// Search from startPos to end
-	start, end, matched := d.pikevm.Search(haystack[startPos:])
+	// Search from startPos to end using SearchAt to preserve absolute positions
+	// This is critical for anchor handling (^ should only match at position 0)
+	_, end, matched := d.pikevm.SearchAt(haystack, startPos)
 	if !matched {
 		return -1
 	}
 
-	// PikeVM returns positions relative to the slice
-	// Adjust to absolute positions
-	_ = start // Start position relative to startPos
-	return startPos + end
+	// PikeVM.SearchAt returns absolute positions
+	return end
 }
 
 // matchesEmpty checks if the pattern matches an empty string

@@ -301,20 +301,21 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 	var matches [][]byte
 	pos := 0
 	for {
-		// Search from current position
-		match := r.engine.Find(b[pos:])
+		// Search from current position using FindAt to preserve absolute positions
+		// This is critical for correct anchor handling (^ should only match at pos 0)
+		match := r.engine.FindAt(b, pos)
 		if match == nil {
 			break
 		}
 
-		// Adjust match positions to absolute offsets
-		absStart := pos + match.Start()
-		absEnd := pos + match.End()
-		matches = append(matches, b[absStart:absEnd])
+		// Match positions are already absolute (FindAt preserves them)
+		start := match.Start()
+		end := match.End()
+		matches = append(matches, b[start:end])
 
 		// Move position past this match
-		if absEnd > pos {
-			pos = absEnd
+		if end > pos {
+			pos = end
 		} else {
 			// Empty match: advance by 1 to avoid infinite loop
 			pos++
@@ -507,20 +508,21 @@ func (r *Regex) FindAllIndex(b []byte, n int) [][]int {
 	var indices [][]int
 	pos := 0
 	for {
-		// Search from current position
-		match := r.engine.Find(b[pos:])
+		// Search from current position using FindAt to preserve absolute positions
+		// This is critical for correct anchor handling (^ should only match at pos 0)
+		match := r.engine.FindAt(b, pos)
 		if match == nil {
 			break
 		}
 
-		// Adjust match positions to absolute offsets
-		absStart := pos + match.Start()
-		absEnd := pos + match.End()
-		indices = append(indices, []int{absStart, absEnd})
+		// Match positions are already absolute (FindAt preserves them)
+		start := match.Start()
+		end := match.End()
+		indices = append(indices, []int{start, end})
 
 		// Move position past this match
-		if absEnd > pos {
-			pos = absEnd
+		if end > pos {
+			pos = end
 		} else {
 			// Empty match: advance by 1 to avoid infinite loop
 			pos++
@@ -696,19 +698,20 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 	pos := 0
 
 	for {
-		// Search from current position
-		matchData := r.engine.FindSubmatch(src[pos:])
+		// Search from current position using FindSubmatchAt to preserve absolute positions
+		// This is critical for correct anchor handling (^ should only match at pos 0)
+		matchData := r.engine.FindSubmatchAt(src, pos)
 		if matchData == nil {
 			break
 		}
 
-		// Get match indices (adjusted to absolute positions)
+		// Get match indices (already absolute from FindSubmatchAt)
 		matchIndices := make([]int, numGroups*2)
 		for i := 0; i < numGroups; i++ {
 			idx := matchData.GroupIndex(i)
 			if len(idx) >= 2 {
-				matchIndices[i*2] = pos + idx[0]
-				matchIndices[i*2+1] = pos + idx[1]
+				matchIndices[i*2] = idx[0]
+				matchIndices[i*2+1] = idx[1]
 			} else {
 				matchIndices[i*2] = -1
 				matchIndices[i*2+1] = -1
