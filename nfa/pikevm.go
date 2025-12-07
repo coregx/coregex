@@ -172,8 +172,10 @@ func (p *PikeVM) SearchAt(haystack []byte, at int) (int, int, bool) {
 	}
 
 	if at == len(haystack) {
-		// At end of input - check if empty string matches
-		if p.matchesEmpty() {
+		// At end of input - check if empty string matches at this position.
+		// We need to pass the actual haystack and position to correctly
+		// evaluate look assertions like ^ and $ in multiline mode.
+		if p.matchesEmptyAt(haystack, at) {
 			return at, at, true
 		}
 		return -1, -1, false
@@ -715,8 +717,14 @@ func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 	p.nextQueue = append(p.nextQueue, t)
 }
 
-// matchesEmpty checks if the NFA matches an empty string
+// matchesEmpty checks if the NFA matches an empty string at position 0
 func (p *PikeVM) matchesEmpty() bool {
+	return p.matchesEmptyAt(nil, 0)
+}
+
+// matchesEmptyAt checks if the NFA matches an empty string at the given position.
+// This is needed for correctly evaluating look assertions like ^ and $ in multiline mode.
+func (p *PikeVM) matchesEmptyAt(haystack []byte, pos int) bool {
 	// Reset state
 	p.queue = p.queue[:0]
 	p.visited.Clear()
@@ -760,9 +768,17 @@ func (p *PikeVM) matchesEmpty() bool {
 			}
 
 		case StateLook:
-			// For empty string matching, check if assertion holds at position 0
+			// Check if assertion holds at the actual position
 			look, next := state.Look()
-			if checkLookAssertion(look, nil, 0) && next != InvalidState && !p.visited.Contains(uint32(next)) {
+			if checkLookAssertion(look, haystack, pos) && next != InvalidState && !p.visited.Contains(uint32(next)) {
+				p.visited.Insert(uint32(next))
+				stack = append(stack, next)
+			}
+
+		case StateCapture:
+			// Capture states are epsilon transitions, follow through
+			_, _, next := state.Capture()
+			if next != InvalidState && !p.visited.Contains(uint32(next)) {
 				p.visited.Insert(uint32(next))
 				stack = append(stack, next)
 			}
@@ -794,9 +810,8 @@ func checkLookAssertion(look Look, haystack []byte, pos int) bool {
 		// ^ - matches at start of input or after newline
 		return pos == 0 || (pos > 0 && haystack[pos-1] == '\n')
 	case LookEndLine:
-		// $ - matches ONLY at end of input in Go's regexp
-		// Unlike Perl/PCRE, Go's $ does NOT match before a trailing newline
-		return pos == len(haystack)
+		// $ in multiline mode - matches at end of input OR before \n
+		return pos == len(haystack) || (pos < len(haystack) && haystack[pos] == '\n')
 	case LookWordBoundary:
 		// \b - matches at word/non-word boundary
 		// Word boundary exists when is_word(prev) != is_word(curr)

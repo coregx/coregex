@@ -17,7 +17,7 @@ func TestFindAllIndex(t *testing.T) {
 		{`\d+`, "1 2 3", 0, nil},
 		{`\d+`, "abc", -1, nil},
 		{`a`, "aaa", -1, [][]int{{0, 1}, {1, 2}, {2, 3}}},
-		{`a*`, "aaa", -1, [][]int{{0, 3}, {3, 3}}}, // Empty match at end
+		{`a*`, "aaa", -1, [][]int{{0, 3}}}, // No empty match at end after non-empty match (stdlib behavior)
 	}
 
 	for _, tt := range tests {

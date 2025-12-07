@@ -300,6 +300,7 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 
 	var matches [][]byte
 	pos := 0
+	lastMatchEnd := -1 // Track where the last non-empty match ended
 	for {
 		// Search from current position using FindAt to preserve absolute positions
 		// This is critical for correct anchor handling (^ should only match at pos 0)
@@ -311,13 +312,32 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 		// Match positions are already absolute (FindAt preserves them)
 		start := match.Start()
 		end := match.End()
+
+		// Skip empty matches that start exactly where the previous non-empty match ended.
+		// This matches Go's stdlib behavior.
+		if start == end && start == lastMatchEnd {
+			pos++
+			if pos > len(b) {
+				break
+			}
+			continue
+		}
+
 		matches = append(matches, b[start:end])
 
+		// Track non-empty match ends for the skip rule
+		if start != end {
+			lastMatchEnd = end
+		}
+
 		// Move position past this match
-		if end > pos {
+		if start == end {
+			// Empty match: advance by 1 to avoid infinite loop
+			pos = end + 1
+		} else if end > pos {
 			pos = end
 		} else {
-			// Empty match: advance by 1 to avoid infinite loop
+			// Fallback (shouldn't normally happen)
 			pos++
 		}
 
@@ -507,6 +527,7 @@ func (r *Regex) FindAllIndex(b []byte, n int) [][]int {
 
 	var indices [][]int
 	pos := 0
+	lastMatchEnd := -1 // Track where the last non-empty match ended
 	for {
 		// Search from current position using FindAt to preserve absolute positions
 		// This is critical for correct anchor handling (^ should only match at pos 0)
@@ -518,13 +539,36 @@ func (r *Regex) FindAllIndex(b []byte, n int) [][]int {
 		// Match positions are already absolute (FindAt preserves them)
 		start := match.Start()
 		end := match.End()
+
+		// Skip empty matches that start exactly where the previous non-empty match ended.
+		// This matches Go's stdlib behavior:
+		// - "a*" on "ab" returns [[0 1] [2 2]], not [[0 1] [1 1] [2 2]]
+		// - After matching "a" at [0,1], an empty match at [1,1] is skipped
+		// - But empty matches at [2,2] (after the 'b') are allowed
+		if start == end && start == lastMatchEnd {
+			// Skip this empty match and try at the next position
+			pos++
+			if pos > len(b) {
+				break
+			}
+			continue
+		}
+
 		indices = append(indices, []int{start, end})
 
+		// Track non-empty match ends for the skip rule
+		if start != end {
+			lastMatchEnd = end
+		}
+
 		// Move position past this match
-		if end > pos {
+		if start == end {
+			// Empty match: advance by 1 to avoid infinite loop
+			pos = end + 1
+		} else if end > pos {
 			pos = end
 		} else {
-			// Empty match: advance by 1 to avoid infinite loop
+			// Fallback (shouldn't normally happen)
 			pos++
 		}
 
@@ -696,6 +740,7 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 	var result []byte
 	lastEnd := 0
 	pos := 0
+	lastNonEmptyMatchEnd := -1 // Track where the last non-empty match ended
 
 	for {
 		// Search from current position using FindSubmatchAt to preserve absolute positions
@@ -721,6 +766,16 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 		absStart := matchIndices[0]
 		absEnd := matchIndices[1]
 
+		// Skip empty matches that start exactly where the previous non-empty match ended.
+		// This matches Go's stdlib behavior.
+		if absStart == absEnd && absStart == lastNonEmptyMatchEnd {
+			pos++
+			if pos > len(src) {
+				break
+			}
+			continue
+		}
+
 		// Append text before match
 		result = append(result, src[lastEnd:absStart]...)
 
@@ -729,11 +784,19 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 
 		lastEnd = absEnd
 
+		// Track non-empty match ends for the skip rule
+		if absStart != absEnd {
+			lastNonEmptyMatchEnd = absEnd
+		}
+
 		// Move position past this match
-		if absEnd > pos {
+		if absStart == absEnd {
+			// Empty match: advance by 1 to avoid infinite loop
+			pos = absEnd + 1
+		} else if absEnd > pos {
 			pos = absEnd
 		} else {
-			// Empty match: advance by 1 to avoid infinite loop
+			// Fallback (shouldn't normally happen)
 			pos++
 		}
 

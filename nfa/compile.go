@@ -176,21 +176,21 @@ func (c *Compiler) compileRegexp(re *syntax.Regexp) (start, end StateID, err err
 	case syntax.OpCapture:
 		return c.compileCapture(re)
 	case syntax.OpBeginText:
-		// ^ or \A - Go's parser converts both to OpBeginText
-		// Implement as ^ (start of line) for compatibility with $ behavior
-		id := c.builder.AddLook(LookStartLine, InvalidState)
+		// \A - only matches at start of input (not after newlines)
+		// Used by ^ in non-multiline mode
+		id := c.builder.AddLook(LookStartText, InvalidState)
 		return id, id, nil
 	case syntax.OpEndText:
-		// $ or \z - Go's parser converts both to OpEndText
-		// Implement as $ (end of line with newline awareness)
-		id := c.builder.AddLook(LookEndLine, InvalidState)
+		// \z - only matches at end of input (not before newlines)
+		// Used by $ in non-multiline mode
+		id := c.builder.AddLook(LookEndText, InvalidState)
 		return id, id, nil
 	case syntax.OpBeginLine:
-		// Explicit ^ (though parser converts to OpBeginText)
+		// ^ in multiline mode (?m) - matches at start of input OR after \n
 		id := c.builder.AddLook(LookStartLine, InvalidState)
 		return id, id, nil
 	case syntax.OpEndLine:
-		// Explicit $ (though parser converts to OpEndText)
+		// $ in multiline mode (?m) - matches at end of input OR before \n
 		id := c.builder.AddLook(LookEndLine, InvalidState)
 		return id, id, nil
 	case syntax.OpWordBoundary:
@@ -1001,9 +1001,11 @@ func (c *Compiler) collectNamesRecursive(re *syntax.Regexp) {
 //   - A Concat that starts with an anchor
 //
 // For anchored patterns, the unanchored start state equals the anchored start state.
+// Note: OpBeginLine (^) is NOT truly anchored because in multiline mode it matches
+// after each newline. Only OpBeginText (\A) is truly anchored to input start.
 func (c *Compiler) isPatternAnchored(re *syntax.Regexp) bool {
 	switch re.Op {
-	case syntax.OpBeginLine, syntax.OpBeginText:
+	case syntax.OpBeginText: // Only \A is truly anchored, not ^ (OpBeginLine)
 		return true
 	case syntax.OpConcat:
 		if len(re.Sub) > 0 {
@@ -1017,18 +1019,20 @@ func (c *Compiler) isPatternAnchored(re *syntax.Regexp) bool {
 	return false
 }
 
-// IsPatternEndAnchored checks if a pattern is inherently anchored at end (ends with $ or \z).
+// IsPatternEndAnchored checks if a pattern is inherently anchored at end (ends with \z).
 //
 // A pattern is end-anchored if it ends with:
-//   - OpEndLine ($)
-//   - OpEndText (\z)
-//   - A Concat that ends with an end anchor
+//   - OpEndText (\z or non-multiline $) - only matches at EOF
+//
+// Note: OpEndLine (multiline $ with (?m)) is NOT considered end-anchored because
+// it can match at multiple positions (before each \n and at EOF). Using reverse
+// search for multiline $ would miss matches before \n characters.
 //
 // This is used to select the ReverseAnchored strategy which searches backward
 // from the end of haystack for O(m) instead of O(n*m) performance.
 func IsPatternEndAnchored(re *syntax.Regexp) bool {
 	switch re.Op {
-	case syntax.OpEndLine, syntax.OpEndText:
+	case syntax.OpEndText: // Only OpEndText is truly end-anchored, not OpEndLine (multiline $)
 		return true
 	case syntax.OpConcat:
 		if len(re.Sub) > 0 {
