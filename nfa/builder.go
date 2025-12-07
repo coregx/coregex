@@ -76,7 +76,7 @@ func (b *Builder) AddSparse(transitions []Transition) StateID {
 }
 
 // AddSplit adds a state with epsilon transitions to two states (alternation).
-// This is used for alternation (a|b) and optional patterns.
+// This is used for alternation (a|b). For quantifiers, use AddQuantifierSplit.
 func (b *Builder) AddSplit(left, right StateID) StateID {
 	id := StateID(len(b.states))
 	b.states = append(b.states, State{
@@ -84,6 +84,22 @@ func (b *Builder) AddSplit(left, right StateID) StateID {
 		kind:  StateSplit,
 		left:  left,
 		right: right,
+	})
+	return id
+}
+
+// AddQuantifierSplit adds a state with epsilon transitions for quantifiers (*, +, ?, {n,m}).
+// Unlike alternation splits, quantifier splits don't affect thread priority.
+// Left branch is the "continue/repeat" path, right branch is the "exit" path.
+// This distinction is crucial for correct leftmost-first matching semantics.
+func (b *Builder) AddQuantifierSplit(left, right StateID) StateID {
+	id := StateID(len(b.states))
+	b.states = append(b.states, State{
+		id:                id,
+		kind:              StateSplit,
+		left:              left,
+		right:             right,
+		isQuantifierSplit: true,
 	})
 	return id
 }

@@ -29,6 +29,8 @@ type thread struct {
 	state    StateID
 	startPos int         // Position where this thread's match attempt started
 	captures cowCaptures // COW capture positions: [start0, end0, start1, end1, ...] (-1 = not set)
+	priority uint32      // Thread priority for alternation (lower = higher priority)
+	tookLeft bool        // True if any alternation left branch was taken (used for greedy reset)
 }
 
 // cowCaptures implements copy-on-write semantics for capture slots.
@@ -207,9 +209,10 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 	p.nextQueue = p.nextQueue[:0]
 	p.visited.Clear()
 
-	// Track leftmost-longest match
+	// Track leftmost-first match (with priority for alternation)
 	bestStart := -1
 	bestEnd := -1
+	var bestPriority uint32
 
 	// Check if NFA is anchored at start (e.g., reverse NFA for $ patterns)
 	isAnchored := p.nfa.IsAnchored()
@@ -224,7 +227,7 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 		// For anchored NFA, only try at position 0 (like ^ anchor behavior)
 		if bestStart == -1 && (!isAnchored || pos == 0) {
 			p.visited.Clear()
-			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos}, haystack, pos)
+			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, priority: 0}, haystack, pos)
 		}
 
 		// Check for matches in current generation
@@ -232,11 +235,16 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 		for _, t := range p.queue {
 			if p.nfa.IsMatch(t.state) {
 				// Found a match ending at current position
-				// Update best match if this is leftmost or longest for same start
+				// Update best match using leftmost-first semantics:
+				// 1. Leftmost start position wins
+				// 2. For same start, higher priority (lower number) wins
+				// 3. For same start and priority, longer match wins (greedy extension)
 				if bestStart == -1 || t.startPos < bestStart ||
-					(t.startPos == bestStart && pos > bestEnd) {
+					(t.startPos == bestStart && t.priority < bestPriority) ||
+					(t.startPos == bestStart && t.priority == bestPriority && pos > bestEnd) {
 					bestStart = t.startPos
 					bestEnd = pos
+					bestPriority = t.priority
 				}
 			}
 		}
@@ -337,9 +345,10 @@ func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *M
 	p.nextQueue = p.nextQueue[:0]
 	p.visited.Clear()
 
-	// Track leftmost-longest match
+	// Track leftmost-first match (with priority for alternation)
 	bestStart := -1
 	bestEnd := -1
+	var bestPriority uint32
 	var bestCaptures []int
 
 	// Process each byte position once, starting from startAt
@@ -349,16 +358,22 @@ func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *M
 		if bestStart == -1 {
 			p.visited.Clear()
 			caps := p.newCaptures()
-			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, captures: caps}, haystack, pos)
+			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, captures: caps, priority: 0}, haystack, pos)
 		}
 
 		// Check for matches in current generation
 		for _, t := range p.queue {
 			if p.nfa.IsMatch(t.state) {
+				// Update best match using leftmost-first semantics:
+				// 1. Leftmost start position wins
+				// 2. For same start, higher priority (lower number) wins
+				// 3. For same start and priority, longer match wins (greedy extension)
 				if bestStart == -1 || t.startPos < bestStart ||
-					(t.startPos == bestStart && pos > bestEnd) {
+					(t.startPos == bestStart && t.priority < bestPriority) ||
+					(t.startPos == bestStart && t.priority == bestPriority && pos > bestEnd) {
 					bestStart = t.startPos
 					bestEnd = pos
+					bestPriority = t.priority
 					bestCaptures = t.captures.copyData()
 				}
 			}
@@ -413,16 +428,23 @@ func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithC
 	p.visited.Clear()
 
 	caps := p.newCaptures()
-	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos, captures: caps}, haystack, startPos)
+	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos, captures: caps, priority: 0}, haystack, startPos)
 
+	// Track the best match (respecting priority for alternation)
 	lastMatchPos := -1
+	var lastMatchPriority uint32
 	var lastMatchCaptures []int
 
 	for pos := startPos; pos <= len(haystack); pos++ {
 		for _, t := range p.queue {
 			if p.nfa.IsMatch(t.state) {
-				lastMatchPos = pos
-				lastMatchCaptures = t.captures.copyData()
+				// Update if: no match yet, higher priority, or same priority (greedy extension)
+				if lastMatchPos == -1 || t.priority < lastMatchPriority ||
+					t.priority == lastMatchPriority {
+					lastMatchPos = pos
+					lastMatchPriority = t.priority
+					lastMatchCaptures = t.captures.copyData()
+				}
 				break
 			}
 		}
@@ -515,7 +537,7 @@ func (p *PikeVM) SearchAll(haystack []byte) []Match {
 }
 
 // searchAt attempts to find a match starting at the given position
-// Implements leftmost-longest matching: finds the longest match at the leftmost position
+// Implements leftmost-first matching with greedy extension for same priority
 func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 	// Reset state
 	p.queue = p.queue[:0]
@@ -523,18 +545,24 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 	p.visited.Clear()
 
 	// Initialize with start state
-	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos}, haystack, startPos)
+	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos, priority: 0}, haystack, startPos)
 
-	// Track the last position where we had a match
+	// Track the best match (respecting priority for alternation)
 	lastMatchPos := -1
+	var lastMatchPriority uint32
 
 	// Process each byte position
 	for pos := startPos; pos <= len(haystack); pos++ {
 		// Check if any current threads are in a match state
-		// Record this position but continue searching for longer matches
+		// Use leftmost-first semantics with priority
 		for _, t := range p.queue {
 			if p.nfa.IsMatch(t.state) {
-				lastMatchPos = pos
+				// Update if: no match yet, higher priority, or same priority (greedy extension)
+				if lastMatchPos == -1 || t.priority < lastMatchPriority ||
+					t.priority == lastMatchPriority {
+					lastMatchPos = pos
+					lastMatchPriority = t.priority
+				}
 				break // Found a match at this position, record it
 			}
 		}
@@ -597,36 +625,57 @@ func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 		p.queue = append(p.queue, t)
 
 	case StateEpsilon:
-		// Follow epsilon transition immediately, preserving startPos and captures
+		// Follow epsilon transition immediately, preserving startPos, captures, priority, and tookLeft
 		next := state.Epsilon()
 		if next != InvalidState {
-			p.addThread(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
+			p.addThread(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
 		}
 
 	case StateSplit:
 		// Follow both branches, preserving startPos and captures
-		// Note: captures are shared (copy-on-write when modified)
+		// For alternation splits: left branch keeps same priority and marks tookLeft, right branch increments priority
+		// For quantifier splits: left branch (continue) keeps priority, right branch (exit) resets IF tookLeft is true
+		// The conditional reset handles the distinction between "free" and "forced" alternation choices:
+		// - In (?:|a)*, all 'a' choices are "free" (empty was available), so don't reset → empty wins
+		// - In (foo|bar)+, after matching 'foo', 'bar' is "forced" (foo didn't match), so reset → longer wins
 		left, right := state.Split()
+		isQuantifier := state.IsQuantifierSplit()
 		if left != InvalidState {
-			p.addThread(thread{state: left, startPos: t.startPos, captures: t.captures}, haystack, pos)
+			leftTookLeft := t.tookLeft
+			if !isQuantifier {
+				leftTookLeft = true // Mark that we took left at an alternation
+			}
+			p.addThread(thread{state: left, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: leftTookLeft}, haystack, pos)
 		}
 		if right != InvalidState {
-			p.addThread(thread{state: right, startPos: t.startPos, captures: t.captures}, haystack, pos)
+			rightPriority := t.priority
+			rightTookLeft := t.tookLeft
+			if isQuantifier {
+				// At quantifier exit: reset priority only if we took left branch in some alternation
+				// This indicates forced choices (left succeeded somewhere, so right choices were forced)
+				if t.tookLeft {
+					rightPriority = 0
+					rightTookLeft = false // Reset for potential nested quantifiers
+				}
+			} else {
+				rightPriority++ // Increment for alternation splits (leftmost-first)
+			}
+			p.addThread(thread{state: right, startPos: t.startPos, captures: t.captures, priority: rightPriority, tookLeft: rightTookLeft}, haystack, pos)
 		}
 
 	case StateCapture:
-		// Record capture position and follow epsilon transition
+		// Record capture position and follow epsilon transition, preserving priority and tookLeft
 		groupIndex, isStart, next := state.Capture()
 		if next != InvalidState {
 			newCaps := updateCapture(t.captures, groupIndex, isStart, pos)
-			p.addThread(thread{state: next, startPos: t.startPos, captures: newCaps}, haystack, pos)
+			p.addThread(thread{state: next, startPos: t.startPos, captures: newCaps, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
 		}
 
 	case StateLook:
-		// Check zero-width assertion at current position
+		// Check zero-width assertion at current position, preserving priority and tookLeft
 		look, next := state.Look()
 		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			p.addThread(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
+			p.addThread(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
 		}
 
 	case StateFail:
@@ -645,16 +694,16 @@ func (p *PikeVM) step(t thread, b byte, haystack []byte, nextPos int) {
 	case StateByteRange:
 		lo, hi, next := state.ByteRange()
 		if b >= lo && b <= hi {
-			// Byte matches - add thread for next state, preserving startPos and captures
-			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, nextPos)
+			// Byte matches - add thread for next state, preserving startPos, captures, priority, and tookLeft
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, nextPos)
 		}
 
 	case StateSparse:
 		// Check all transitions
 		for _, tr := range state.Transitions() {
 			if b >= tr.Lo && b <= tr.Hi {
-				// Byte matches this transition, preserving startPos and captures
-				p.addThreadToNext(thread{state: tr.Next, startPos: t.startPos, captures: t.captures}, haystack, nextPos)
+				// Byte matches this transition, preserving startPos, captures, priority, and tookLeft
+				p.addThreadToNext(thread{state: tr.Next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, nextPos)
 			}
 		}
 	}
@@ -676,39 +725,57 @@ func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 		return
 	}
 
-	// Follow epsilon transitions immediately, preserving startPos and captures
+	// Follow epsilon transitions immediately, preserving startPos, captures, priority, and tookLeft
 	switch state.Kind() {
 	case StateEpsilon:
 		next := state.Epsilon()
 		if next != InvalidState {
-			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
 		}
 		return
 
 	case StateSplit:
+		// For alternation splits: left branch keeps same priority and marks tookLeft, right branch increments priority
+		// For quantifier splits: left branch (continue) keeps priority, right branch (exit) resets IF tookLeft is true
 		left, right := state.Split()
+		isQuantifier := state.IsQuantifierSplit()
 		if left != InvalidState {
-			p.addThreadToNext(thread{state: left, startPos: t.startPos, captures: t.captures}, haystack, pos)
+			leftTookLeft := t.tookLeft
+			if !isQuantifier {
+				leftTookLeft = true // Mark that we took left at an alternation
+			}
+			p.addThreadToNext(thread{state: left, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: leftTookLeft}, haystack, pos)
 		}
 		if right != InvalidState {
-			p.addThreadToNext(thread{state: right, startPos: t.startPos, captures: t.captures}, haystack, pos)
+			rightPriority := t.priority
+			rightTookLeft := t.tookLeft
+			if isQuantifier {
+				// At quantifier exit: reset priority only if we took left branch in some alternation
+				if t.tookLeft {
+					rightPriority = 0
+					rightTookLeft = false
+				}
+			} else {
+				rightPriority++ // Increment for alternation splits (leftmost-first)
+			}
+			p.addThreadToNext(thread{state: right, startPos: t.startPos, captures: t.captures, priority: rightPriority, tookLeft: rightTookLeft}, haystack, pos)
 		}
 		return
 
 	case StateCapture:
-		// Record capture position and follow epsilon transition
+		// Record capture position and follow epsilon transition, preserving priority and tookLeft
 		groupIndex, isStart, next := state.Capture()
 		if next != InvalidState {
 			newCaps := updateCapture(t.captures, groupIndex, isStart, pos)
-			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: newCaps}, haystack, pos)
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: newCaps, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
 		}
 		return
 
 	case StateLook:
-		// Check zero-width assertion at current position
+		// Check zero-width assertion at current position, preserving priority and tookLeft
 		look, next := state.Look()
 		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
 		}
 		return
 	}

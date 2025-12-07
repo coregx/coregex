@@ -120,6 +120,11 @@ type State struct {
 	// For Split: epsilon transitions to two states
 	left, right StateID
 
+	// For Split: true if this is a quantifier split (*, +, ?, {n,m})
+	// Quantifier splits don't affect priority (greedy behavior via DFS order)
+	// Alternation splits increment priority for right branch (leftmost-first)
+	isQuantifierSplit bool
+
 	// For Capture: capture group index and whether this is opening/closing
 	captureIndex uint32
 	captureStart bool // true = opening boundary, false = closing boundary
@@ -167,6 +172,13 @@ func (s *State) Split() (left, right StateID) {
 		return s.left, s.right
 	}
 	return InvalidState, InvalidState
+}
+
+// IsQuantifierSplit returns true if this Split state is for a quantifier (*, +, ?, {n,m}).
+// Quantifier splits don't affect thread priority (greedy behavior is handled by DFS order).
+// Alternation splits increment priority for the right branch (leftmost-first semantics).
+func (s *State) IsQuantifierSplit() bool {
+	return s.kind == StateSplit && s.isQuantifierSplit
 }
 
 // Epsilon returns the target state for Epsilon states.

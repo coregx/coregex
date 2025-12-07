@@ -698,8 +698,9 @@ func (c *Compiler) compileStar(sub *syntax.Regexp) (start, end StateID, err erro
 	// Create split: either enter sub or skip
 	// split -> [sub, end]
 	// sub -> split (loop back)
+	// Use AddQuantifierSplit - quantifier splits don't affect priority
 	end = c.builder.AddEpsilon(InvalidState)
-	split := c.builder.AddSplit(subStart, end)
+	split := c.builder.AddQuantifierSplit(subStart, end)
 
 	// Connect sub end back to split (loop)
 	if err := c.builder.Patch(subEnd, split); err != nil {
@@ -721,8 +722,9 @@ func (c *Compiler) compilePlus(sub *syntax.Regexp) (start, end StateID, err erro
 
 	// Must match at least once
 	// sub -> split -> [sub, end]
+	// Use AddQuantifierSplit - quantifier splits don't affect priority
 	end = c.builder.AddEpsilon(InvalidState)
-	split := c.builder.AddSplit(subStart, end)
+	split := c.builder.AddQuantifierSplit(subStart, end)
 
 	// Connect sub end to split (loop)
 	if err := c.builder.Patch(subEnd, split); err != nil {
@@ -743,8 +745,9 @@ func (c *Compiler) compileQuest(sub *syntax.Regexp) (start, end StateID, err err
 	}
 
 	// Either match sub or skip
+	// Use AddQuantifierSplit - quantifier splits don't affect priority
 	end = c.builder.AddEpsilon(InvalidState)
-	split := c.builder.AddSplit(subStart, end)
+	split := c.builder.AddQuantifierSplit(subStart, end)
 
 	// Connect sub end to end
 	if err := c.builder.Patch(subEnd, end); err != nil {
