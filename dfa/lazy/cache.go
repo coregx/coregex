@@ -2,6 +2,8 @@ package lazy
 
 import (
 	"sync"
+
+	"github.com/coregx/coregex/internal/conv"
 )
 
 // Cache provides thread-safe storage for DFA states with bounded memory.
@@ -78,7 +80,7 @@ func (c *Cache) Insert(key StateKey, state *State) (StateID, error) {
 	}
 
 	// Check capacity
-	if uint32(len(c.states)) >= c.maxStates {
+	if conv.IntToUint32(len(c.states)) >= c.maxStates {
 		c.misses++
 		return InvalidState, ErrCacheFull
 	}
@@ -142,7 +144,7 @@ func (c *Cache) Size() int {
 func (c *Cache) IsFull() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return uint32(len(c.states)) >= c.maxStates
+	return conv.IntToUint32(len(c.states)) >= c.maxStates
 }
 
 // Stats returns cache hit/miss statistics.

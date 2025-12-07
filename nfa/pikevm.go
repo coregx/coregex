@@ -3,6 +3,7 @@ package nfa
 import (
 	"unicode/utf8"
 
+	"github.com/coregx/coregex/internal/conv"
 	"github.com/coregx/coregex/internal/sparse"
 )
 
@@ -124,7 +125,7 @@ func NewPikeVM(nfa *NFA) *PikeVM {
 		nfa:       nfa,
 		queue:     make([]thread, 0, capacity),
 		nextQueue: make([]thread, 0, capacity),
-		visited:   sparse.NewSparseSet(uint32(capacity)),
+		visited:   sparse.NewSparseSet(conv.IntToUint32(capacity)),
 	}
 }
 

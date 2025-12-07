@@ -3,6 +3,8 @@ package nfa
 import (
 	"fmt"
 	"regexp/syntax"
+
+	"github.com/coregx/coregex/internal/conv"
 )
 
 // CompilerConfig configures NFA compilation behavior
@@ -877,8 +879,10 @@ func (c *Compiler) compileEmptyMatch() (start, end StateID, err error) {
 	return id, id, nil
 }
 
-// encodeRune encodes a rune as UTF-8 into buf and returns the number of bytes written
-// buf must have capacity >= 4
+// encodeRune encodes a rune as UTF-8 into buf and returns the number of bytes written.
+// buf must have capacity >= 4.
+//
+//nolint:gosec // G602: buf capacity is guaranteed by caller contract (see comment above)
 func encodeRune(buf []byte, r rune) int {
 	if r < 0x80 {
 		buf[0] = byte(r)
@@ -958,7 +962,7 @@ func (c *Compiler) compileCapture(re *syntax.Regexp) (start, end StateID, err er
 
 	// Create closing capture state (records end position)
 	// Note: we create closing first to get the ID, then opening points to subStart
-	closeCapture := c.builder.AddCapture(uint32(re.Cap), false, InvalidState)
+	closeCapture := c.builder.AddCapture(conv.IntToUint32(re.Cap), false, InvalidState)
 
 	// Connect sub-expression end to closing capture
 	if err := c.builder.Patch(subEnd, closeCapture); err != nil {
@@ -970,7 +974,7 @@ func (c *Compiler) compileCapture(re *syntax.Regexp) (start, end StateID, err er
 	}
 
 	// Create opening capture state (records start position)
-	openCapture := c.builder.AddCapture(uint32(re.Cap), true, subStart)
+	openCapture := c.builder.AddCapture(conv.IntToUint32(re.Cap), true, subStart)
 
 	return openCapture, closeCapture, nil
 }
