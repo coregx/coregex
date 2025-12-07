@@ -38,6 +38,43 @@ func isUniversalMatch(re *syntax.Regexp) bool {
 	return false
 }
 
+// isStartAnchorOnly checks if an AST only contains start-of-text/line anchors.
+// Patterns like ^, ^+, ^^^ only match at position 0, so if inner literal is
+// found at position 0, the prefix trivially matches.
+func isStartAnchorOnly(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+
+	switch re.Op {
+	case syntax.OpBeginText, syntax.OpBeginLine:
+		// ^ or \A - matches at position 0
+		return true
+	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest:
+		// ^+, ^*, ^? - check if sub is start anchor
+		if len(re.Sub) == 1 {
+			return isStartAnchorOnly(re.Sub[0])
+		}
+	case syntax.OpConcat:
+		// ^^ or ^+^+ - all elements must be start anchors
+		for _, sub := range re.Sub {
+			if !isStartAnchorOnly(sub) {
+				return false
+			}
+		}
+		return len(re.Sub) > 0
+	case syntax.OpCapture:
+		// (^) - check sub
+		if len(re.Sub) == 1 {
+			return isStartAnchorOnly(re.Sub[0])
+		}
+	case syntax.OpEmptyMatch:
+		// Empty string at position 0 is trivially matching
+		return true
+	}
+	return false
+}
+
 // endsWithUniversalMatch checks if suffix AST ends with .* (greedy any).
 // For suffix like `connection.*`, this detects the trailing .*.
 func endsWithUniversalMatch(re *syntax.Regexp) bool {
@@ -110,6 +147,7 @@ type ReverseInnerSearcher struct {
 	innerLen        int  // Length of the inner literal for calculating positions
 	universalPrefix bool // True if prefix is .* (matches everything from start)
 	universalSuffix bool // True if suffix ends with .* (matches everything to end)
+	startAnchored   bool // True if prefix only contains start anchors (^, ^+, etc.)
 }
 
 // NewReverseInnerSearcher creates a reverse inner searcher using AST splitting.
@@ -215,6 +253,8 @@ func NewReverseInnerSearcher(
 	//   - universalSuffix: .* suffix means match always ends at len(haystack)
 	universalPrefix := isUniversalMatch(innerInfo.PrefixAST)
 	universalSuffix := endsWithUniversalMatch(innerInfo.SuffixAST)
+	// Check if prefix is only start anchors (^, ^+, etc.) - trivially matches at position 0
+	startAnchored := isStartAnchorOnly(innerInfo.PrefixAST)
 
 	return &ReverseInnerSearcher{
 		forwardNFA:      suffixNFA,
@@ -226,6 +266,7 @@ func NewReverseInnerSearcher(
 		innerLen:        innerLen,
 		universalPrefix: universalPrefix,
 		universalSuffix: universalSuffix,
+		startAnchored:   startAnchored,
 	}, nil
 }
 
@@ -367,10 +408,12 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 		// BIDIRECTIONAL VERIFICATION:
 		//
 		// Step 1: Check if prefix matches (reverse DFA)
-		// Special case: if pos=0 and prefix is universal (.*), it trivially matches empty prefix
+		// Special cases for pos=0:
+		//   - universalPrefix (.*): trivially matches empty prefix
+		//   - startAnchored (^, ^+): trivially matches at position 0
 		prefixMatches := false
-		if pos == 0 && s.universalPrefix {
-			// Universal prefix (.*) matches empty string at position 0
+		if pos == 0 && (s.universalPrefix || s.startAnchored) {
+			// Universal prefix (.*) or start anchor (^) matches at position 0
 			prefixMatches = true
 		} else if pos > 0 {
 			prefixMatches = s.reverseDFA.IsMatchReverse(haystack, 0, pos)
