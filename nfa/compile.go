@@ -1174,3 +1174,41 @@ func containsEndAnchor(re *syntax.Regexp) bool {
 	}
 	return false
 }
+
+// IsPatternStartAnchored checks if ANY branch of the pattern starts with ^ or \A.
+// This is used to prevent UseReverseAnchored strategy selection for patterns like
+// `^a?$|^b?$` where the start anchor constrains matching positions.
+//
+// Unlike IsPatternEndAnchored which requires ALL branches to be end-anchored,
+// this function returns true if ANY branch has a start anchor, because reverse
+// search cannot properly handle partial start anchoring in alternations.
+func IsPatternStartAnchored(re *syntax.Regexp) bool {
+	return containsStartAnchor(re)
+}
+
+// containsStartAnchor checks if the AST contains any start anchor (^ or \A)
+func containsStartAnchor(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpBeginText, syntax.OpBeginLine:
+		return true
+	case syntax.OpConcat:
+		// Check all parts of concatenation (start anchor could be in first position)
+		for _, sub := range re.Sub {
+			if containsStartAnchor(sub) {
+				return true
+			}
+		}
+	case syntax.OpAlternate:
+		// Check all alternatives - if ANY has start anchor, we need to be careful
+		for _, sub := range re.Sub {
+			if containsStartAnchor(sub) {
+				return true
+			}
+		}
+	case syntax.OpCapture, syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		if len(re.Sub) > 0 {
+			return containsStartAnchor(re.Sub[0])
+		}
+	}
+	return false
+}

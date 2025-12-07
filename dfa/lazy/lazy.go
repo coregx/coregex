@@ -601,8 +601,10 @@ func (d *DFA) determinize(current *State, b byte) (*State, error) {
 	if len(nextNFAStates) == 0 {
 		// Cache the dead state transition to avoid re-computation
 		current.AddTransition(b, DeadState)
-		// Return nil state with a specific error to indicate dead state
-		return nil, &DFAError{Kind: NFAFallback, Message: "dead state (no transitions)"}
+		// Return nil state with NO error - dead state is NOT an error condition.
+		// This follows the documented behavior: (nil, nil) for dead state.
+		// Returning an error here would incorrectly trigger NFA fallback.
+		return nil, nil //nolint:nilnil // dead state is valid, not an error
 	}
 
 	// Check if we've exceeded determinization limit

@@ -244,14 +244,21 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	//   3. Have DFA enabled
 	// This converts O(n*m) forward search to O(m) reverse search
 	//
-	// Note: Start-anchored patterns (^...) are now handled correctly by the DFA.
-	// The DFA's epsilonClosure properly handles StateLook assertions by checking
-	// which look assertions are satisfied at each position (see dfa/lazy/look.go).
+	// Note: We must avoid UseReverseAnchored for patterns that contain any start
+	// anchor (^ or \A), even in alternations like `^a?$|^b?$`. The reverse DFA
+	// cannot properly handle start anchors and would produce false positives.
 	isStartAnchored := n.IsAlwaysAnchored()
 	isEndAnchored := re != nil && nfa.IsPatternEndAnchored(re)
+	hasStartAnchor := re != nil && nfa.IsPatternStartAnchored(re)
 
 	if re != nil && config.EnableDFA {
-		if isEndAnchored && !isStartAnchored {
+		// Only use reverse search if:
+		// 1. Pattern is end-anchored ($)
+		// 2. Pattern is NOT fully start-anchored (not always starting at position 0)
+		// 3. Pattern does NOT contain any start anchor (^ or \A) - this catches
+		//    alternations like `^a?$|^b?$` where IsAlwaysAnchored() returns false
+		//    but the pattern still has start anchors that need proper handling
+		if isEndAnchored && !isStartAnchored && !hasStartAnchor {
 			// Perfect candidate for reverse search
 			// Example: "pattern.*suffix$" on large haystack
 			// Forward: O(n*m) tries, Reverse: O(m) one try
