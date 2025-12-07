@@ -75,31 +75,49 @@ jobs:
     - name: Compare benchmarks
       id: benchstat
       run: |
+        # Full benchstat output to file (for artifact)
+        benchstat base-bench.txt pr-bench.txt > full-comparison.txt 2>&1 || echo "benchstat comparison failed" > full-comparison.txt
+
+        # Extract summary (geomean line) and check for regressions
+        GEOMEAN=$(grep -E "^geomean" full-comparison.txt | head -1 || echo "")
+        REGRESSIONS=$(grep -E "\+[0-9]+\.[0-9]+%" full-comparison.txt | grep -v "~" | head -10 || echo "")
+
+        # Build concise PR comment
         echo "## Benchmark Comparison" > comparison.md
         echo "" >> comparison.md
-        echo "Comparing \`${{ github.event.pull_request.base.ref }}\` (base) vs PR #${{ github.event.pull_request.number }}" >> comparison.md
+        echo "Comparing \`${{ github.event.pull_request.base.ref }}\` → PR #${{ github.event.pull_request.number }}" >> comparison.md
         echo "" >> comparison.md
-        echo "<details>" >> comparison.md
-        echo "<summary>Click to expand benchmark results</summary>" >> comparison.md
-        echo "" >> comparison.md
-        echo "\`\`\`" >> comparison.md
-        benchstat base-bench.txt pr-bench.txt >> comparison.md 2>&1 || echo "benchstat comparison failed" >> comparison.md
-        echo "\`\`\`" >> comparison.md
-        echo "" >> comparison.md
-        echo "</details>" >> comparison.md
-        echo "" >> comparison.md
-        echo "---" >> comparison.md
-        echo "" >> comparison.md
-        echo "**Legend:**" >> comparison.md
-        echo "- \`~\` = no significant change (within noise)" >> comparison.md
-        echo "- \`-X%\` = X% faster (improvement)" >> comparison.md
-        echo "- \`+X%\` = X% slower (regression)" >> comparison.md
-        echo "" >> comparison.md
-        echo "> **Note:** CI runners have ~10-20% variance. Only regressions >30% are reliably detected." >> comparison.md
+
+        if [ -n "$GEOMEAN" ]; then
+          echo "**Summary:** \`$GEOMEAN\`" >> comparison.md
+          echo "" >> comparison.md
+        fi
+
+        if [ -n "$REGRESSIONS" ]; then
+          echo "⚠️ **Potential regressions detected:**" >> comparison.md
+          echo "\`\`\`" >> comparison.md
+          echo "$REGRESSIONS" >> comparison.md
+          echo "\`\`\`" >> comparison.md
+          echo "" >> comparison.md
+        else
+          echo "✅ No significant regressions detected." >> comparison.md
+          echo "" >> comparison.md
+        fi
+
+        echo "> Full results available in workflow artifacts. CI runners have ~10-20% variance." >> comparison.md
         echo "> For accurate benchmarks, run locally: \`./scripts/bench.sh --compare\`" >> comparison.md
 
-        # Store for comment
         cat comparison.md
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-comparison
+        path: |
+          base-bench.txt
+          pr-bench.txt
+          full-comparison.txt
+        retention-days: 30
 
     - name: Find existing comment
       uses: peter-evans/find-comment@v3
