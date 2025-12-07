@@ -45,7 +45,8 @@ func NewTransition(next StateID, matchWins bool, slots uint32) Transition {
 
 // NextState extracts the next state ID from the transition.
 func (t Transition) NextState() StateID {
-	return StateID((t >> stateIDShift) & stateIDMask)
+	// Safe: stateIDMask ensures value fits in 21 bits (max 0x1FFFFF < MaxUint32)
+	return StateID((t >> stateIDShift) & stateIDMask) //nolint:gosec // bounded by mask
 }
 
 // IsDead returns true if this transition leads to a dead state.
@@ -63,12 +64,14 @@ func (t Transition) IsMatchWins() bool {
 // SlotMask returns the 32-bit slot update mask.
 // Each bit indicates whether to save the current position to that slot.
 func (t Transition) SlotMask() uint32 {
-	return uint32(t & slotMask)
+	// Safe: slotMask (0xFFFFFFFF) ensures only lower 32 bits are returned
+	return uint32(t & slotMask) //nolint:gosec // bounded by mask
 }
 
 // LookAround returns the look-around assertion flags.
 func (t Transition) LookAround() uint16 {
-	return uint16((t & lookAroundMask) >> lookAroundShift)
+	// Safe: lookAroundMask selects 10 bits which fit in uint16 (max 0x3FF)
+	return uint16((t & lookAroundMask) >> lookAroundShift) //nolint:gosec // bounded by mask
 }
 
 // UpdateSlots applies the slot updates to the given slots array.

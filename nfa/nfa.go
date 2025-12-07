@@ -49,6 +49,14 @@ const (
 	// StateLook represents a zero-width assertion (look-around)
 	// Examples: ^, $, \A, \z (word boundaries \b, \B in future)
 	StateLook
+
+	// StateRuneAny matches any Unicode codepoint (including newlines)
+	// This is the (?s). (dot with DOTALL flag)
+	StateRuneAny
+
+	// StateRuneAnyNotNL matches any Unicode codepoint except newline (\n)
+	// This is the default . (dot) behavior
+	StateRuneAnyNotNL
 )
 
 // String returns a human-readable representation of the StateKind
@@ -70,6 +78,10 @@ func (k StateKind) String() string {
 		return "Fail"
 	case StateLook:
 		return "Look"
+	case StateRuneAny:
+		return "RuneAny"
+	case StateRuneAnyNotNL:
+		return "RuneAnyNotNL"
 	default:
 		return fmt.Sprintf("Unknown(%d)", k)
 	}
@@ -120,6 +132,11 @@ type State struct {
 	// For Split: epsilon transitions to two states
 	left, right StateID
 
+	// For Split: true if this is a quantifier split (*, +, ?, {n,m})
+	// Quantifier splits don't affect priority (greedy behavior via DFS order)
+	// Alternation splits increment priority for right branch (leftmost-first)
+	isQuantifierSplit bool
+
 	// For Capture: capture group index and whether this is opening/closing
 	captureIndex uint32
 	captureStart bool // true = opening boundary, false = closing boundary
@@ -169,6 +186,13 @@ func (s *State) Split() (left, right StateID) {
 	return InvalidState, InvalidState
 }
 
+// IsQuantifierSplit returns true if this Split state is for a quantifier (*, +, ?, {n,m}).
+// Quantifier splits don't affect thread priority (greedy behavior is handled by DFS order).
+// Alternation splits increment priority for the right branch (leftmost-first semantics).
+func (s *State) IsQuantifierSplit() bool {
+	return s.kind == StateSplit && s.isQuantifierSplit
+}
+
 // Epsilon returns the target state for Epsilon states.
 // Returns InvalidState for non-Epsilon states.
 func (s *State) Epsilon() StateID {
@@ -206,6 +230,24 @@ func (s *State) Look() (Look, StateID) {
 	return 0, InvalidState
 }
 
+// RuneAny returns the next state for RuneAny states.
+// Returns InvalidState for non-RuneAny states.
+func (s *State) RuneAny() StateID {
+	if s.kind == StateRuneAny {
+		return s.next
+	}
+	return InvalidState
+}
+
+// RuneAnyNotNL returns the next state for RuneAnyNotNL states.
+// Returns InvalidState for non-RuneAnyNotNL states.
+func (s *State) RuneAnyNotNL() StateID {
+	if s.kind == StateRuneAnyNotNL {
+		return s.next
+	}
+	return InvalidState
+}
+
 // String returns a human-readable representation of the state
 func (s *State) String() string {
 	switch s.kind {
@@ -231,6 +273,10 @@ func (s *State) String() string {
 			lookName = lookNames[s.look]
 		}
 		return fmt.Sprintf("State(%d, Look(%s) -> %d)", s.id, lookName, s.next)
+	case StateRuneAny:
+		return fmt.Sprintf("State(%d, RuneAny -> %d)", s.id, s.next)
+	case StateRuneAnyNotNL:
+		return fmt.Sprintf("State(%d, RuneAnyNotNL -> %d)", s.id, s.next)
 	default:
 		return fmt.Sprintf("State(%d, Unknown)", s.id)
 	}

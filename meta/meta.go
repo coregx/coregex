@@ -568,8 +568,13 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 		e.stats.DFASearches++
 		pos := e.dfa.Find(haystack)
 		if pos != -1 {
-			// DFA succeeded
-			return NewMatch(0, pos, haystack)
+			// DFA succeeded - get exact match bounds from NFA
+			// DFA only returns end position, not start position
+			start, end, matched := e.pikevm.Search(haystack)
+			if !matched {
+				return nil
+			}
+			return NewMatch(start, end, haystack)
 		}
 		// DFA failed (might be cache full) - check cache stats
 		size, capacity, _, _, _ := e.dfa.CacheStats()

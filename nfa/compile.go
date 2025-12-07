@@ -3,6 +3,8 @@ package nfa
 import (
 	"fmt"
 	"regexp/syntax"
+
+	"github.com/coregx/coregex/internal/conv"
 )
 
 // CompilerConfig configures NFA compilation behavior
@@ -166,31 +168,31 @@ func (c *Compiler) compileRegexp(re *syntax.Regexp) (start, end StateID, err err
 	case syntax.OpAlternate:
 		return c.compileAlternate(re.Sub)
 	case syntax.OpStar:
-		return c.compileStar(re.Sub[0])
+		return c.compileStar(re.Sub[0], re.Flags&syntax.NonGreedy != 0)
 	case syntax.OpPlus:
-		return c.compilePlus(re.Sub[0])
+		return c.compilePlus(re.Sub[0], re.Flags&syntax.NonGreedy != 0)
 	case syntax.OpQuest:
-		return c.compileQuest(re.Sub[0])
+		return c.compileQuest(re.Sub[0], re.Flags&syntax.NonGreedy != 0)
 	case syntax.OpRepeat:
-		return c.compileRepeat(re.Sub[0], re.Min, re.Max)
+		return c.compileRepeat(re.Sub[0], re.Min, re.Max, re.Flags&syntax.NonGreedy != 0)
 	case syntax.OpCapture:
 		return c.compileCapture(re)
 	case syntax.OpBeginText:
-		// ^ or \A - Go's parser converts both to OpBeginText
-		// Implement as ^ (start of line) for compatibility with $ behavior
-		id := c.builder.AddLook(LookStartLine, InvalidState)
+		// \A - only matches at start of input (not after newlines)
+		// Used by ^ in non-multiline mode
+		id := c.builder.AddLook(LookStartText, InvalidState)
 		return id, id, nil
 	case syntax.OpEndText:
-		// $ or \z - Go's parser converts both to OpEndText
-		// Implement as $ (end of line with newline awareness)
-		id := c.builder.AddLook(LookEndLine, InvalidState)
+		// \z - only matches at end of input (not before newlines)
+		// Used by $ in non-multiline mode
+		id := c.builder.AddLook(LookEndText, InvalidState)
 		return id, id, nil
 	case syntax.OpBeginLine:
-		// Explicit ^ (though parser converts to OpBeginText)
+		// ^ in multiline mode (?m) - matches at start of input OR after \n
 		id := c.builder.AddLook(LookStartLine, InvalidState)
 		return id, id, nil
 	case syntax.OpEndLine:
-		// Explicit $ (though parser converts to OpEndText)
+		// $ in multiline mode (?m) - matches at end of input OR before \n
 		id := c.builder.AddLook(LookEndLine, InvalidState)
 		return id, id, nil
 	case syntax.OpWordBoundary:
@@ -580,8 +582,8 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 // compileAnyChar compiles '.' matching any character (including \n if DotNewline is true)
 func (c *Compiler) compileAnyChar() (start, end StateID, err error) {
 	if c.config.DotNewline {
-		// Match any byte
-		id := c.builder.AddByteRange(0, 255, InvalidState)
+		// Match any byte (including newlines): [0x00-0xFF]
+		id := c.builder.AddByteRange(0x00, 0xFF, InvalidState)
 		return id, id, nil
 	}
 	return c.compileAnyCharNotNL()
@@ -589,15 +591,19 @@ func (c *Compiler) compileAnyChar() (start, end StateID, err error) {
 
 // compileAnyCharNotNL compiles '.' matching any character except \n
 func (c *Compiler) compileAnyCharNotNL() (start, end StateID, err error) {
-	// Match any byte except '\n' (0x0A)
-	// Use sparse transitions: [0x00-0x09], [0x0B-0xFF]
-	target := c.builder.AddEpsilon(InvalidState)
+	// Match any byte except '\n': [0x00-0x09] | [0x0B-0xFF]
+	// Use sparse transitions which are handled efficiently by PikeVM
+	// Create the sparse state with both byte ranges pointing to a shared end state
+	endEpsilon := c.builder.AddEpsilon(InvalidState)
+
+	// Create sparse state with multiple transitions to the same target
 	transitions := []Transition{
-		{Lo: 0x00, Hi: 0x09, Next: target},
-		{Lo: 0x0B, Hi: 0xFF, Next: target},
+		{Lo: 0x00, Hi: 0x09, Next: endEpsilon},
+		{Lo: 0x0B, Hi: 0xFF, Next: endEpsilon},
 	}
 	id := c.builder.AddSparse(transitions)
-	return id, target, nil
+
+	return id, endEpsilon, nil
 }
 
 // compileConcat compiles concatenation (e.g., "abc")
@@ -688,8 +694,8 @@ func (c *Compiler) buildSplitChain(targets []StateID) StateID {
 	return c.builder.AddSplit(targets[0], right)
 }
 
-// compileStar compiles a* (zero or more)
-func (c *Compiler) compileStar(sub *syntax.Regexp) (start, end StateID, err error) {
+// compileStar compiles a* (greedy) or a*? (non-greedy)
+func (c *Compiler) compileStar(sub *syntax.Regexp, nonGreedy bool) (start, end StateID, err error) {
 	subStart, subEnd, err := c.compileRegexp(sub)
 	if err != nil {
 		return InvalidState, InvalidState, err
@@ -699,7 +705,16 @@ func (c *Compiler) compileStar(sub *syntax.Regexp) (start, end StateID, err erro
 	// split -> [sub, end]
 	// sub -> split (loop back)
 	end = c.builder.AddEpsilon(InvalidState)
-	split := c.builder.AddSplit(subStart, end)
+	// For greedy: prefer continue (left=subStart) over exit (right=end)
+	//   Use AddQuantifierSplit - no priority change, longer match wins
+	// For non-greedy: prefer exit (left=end) over continue (right=subStart)
+	//   Use AddSplit so priority favors exit path (shorter match wins)
+	var split StateID
+	if nonGreedy {
+		split = c.builder.AddSplit(end, subStart)
+	} else {
+		split = c.builder.AddQuantifierSplit(subStart, end)
+	}
 
 	// Connect sub end back to split (loop)
 	if err := c.builder.Patch(subEnd, split); err != nil {
@@ -712,8 +727,8 @@ func (c *Compiler) compileStar(sub *syntax.Regexp) (start, end StateID, err erro
 	return split, end, nil
 }
 
-// compilePlus compiles a+ (one or more)
-func (c *Compiler) compilePlus(sub *syntax.Regexp) (start, end StateID, err error) {
+// compilePlus compiles a+ (greedy) or a+? (non-greedy)
+func (c *Compiler) compilePlus(sub *syntax.Regexp, nonGreedy bool) (start, end StateID, err error) {
 	subStart, subEnd, err := c.compileRegexp(sub)
 	if err != nil {
 		return InvalidState, InvalidState, err
@@ -722,7 +737,16 @@ func (c *Compiler) compilePlus(sub *syntax.Regexp) (start, end StateID, err erro
 	// Must match at least once
 	// sub -> split -> [sub, end]
 	end = c.builder.AddEpsilon(InvalidState)
-	split := c.builder.AddSplit(subStart, end)
+	// For greedy: prefer continue (left=subStart) over exit (right=end)
+	//   Use AddQuantifierSplit - no priority change, longer match wins
+	// For non-greedy: prefer exit (left=end) over continue (right=subStart)
+	//   Use AddSplit so priority favors exit path (shorter match wins)
+	var split StateID
+	if nonGreedy {
+		split = c.builder.AddSplit(end, subStart)
+	} else {
+		split = c.builder.AddQuantifierSplit(subStart, end)
+	}
 
 	// Connect sub end to split (loop)
 	if err := c.builder.Patch(subEnd, split); err != nil {
@@ -735,8 +759,8 @@ func (c *Compiler) compilePlus(sub *syntax.Regexp) (start, end StateID, err erro
 	return subStart, end, nil
 }
 
-// compileQuest compiles a? (zero or one)
-func (c *Compiler) compileQuest(sub *syntax.Regexp) (start, end StateID, err error) {
+// compileQuest compiles a? (greedy) or a?? (non-greedy)
+func (c *Compiler) compileQuest(sub *syntax.Regexp, nonGreedy bool) (start, end StateID, err error) {
 	subStart, subEnd, err := c.compileRegexp(sub)
 	if err != nil {
 		return InvalidState, InvalidState, err
@@ -744,7 +768,16 @@ func (c *Compiler) compileQuest(sub *syntax.Regexp) (start, end StateID, err err
 
 	// Either match sub or skip
 	end = c.builder.AddEpsilon(InvalidState)
-	split := c.builder.AddSplit(subStart, end)
+	// For greedy: prefer match (left=subStart) over skip (right=end)
+	//   Use AddQuantifierSplit - no priority change, longer match wins
+	// For non-greedy: prefer skip (left=end) over match (right=subStart)
+	//   Use AddSplit so priority favors skip path (shorter match wins)
+	var split StateID
+	if nonGreedy {
+		split = c.builder.AddSplit(end, subStart)
+	} else {
+		split = c.builder.AddQuantifierSplit(subStart, end)
+	}
 
 	// Connect sub end to end
 	if err := c.builder.Patch(subEnd, end); err != nil {
@@ -757,18 +790,18 @@ func (c *Compiler) compileQuest(sub *syntax.Regexp) (start, end StateID, err err
 	return split, end, nil
 }
 
-// compileRepeat compiles a{m,n} (min to max repetitions)
-func (c *Compiler) compileRepeat(sub *syntax.Regexp, minCount, maxCount int) (start, end StateID, err error) {
+// compileRepeat compiles a{m,n} (greedy) or a{m,n}? (non-greedy)
+func (c *Compiler) compileRepeat(sub *syntax.Regexp, minCount, maxCount int, nonGreedy bool) (start, end StateID, err error) {
 	if maxCount == -1 {
 		// a{m,} = aaa...a* (minCount copies + star)
-		return c.compileRepeatMin(sub, minCount)
+		return c.compileRepeatMin(sub, minCount, nonGreedy)
 	}
 	if minCount == maxCount {
-		// a{n} = aaa...a (exactly n copies)
+		// a{n} = aaa...a (exactly n copies) - greedy/non-greedy doesn't matter
 		return c.compileRepeatExact(sub, minCount)
 	}
 	// a{m,n} = aaa...a(a?a?a?...) (minCount copies + (maxCount-minCount) optional copies)
-	return c.compileRepeatRange(sub, minCount, maxCount)
+	return c.compileRepeatRange(sub, minCount, maxCount, nonGreedy)
 }
 
 // compileRepeatExact compiles a{n}
@@ -788,10 +821,10 @@ func (c *Compiler) compileRepeatExact(sub *syntax.Regexp, n int) (start, end Sta
 	return c.compileConcat(subs)
 }
 
-// compileRepeatMin compiles a{m,}
-func (c *Compiler) compileRepeatMin(sub *syntax.Regexp, minCount int) (start, end StateID, err error) {
+// compileRepeatMin compiles a{m,} (greedy) or a{m,}? (non-greedy)
+func (c *Compiler) compileRepeatMin(sub *syntax.Regexp, minCount int, nonGreedy bool) (start, end StateID, err error) {
 	if minCount == 0 {
-		return c.compileStar(sub)
+		return c.compileStar(sub, nonGreedy)
 	}
 
 	// Concatenate minCount copies + star
@@ -799,15 +832,21 @@ func (c *Compiler) compileRepeatMin(sub *syntax.Regexp, minCount int) (start, en
 	for i := 0; i < minCount; i++ {
 		subs = append(subs, sub)
 	}
+	// Create synthetic star with correct NonGreedy flag
+	starFlags := syntax.Flags(0)
+	if nonGreedy {
+		starFlags |= syntax.NonGreedy
+	}
 	subs = append(subs, &syntax.Regexp{
-		Op:  syntax.OpStar,
-		Sub: []*syntax.Regexp{sub},
+		Op:    syntax.OpStar,
+		Flags: starFlags,
+		Sub:   []*syntax.Regexp{sub},
 	})
 	return c.compileConcat(subs)
 }
 
-// compileRepeatRange compiles a{m,n}
-func (c *Compiler) compileRepeatRange(sub *syntax.Regexp, minCount, maxCount int) (start, end StateID, err error) {
+// compileRepeatRange compiles a{m,n} (greedy) or a{m,n}? (non-greedy)
+func (c *Compiler) compileRepeatRange(sub *syntax.Regexp, minCount, maxCount int, nonGreedy bool) (start, end StateID, err error) {
 	if minCount > maxCount {
 		return InvalidState, InvalidState, &CompileError{
 			Err: fmt.Errorf("invalid repeat range {%d,%d}", minCount, maxCount),
@@ -819,10 +858,16 @@ func (c *Compiler) compileRepeatRange(sub *syntax.Regexp, minCount, maxCount int
 	for i := 0; i < minCount; i++ {
 		subs = append(subs, sub)
 	}
+	// Create synthetic quest nodes with correct NonGreedy flag
+	questFlags := syntax.Flags(0)
+	if nonGreedy {
+		questFlags |= syntax.NonGreedy
+	}
 	for i := 0; i < maxCount-minCount; i++ {
 		subs = append(subs, &syntax.Regexp{
-			Op:  syntax.OpQuest,
-			Sub: []*syntax.Regexp{sub},
+			Op:    syntax.OpQuest,
+			Flags: questFlags,
+			Sub:   []*syntax.Regexp{sub},
 		})
 	}
 	return c.compileConcat(subs)
@@ -834,8 +879,10 @@ func (c *Compiler) compileEmptyMatch() (start, end StateID, err error) {
 	return id, id, nil
 }
 
-// encodeRune encodes a rune as UTF-8 into buf and returns the number of bytes written
-// buf must have capacity >= 4
+// encodeRune encodes a rune as UTF-8 into buf and returns the number of bytes written.
+// buf must have capacity >= 4.
+//
+//nolint:gosec // G602: buf capacity is guaranteed by caller contract (see comment above)
 func encodeRune(buf []byte, r rune) int {
 	if r < 0x80 {
 		buf[0] = byte(r)
@@ -915,7 +962,7 @@ func (c *Compiler) compileCapture(re *syntax.Regexp) (start, end StateID, err er
 
 	// Create closing capture state (records end position)
 	// Note: we create closing first to get the ID, then opening points to subStart
-	closeCapture := c.builder.AddCapture(uint32(re.Cap), false, InvalidState)
+	closeCapture := c.builder.AddCapture(conv.IntToUint32(re.Cap), false, InvalidState)
 
 	// Connect sub-expression end to closing capture
 	if err := c.builder.Patch(subEnd, closeCapture); err != nil {
@@ -927,7 +974,7 @@ func (c *Compiler) compileCapture(re *syntax.Regexp) (start, end StateID, err er
 	}
 
 	// Create opening capture state (records start position)
-	openCapture := c.builder.AddCapture(uint32(re.Cap), true, subStart)
+	openCapture := c.builder.AddCapture(conv.IntToUint32(re.Cap), true, subStart)
 
 	return openCapture, closeCapture, nil
 }
@@ -1001,9 +1048,11 @@ func (c *Compiler) collectNamesRecursive(re *syntax.Regexp) {
 //   - A Concat that starts with an anchor
 //
 // For anchored patterns, the unanchored start state equals the anchored start state.
+// Note: OpBeginLine (^) is NOT truly anchored because in multiline mode it matches
+// after each newline. Only OpBeginText (\A) is truly anchored to input start.
 func (c *Compiler) isPatternAnchored(re *syntax.Regexp) bool {
 	switch re.Op {
-	case syntax.OpBeginLine, syntax.OpBeginText:
+	case syntax.OpBeginText: // Only \A is truly anchored, not ^ (OpBeginLine)
 		return true
 	case syntax.OpConcat:
 		if len(re.Sub) > 0 {
@@ -1017,27 +1066,45 @@ func (c *Compiler) isPatternAnchored(re *syntax.Regexp) bool {
 	return false
 }
 
-// IsPatternEndAnchored checks if a pattern is inherently anchored at end (ends with $ or \z).
+// IsPatternEndAnchored checks if a pattern is inherently anchored at end (ends with \z).
 //
 // A pattern is end-anchored if it ends with:
-//   - OpEndLine ($)
-//   - OpEndText (\z)
-//   - A Concat that ends with an end anchor
+//   - OpEndText (\z or non-multiline $) - only matches at EOF
+//
+// Note: OpEndLine (multiline $ with (?m)) is NOT considered end-anchored because
+// it can match at multiple positions (before each \n and at EOF). Using reverse
+// search for multiline $ would miss matches before \n characters.
 //
 // This is used to select the ReverseAnchored strategy which searches backward
 // from the end of haystack for O(m) instead of O(n*m) performance.
+//
+// IMPORTANT: This also checks for internal end anchors (like in `(a$)b$`).
+// If there's an end anchor that's NOT at the very end, ReverseAnchored won't work.
 func IsPatternEndAnchored(re *syntax.Regexp) bool {
+	// First check if pattern ends with $
+	if !isEndAnchored(re) {
+		return false
+	}
+	// Then check for internal end anchors (which would make ReverseAnchored incorrect)
+	if hasInternalEndAnchor(re) {
+		return false
+	}
+	return true
+}
+
+// isEndAnchored checks if the pattern ends with $ (without checking for internal anchors)
+func isEndAnchored(re *syntax.Regexp) bool {
 	switch re.Op {
-	case syntax.OpEndLine, syntax.OpEndText:
+	case syntax.OpEndText: // Only OpEndText is truly end-anchored, not OpEndLine (multiline $)
 		return true
 	case syntax.OpConcat:
 		if len(re.Sub) > 0 {
 			// Check the last sub-expression
-			return IsPatternEndAnchored(re.Sub[len(re.Sub)-1])
+			return isEndAnchored(re.Sub[len(re.Sub)-1])
 		}
 	case syntax.OpCapture:
 		if len(re.Sub) > 0 {
-			return IsPatternEndAnchored(re.Sub[0])
+			return isEndAnchored(re.Sub[0])
 		}
 	case syntax.OpAlternate:
 		// All alternatives must be end-anchored
@@ -1045,11 +1112,62 @@ func IsPatternEndAnchored(re *syntax.Regexp) bool {
 			return false
 		}
 		for _, sub := range re.Sub {
-			if !IsPatternEndAnchored(sub) {
+			if !isEndAnchored(sub) {
 				return false
 			}
 		}
 		return true
+	}
+	return false
+}
+
+// hasInternalEndAnchor checks if there's an end anchor ($ or \z) that's NOT at the
+// very end of the pattern. Such patterns like `(a$)b$` have contradictory anchors.
+func hasInternalEndAnchor(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpConcat:
+		// In a concatenation, check all elements EXCEPT the last one for end anchors
+		// The last one is allowed to have an end anchor (that's the "end" anchor)
+		for i := 0; i < len(re.Sub)-1; i++ {
+			if containsEndAnchor(re.Sub[i]) {
+				return true
+			}
+		}
+		// Also check if the last element has internal anchors
+		if len(re.Sub) > 0 {
+			if hasInternalEndAnchor(re.Sub[len(re.Sub)-1]) {
+				return true
+			}
+		}
+	case syntax.OpCapture:
+		if len(re.Sub) > 0 {
+			return hasInternalEndAnchor(re.Sub[0])
+		}
+	case syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if hasInternalEndAnchor(sub) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsEndAnchor checks if the AST contains any end anchor ($ or \z)
+func containsEndAnchor(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpEndText, syntax.OpEndLine:
+		return true
+	case syntax.OpConcat, syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if containsEndAnchor(sub) {
+				return true
+			}
+		}
+	case syntax.OpCapture, syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		if len(re.Sub) > 0 {
+			return containsEndAnchor(re.Sub[0])
+		}
 	}
 	return false
 }

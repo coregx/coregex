@@ -2,6 +2,8 @@ package onepass
 
 import (
 	"fmt"
+
+	"github.com/coregx/coregex/internal/conv"
 	"github.com/coregx/coregex/internal/sparse"
 	"github.com/coregx/coregex/nfa"
 )
@@ -51,7 +53,7 @@ func Build(n *nfa.NFA) (*DFA, error) {
 	// Create builder
 	b := &Builder{
 		nfa:      n,
-		seen:     sparse.NewSparseSet(uint32(n.States())),
+		seen:     sparse.NewSparseSet(conv.IntToUint32(n.States())),
 		stack:    make([]stackEntry, 0, 16),
 		nfaToDFA: make(map[nfa.StateID]StateID, n.States()),
 	}
@@ -90,10 +92,10 @@ func Build(n *nfa.NFA) (*DFA, error) {
 	}
 
 	// Find minimum match state ID for fast detection
-	dfa.minMatchID = StateID(len(dfa.matchStates))
+	dfa.minMatchID = StateID(conv.IntToUint32(len(dfa.matchStates)))
 	for i := len(dfa.matchStates) - 1; i >= 0; i-- {
 		if dfa.matchStates[i] {
-			dfa.minMatchID = StateID(i)
+			dfa.minMatchID = StateID(conv.IntToUint32(i))
 			break
 		}
 	}
@@ -116,7 +118,7 @@ func (b *Builder) buildState(nfaRoot nfa.StateID) (StateID, error) {
 	}
 
 	// Allocate new DFA state
-	sid := StateID(b.numStates)
+	sid := StateID(conv.IntToUint32(b.numStates))
 	if sid > MaxStateID {
 		return 0, fmt.Errorf("too many DFA states (max %d)", MaxStateID)
 	}

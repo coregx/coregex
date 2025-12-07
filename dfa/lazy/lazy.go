@@ -72,6 +72,37 @@ type DFA struct {
 	// Bytes in the same class have identical transitions in all DFA states.
 	// This enables memory optimization from 256 to ~8-16 transitions per state.
 	byteClasses *nfa.ByteClasses
+
+	// freshStartStates contains NFA state IDs that are part of the epsilon closure
+	// of the anchored start. These are "fresh start" states that get re-introduced
+	// via the unanchored machinery after each position. Used for leftmost matching:
+	// when all remaining states are in this set, the committed match is final.
+	freshStartStates map[nfa.StateID]bool
+
+	// unanchoredStart caches the unanchored start state ID for hasInProgressPattern
+	unanchoredStart nfa.StateID
+}
+
+// hasInProgressPattern checks if any pattern threads are still active (could extend the match).
+// Returns true if there are intermediate pattern states (not fresh starts or unanchored machinery).
+//
+// This is used for leftmost-longest semantics: after finding a match, we continue searching
+// only if pattern threads are still active. If all remaining NFA states are either fresh
+// starts (re-introduced via unanchored) or unanchored machinery, the committed match is final.
+func (d *DFA) hasInProgressPattern(state *State) bool {
+	for _, nfaState := range state.NFAStates() {
+		// Skip fresh start states (re-introduced via unanchored)
+		if d.freshStartStates[nfaState] {
+			continue
+		}
+		// Skip unanchored machinery (states near/at unanchoredStart)
+		if nfaState >= d.unanchoredStart-1 {
+			continue
+		}
+		// Found an intermediate pattern state - still in progress
+		return true
+	}
+	return false
 }
 
 // Find returns the index of the first match in the haystack, or -1 if no match.
@@ -454,7 +485,7 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 
 	// Track last match position for leftmost-longest semantics
 	lastMatch := -1
-	committed := false // True once we've entered a match state
+	committed := false // True once we've found a match
 
 	if currentState.IsMatch() {
 		lastMatch = startPos // Empty match at start
@@ -519,14 +550,18 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 
 		pos++
 
-		// Track match state and enforce leftmost semantics
+		// Track match state for leftmost-longest semantics
 		if currentState.IsMatch() {
 			lastMatch = pos
 			committed = true
 		} else if committed {
-			// We were in a match but now we're not - return leftmost match
-			// This ensures we don't keep searching for later matches
-			return lastMatch
+			// We were in a match but now we're not.
+			// Check if any pattern threads are still active (could extend the match).
+			// If only fresh starts or unanchored machinery remain, return the committed match.
+			if !d.hasInProgressPattern(currentState) {
+				return lastMatch
+			}
+			// Pattern threads still active - continue to find potential longer match
 		}
 	}
 
