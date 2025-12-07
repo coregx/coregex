@@ -29,9 +29,10 @@ import (
 //	// Forward: 340 seconds (tries match at every position)
 //	// Reverse: ~1 millisecond (one match attempt from end)
 type ReverseAnchoredSearcher struct {
-	reverseNFA *nfa.NFA
-	reverseDFA *lazy.DFA
-	pikevm     *nfa.PikeVM
+	reverseNFA    *nfa.NFA
+	reverseDFA    *lazy.DFA
+	pikevm        *nfa.PikeVM
+	forwardPikevm *nfa.PikeVM // For empty string matching (reverse NFA has issues with empty)
 }
 
 // NewReverseAnchoredSearcher creates a reverse searcher from forward NFA.
@@ -55,10 +56,15 @@ func NewReverseAnchoredSearcher(forwardNFA *nfa.NFA, config lazy.Config) (*Rever
 	// Create PikeVM for fallback (when DFA cache is full)
 	pikevm := nfa.NewPikeVM(reverseNFA)
 
+	// Create forward PikeVM for empty string matching
+	// Reverse NFA has issues with empty strings and certain alternations
+	forwardPikevm := nfa.NewPikeVM(forwardNFA)
+
 	return &ReverseAnchoredSearcher{
-		reverseNFA: reverseNFA,
-		reverseDFA: reverseDFA,
-		pikevm:     pikevm,
+		reverseNFA:    reverseNFA,
+		reverseDFA:    reverseDFA,
+		pikevm:        pikevm,
+		forwardPikevm: forwardPikevm,
 	}, nil
 }
 
@@ -81,8 +87,14 @@ func NewReverseAnchoredSearcher(forwardNFA *nfa.NFA, config lazy.Config) (*Rever
 //	Match in reverse: [0:3] = "cba"
 //	Convert to forward: [3:6] = "abc"
 func (s *ReverseAnchoredSearcher) Find(haystack []byte) *Match {
+	// For empty strings, use forward PikeVM
+	// Reverse NFA has issues with empty strings and certain alternations
 	if len(haystack) == 0 {
-		return nil
+		start, end, matched := s.forwardPikevm.Search(haystack)
+		if !matched {
+			return nil
+		}
+		return NewMatch(start, end, haystack)
 	}
 
 	// Quick check: use zero-allocation reverse DFA scan
@@ -132,8 +144,11 @@ func reverseBytes(b []byte) []byte {
 //   - No Match object allocation
 //   - Early termination
 func (s *ReverseAnchoredSearcher) IsMatch(haystack []byte) bool {
+	// For empty strings, use forward PikeVM
+	// Reverse NFA has issues with empty strings and certain alternations
 	if len(haystack) == 0 {
-		return false
+		_, _, matched := s.forwardPikevm.Search(haystack)
+		return matched
 	}
 
 	// Use reverse DFA to scan backward from end to start

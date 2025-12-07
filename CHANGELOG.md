@@ -14,6 +14,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.11] - 2025-12-08
+
+### Fixed
+- **Issue #24: ReverseAnchored patterns return wrong result on first call**
+  - Pattern `a$` on input "ab" returned `true` on first call, `false` on subsequent calls
+  - Root cause: `determinize()` returned error for dead states, triggering incorrect NFA fallback
+  - The fallback PikeVM was created from reverse NFA but received unreversed input
+  - Fix: `determinize()` now returns `(nil, nil)` for dead states (not an error condition)
+  - Also fixed: empty string handling and strategy selection for patterns with start anchors
+  - Files: `dfa/lazy/lazy.go`, `meta/reverse_anchored.go`, `meta/strategy.go`, `nfa/compile.go`
+
+---
+
+## [0.8.10] - 2025-12-07
+
+### Fixed
+- **Issue #8: Inline flags `(?s:...)`, `(?i:...)` now work correctly**
+  - `compileAnyChar()` was checking global config instead of trusting the Op type from parser
+  - Now correctly produces `OpAnyChar` (matches newlines) vs `OpAnyCharNotNL` based on inline flags
+  - Examples: `(?s:^a.*c$)` matches `"a\nb\nc"`, `a(?s:.)b` matches `"a\nb"`
+  - AWK integration: wrap patterns with `(?s:...)` for AWK-like behavior where `.` matches newlines
+
+---
+
 ## [0.8.9] - 2025-12-07
 
 ### Fixed

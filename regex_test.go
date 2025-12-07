@@ -289,6 +289,59 @@ func TestEdgeCases(t *testing.T) {
 	}
 }
 
+// TestEndAnchor tests patterns with $ anchor
+// Regression test for issue #24: first-call bug with ReverseAnchored patterns
+func TestEndAnchor(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+		want    bool
+	}{
+		// Basic end anchor
+		{"a$ matches ending with a", "a$", "ba", true},
+		{"a$ not matches ending with b", "a$", "ab", false},
+		{"a$ matches single a", "a$", "a", true},
+		{"a$ not matches single b", "a$", "b", false},
+
+		// Empty string handling
+		{"^$ matches empty", "^$", "", true},
+		{"^$ not matches non-empty", "^$", "a", false},
+		{"$ matches at end of abc", "$", "abc", true},
+
+		// Multiple calls should give consistent results (regression for #24)
+		{"a$ on ab consistent 1", "a$", "ab", false},
+		{"a$ on ab consistent 2", "a$", "ab", false},
+		{"a$ on ba consistent 1", "a$", "ba", true},
+		{"a$ on ba consistent 2", "a$", "ba", true},
+
+		// Start anchor combinations
+		{"^a$ full match a", "^a$", "a", true},
+		{"^a$ not matches ab", "^a$", "ab", false},
+		{"^a$ not matches ba", "^a$", "ba", false},
+
+		// Alternation with anchors
+		{"^a?$|^b?$ matches empty", "^a?$|^b?$", "", true},
+		{"^a?$|^b?$ matches a", "^a?$|^b?$", "a", true},
+		{"^a?$|^b?$ matches b", "^a?$|^b?$", "b", true},
+		{"^a?$|^b?$ not matches ab", "^a?$|^b?$", "ab", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+
+			// Call multiple times to catch first-call bugs
+			for i := 0; i < 3; i++ {
+				got := re.MatchString(tt.input)
+				if got != tt.want {
+					t.Errorf("MatchString() call %d = %v, want %v", i+1, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkCompile benchmarks compilation
 func BenchmarkCompile(b *testing.B) {
 	patterns := []string{
