@@ -155,6 +155,32 @@ func (b *Builder) AddLook(look Look, next StateID) StateID {
 	return id
 }
 
+// AddRuneAny adds a state that matches any Unicode codepoint (including newlines).
+// This is used for (?s). (dot with DOTALL flag).
+// The state consumes 1-4 bytes (UTF-8 encoded rune) and transitions to next.
+func (b *Builder) AddRuneAny(next StateID) StateID {
+	id := StateID(len(b.states))
+	b.states = append(b.states, State{
+		id:   id,
+		kind: StateRuneAny,
+		next: next,
+	})
+	return id
+}
+
+// AddRuneAnyNotNL adds a state that matches any Unicode codepoint except newline.
+// This is used for the default . (dot) behavior.
+// The state consumes 1-4 bytes (UTF-8 encoded rune) and transitions to next.
+func (b *Builder) AddRuneAnyNotNL(next StateID) StateID {
+	id := StateID(len(b.states))
+	b.states = append(b.states, State{
+		id:   id,
+		kind: StateRuneAnyNotNL,
+		next: next,
+	})
+	return id
+}
+
 // Patch updates a state's target. This is used during compilation to handle
 // forward references (e.g., loops, alternations).
 // This only works for states with a single 'next' target (ByteRange, Epsilon).
@@ -168,7 +194,7 @@ func (b *Builder) Patch(stateID, target StateID) error {
 
 	s := &b.states[stateID]
 	switch s.kind {
-	case StateByteRange, StateEpsilon, StateCapture, StateLook:
+	case StateByteRange, StateEpsilon, StateCapture, StateLook, StateRuneAny, StateRuneAnyNotNL:
 		s.next = target
 		return nil
 	default:
@@ -248,7 +274,7 @@ func (b *Builder) Validate() error {
 	for i, s := range b.states {
 		id := StateID(i)
 		switch s.kind {
-		case StateByteRange, StateEpsilon, StateCapture, StateLook:
+		case StateByteRange, StateEpsilon, StateCapture, StateLook, StateRuneAny, StateRuneAnyNotNL:
 			if s.next != InvalidState && int(s.next) >= len(b.states) {
 				return &BuildError{
 					Message: fmt.Sprintf("invalid next state %d", s.next),

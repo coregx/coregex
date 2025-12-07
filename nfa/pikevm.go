@@ -1,6 +1,8 @@
 package nfa
 
 import (
+	"unicode/utf8"
+
 	"github.com/coregx/coregex/internal/sparse"
 )
 
@@ -239,6 +241,7 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 				// 1. Leftmost start position wins
 				// 2. For same start, higher priority (lower number) wins
 				// 3. For same start and priority, longer match wins (greedy extension)
+				// Use pos from main loop - threads in queue are at current position
 				if bestStart == -1 || t.startPos < bestStart ||
 					(t.startPos == bestStart && t.priority < bestPriority) ||
 					(t.startPos == bestStart && t.priority == bestPriority && pos > bestEnd) {
@@ -620,7 +623,7 @@ func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 		// Match state - add to queue
 		p.queue = append(p.queue, t)
 
-	case StateByteRange, StateSparse:
+	case StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
 		// Input-consuming states - add to queue
 		p.queue = append(p.queue, t)
 
@@ -640,6 +643,10 @@ func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 		// - In (foo|bar)+, after matching 'foo', 'bar' is "forced" (foo didn't match), so reset → longer wins
 		left, right := state.Split()
 		isQuantifier := state.IsQuantifierSplit()
+
+		// For Look-left alternations: check if Look would succeed at current position
+		leftLookSucceeds := !isQuantifier && p.checkLeftLookSucceeds(left, haystack, pos)
+
 		if left != InvalidState {
 			leftTookLeft := t.tookLeft
 			if !isQuantifier {
@@ -648,18 +655,7 @@ func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 			p.addThread(thread{state: left, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: leftTookLeft}, haystack, pos)
 		}
 		if right != InvalidState {
-			rightPriority := t.priority
-			rightTookLeft := t.tookLeft
-			if isQuantifier {
-				// At quantifier exit: reset priority only if we took left branch in some alternation
-				// This indicates forced choices (left succeeded somewhere, so right choices were forced)
-				if t.tookLeft {
-					rightPriority = 0
-					rightTookLeft = false // Reset for potential nested quantifiers
-				}
-			} else {
-				rightPriority++ // Increment for alternation splits (leftmost-first)
-			}
+			rightPriority, rightTookLeft := p.calcRightBranchPriority(t, left, isQuantifier, leftLookSucceeds)
 			p.addThread(thread{state: right, startPos: t.startPos, captures: t.captures, priority: rightPriority, tookLeft: rightTookLeft}, haystack, pos)
 		}
 
@@ -706,6 +702,46 @@ func (p *PikeVM) step(t thread, b byte, haystack []byte, nextPos int) {
 				p.addThreadToNext(thread{state: tr.Next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, nextPos)
 			}
 		}
+
+	case StateRuneAny:
+		// Match any Unicode codepoint - decode UTF-8 rune at current position
+		// Only process at the START of a UTF-8 sequence (keep alive at continuation bytes)
+		if b >= 0x80 && b <= 0xBF {
+			// This is a UTF-8 continuation byte - keep thread alive for next position
+			// The thread will be re-processed until we reach a lead byte or ASCII
+			p.addThreadToNext(t, haystack, nextPos)
+			return
+		}
+		runePos := nextPos - 1 // Position of the byte we're processing
+		if runePos < len(haystack) {
+			r, width := utf8.DecodeRune(haystack[runePos:])
+			if r != utf8.RuneError || width == 1 {
+				// Valid rune (or single byte for ASCII/invalid UTF-8) - advance by full rune width
+				next := state.RuneAny()
+				newPos := runePos + width
+				p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, newPos)
+			}
+		}
+
+	case StateRuneAnyNotNL:
+		// Match any Unicode codepoint except newline - decode UTF-8 rune at current position
+		// Only process at the START of a UTF-8 sequence (keep alive at continuation bytes)
+		if b >= 0x80 && b <= 0xBF {
+			// This is a UTF-8 continuation byte - keep thread alive for next position
+			// The thread will be re-processed until we reach a lead byte or ASCII
+			p.addThreadToNext(t, haystack, nextPos)
+			return
+		}
+		runePos := nextPos - 1 // Position of the byte we're processing
+		if runePos < len(haystack) {
+			r, width := utf8.DecodeRune(haystack[runePos:])
+			if (r != utf8.RuneError || width == 1) && r != '\n' {
+				// Valid rune (or single byte for ASCII/invalid UTF-8) and not newline - advance by full rune width
+				next := state.RuneAnyNotNL()
+				newPos := runePos + width
+				p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, newPos)
+			}
+		}
 	}
 }
 
@@ -739,6 +775,10 @@ func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 		// For quantifier splits: left branch (continue) keeps priority, right branch (exit) resets IF tookLeft is true
 		left, right := state.Split()
 		isQuantifier := state.IsQuantifierSplit()
+
+		// For Look-left alternations: check if Look would succeed at current position
+		leftLookSucceeds := !isQuantifier && p.checkLeftLookSucceeds(left, haystack, pos)
+
 		if left != InvalidState {
 			leftTookLeft := t.tookLeft
 			if !isQuantifier {
@@ -747,17 +787,7 @@ func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 			p.addThreadToNext(thread{state: left, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: leftTookLeft}, haystack, pos)
 		}
 		if right != InvalidState {
-			rightPriority := t.priority
-			rightTookLeft := t.tookLeft
-			if isQuantifier {
-				// At quantifier exit: reset priority only if we took left branch in some alternation
-				if t.tookLeft {
-					rightPriority = 0
-					rightTookLeft = false
-				}
-			} else {
-				rightPriority++ // Increment for alternation splits (leftmost-first)
-			}
+			rightPriority, rightTookLeft := p.calcRightBranchPriority(t, left, isQuantifier, leftLookSucceeds)
 			p.addThreadToNext(thread{state: right, startPos: t.startPos, captures: t.captures, priority: rightPriority, tookLeft: rightTookLeft}, haystack, pos)
 		}
 		return
@@ -862,6 +892,48 @@ func isWordByte(b byte) bool {
 		(b >= 'A' && b <= 'Z') ||
 		(b >= '0' && b <= '9') ||
 		b == '_'
+}
+
+// checkLeftLookSucceeds checks if the left branch of a split is a Look state
+// that would succeed at the current position. This is used to determine
+// whether to increment priority for the right branch in alternations.
+//
+// For patterns like (?:^|a)+ where left branch is a Look assertion:
+// - If Look succeeds at current position, return true (prefer left)
+// - If Look fails at current position, return false (right is the only viable option)
+func (p *PikeVM) checkLeftLookSucceeds(left StateID, haystack []byte, pos int) bool {
+	if left == InvalidState {
+		return false
+	}
+	leftState := p.nfa.State(left)
+	if leftState == nil || leftState.Kind() != StateLook {
+		return false
+	}
+	look, _ := leftState.Look()
+	return checkLookAssertion(look, haystack, pos)
+}
+
+// calcRightBranchPriority calculates the priority for the right branch of a split.
+// For quantifiers: resets priority if left branch was taken (forced alternation choice).
+// For alternations: increments priority unless left is a failing Look assertion.
+func (p *PikeVM) calcRightBranchPriority(t thread, left StateID, isQuantifier, leftLookSucceeds bool) (priority uint32, tookLeft bool) {
+	priority = t.priority
+	tookLeft = t.tookLeft
+
+	if isQuantifier {
+		// At quantifier exit: reset priority only if we took left branch in some alternation
+		if t.tookLeft {
+			return 0, false
+		}
+		return priority, tookLeft
+	}
+
+	// For alternation splits: increment priority unless left is a failing Look
+	leftState := p.nfa.State(left)
+	if left == InvalidState || leftLookSucceeds || leftState == nil || leftState.Kind() != StateLook {
+		priority++
+	}
+	return priority, tookLeft
 }
 
 // checkLookAssertion checks if a zero-width assertion holds at the given position

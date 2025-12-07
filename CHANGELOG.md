@@ -14,6 +14,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.9] - 2025-12-07
+
+### Fixed
+- **Alternation with empty-matchable branches (e.g., `abc|.*?`)**
+  - Literal extractor incorrectly extracted "abc" as required prefix
+  - When ANY alternation branch has no prefix requirement, the whole alternation has none
+  - Fixes patterns like `abc|.*?` where `.*?` can match empty string
+  - `literal/extractor.go`: Fixed `OpAlternate` handling in extractPrefixes, extractSuffixes, extractInner
+
+- **findAdaptive returning incorrect match start position**
+  - `meta/meta.go`: `findAdaptive` assumed start=0 when DFA succeeds
+  - Now correctly calls PikeVM to get actual match bounds
+  - Fixes patterns like `\b(DEBUG|INFO|WARN|ERROR)\b` returning wrong position
+
+- **Multiline alternation with Look states (`(?m)(?:^|a)+`)**
+  - Fixed priority handling when left branch is a Look assertion that would fail
+  - `nfa/pikevm.go`: Check if Look assertion succeeds before incrementing priority
+
+- **DFA greedy extension for optional groups (timestamp pattern)**
+  - `dfa/lazy/lazy.go`: Added `freshStartStates` tracking for leftmost-longest semantics
+  - Patterns with optional groups now correctly find longest match
+
+### Known Limitations
+- `.{3}` on Unicode strings like "абв" matches bytes, not codepoints (documented, test skipped)
+
+---
+
 ## [0.8.8] - 2025-12-07
 
 ### Fixed

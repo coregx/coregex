@@ -314,7 +314,8 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 		end := match.End()
 
 		// Skip empty matches that start exactly where the previous non-empty match ended.
-		// This matches Go's stdlib behavior.
+		// This matches Go's stdlib behavior for preventing duplicate empty matches.
+		//nolint:gocritic // badCond: intentional - checking empty match (start==end) at lastMatchEnd
 		if start == end && start == lastMatchEnd {
 			pos++
 			if pos > len(b) {
@@ -331,12 +332,13 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 		}
 
 		// Move position past this match
-		if start == end {
+		switch {
+		case start == end:
 			// Empty match: advance by 1 to avoid infinite loop
 			pos = end + 1
-		} else if end > pos {
+		case end > pos:
 			pos = end
-		} else {
+		default:
 			// Fallback (shouldn't normally happen)
 			pos++
 		}
@@ -545,6 +547,7 @@ func (r *Regex) FindAllIndex(b []byte, n int) [][]int {
 		// - "a*" on "ab" returns [[0 1] [2 2]], not [[0 1] [1 1] [2 2]]
 		// - After matching "a" at [0,1], an empty match at [1,1] is skipped
 		// - But empty matches at [2,2] (after the 'b') are allowed
+		//nolint:gocritic // badCond: intentional - checking empty match (start==end) at lastMatchEnd
 		if start == end && start == lastMatchEnd {
 			// Skip this empty match and try at the next position
 			pos++
@@ -562,12 +565,13 @@ func (r *Regex) FindAllIndex(b []byte, n int) [][]int {
 		}
 
 		// Move position past this match
-		if start == end {
+		switch {
+		case start == end:
 			// Empty match: advance by 1 to avoid infinite loop
 			pos = end + 1
-		} else if end > pos {
+		case end > pos:
 			pos = end
-		} else {
+		default:
 			// Fallback (shouldn't normally happen)
 			pos++
 		}
@@ -767,7 +771,8 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 		absEnd := matchIndices[1]
 
 		// Skip empty matches that start exactly where the previous non-empty match ended.
-		// This matches Go's stdlib behavior.
+		// This matches Go's stdlib behavior for preventing duplicate empty matches.
+		//nolint:gocritic // badCond: intentional - checking empty match at lastNonEmptyMatchEnd
 		if absStart == absEnd && absStart == lastNonEmptyMatchEnd {
 			pos++
 			if pos > len(src) {
@@ -790,12 +795,13 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 		}
 
 		// Move position past this match
-		if absStart == absEnd {
+		switch {
+		case absStart == absEnd:
 			// Empty match: advance by 1 to avoid infinite loop
 			pos = absEnd + 1
-		} else if absEnd > pos {
+		case absEnd > pos:
 			pos = absEnd
-		} else {
+		default:
 			// Fallback (shouldn't normally happen)
 			pos++
 		}

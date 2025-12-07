@@ -49,6 +49,14 @@ const (
 	// StateLook represents a zero-width assertion (look-around)
 	// Examples: ^, $, \A, \z (word boundaries \b, \B in future)
 	StateLook
+
+	// StateRuneAny matches any Unicode codepoint (including newlines)
+	// This is the (?s). (dot with DOTALL flag)
+	StateRuneAny
+
+	// StateRuneAnyNotNL matches any Unicode codepoint except newline (\n)
+	// This is the default . (dot) behavior
+	StateRuneAnyNotNL
 )
 
 // String returns a human-readable representation of the StateKind
@@ -70,6 +78,10 @@ func (k StateKind) String() string {
 		return "Fail"
 	case StateLook:
 		return "Look"
+	case StateRuneAny:
+		return "RuneAny"
+	case StateRuneAnyNotNL:
+		return "RuneAnyNotNL"
 	default:
 		return fmt.Sprintf("Unknown(%d)", k)
 	}
@@ -218,6 +230,24 @@ func (s *State) Look() (Look, StateID) {
 	return 0, InvalidState
 }
 
+// RuneAny returns the next state for RuneAny states.
+// Returns InvalidState for non-RuneAny states.
+func (s *State) RuneAny() StateID {
+	if s.kind == StateRuneAny {
+		return s.next
+	}
+	return InvalidState
+}
+
+// RuneAnyNotNL returns the next state for RuneAnyNotNL states.
+// Returns InvalidState for non-RuneAnyNotNL states.
+func (s *State) RuneAnyNotNL() StateID {
+	if s.kind == StateRuneAnyNotNL {
+		return s.next
+	}
+	return InvalidState
+}
+
 // String returns a human-readable representation of the state
 func (s *State) String() string {
 	switch s.kind {
@@ -243,6 +273,10 @@ func (s *State) String() string {
 			lookName = lookNames[s.look]
 		}
 		return fmt.Sprintf("State(%d, Look(%s) -> %d)", s.id, lookName, s.next)
+	case StateRuneAny:
+		return fmt.Sprintf("State(%d, RuneAny -> %d)", s.id, s.next)
+	case StateRuneAnyNotNL:
+		return fmt.Sprintf("State(%d, RuneAnyNotNL -> %d)", s.id, s.next)
 	default:
 		return fmt.Sprintf("State(%d, Unknown)", s.id)
 	}

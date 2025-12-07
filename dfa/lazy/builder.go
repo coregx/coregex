@@ -78,16 +78,28 @@ func (b *Builder) Build() (*DFA, error) {
 	// Create StartTable for caching start states by look-behind context
 	startTable := NewStartTable()
 
+	// Compute fresh start states: epsilon closure of anchored start.
+	// These are states that get re-introduced via unanchored machinery after each position.
+	// Used for leftmost matching: when all remaining states are in this set plus unanchored
+	// machinery, the committed match is final.
+	anchoredStartClosure := b.epsilonClosure([]nfa.StateID{b.nfa.StartAnchored()}, startLook)
+	freshStartStates := make(map[nfa.StateID]bool, len(anchoredStartClosure))
+	for _, stateID := range anchoredStartClosure {
+		freshStartStates[stateID] = true
+	}
+
 	// Create DFA
 	dfa := &DFA{
-		nfa:         b.nfa,
-		cache:       cache,
-		config:      b.config,
-		prefilter:   pf,
-		pikevm:      nfa.NewPikeVM(b.nfa),
-		stateByID:   make(map[StateID]*State, b.config.MaxStates),
-		startTable:  startTable,
-		byteClasses: b.nfa.ByteClasses(),
+		nfa:              b.nfa,
+		cache:            cache,
+		config:           b.config,
+		prefilter:        pf,
+		pikevm:           nfa.NewPikeVM(b.nfa),
+		stateByID:        make(map[StateID]*State, b.config.MaxStates),
+		startTable:       startTable,
+		byteClasses:      b.nfa.ByteClasses(),
+		freshStartStates: freshStartStates,
+		unanchoredStart:  b.nfa.StartUnanchored(),
 	}
 
 	// Register start state in ID lookup map

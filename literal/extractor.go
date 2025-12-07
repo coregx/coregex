@@ -178,9 +178,17 @@ func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 		// Alternation: union of all alternatives
 		// (foo|bar) → ["foo", "bar"]
 		// (a|b|c) → ["a", "b", "c"]
+		// IMPORTANT: If ANY alternative has no prefix requirement (empty Seq),
+		// the whole alternation has no prefix requirement.
+		// Example: abc|.*? → [] (.*? can match anything, so "abc" isn't required)
 		var allLits []Literal
 		for _, sub := range re.Sub {
 			seq := e.extractPrefixes(sub, depth+1)
+			if seq.IsEmpty() {
+				// This branch has no prefix requirement (e.g., .*?, .+, empty match)
+				// Therefore the whole alternation has no prefix requirement
+				return NewSeq()
+			}
 			for i := 0; i < seq.Len(); i++ {
 				allLits = append(allLits, seq.Get(i))
 				// Respect MaxLiterals limit
@@ -285,9 +293,14 @@ func (e *Extractor) extractSuffixes(re *syntax.Regexp, depth int) *Seq {
 
 	case syntax.OpAlternate:
 		// Alternation: union of all alternatives
+		// If ANY alternative has no suffix requirement, the whole alternation has none
 		var allLits []Literal
 		for _, sub := range re.Sub {
 			seq := e.extractSuffixes(sub, depth+1)
+			if seq.IsEmpty() {
+				// This branch has no suffix requirement
+				return NewSeq()
+			}
 			for i := 0; i < seq.Len(); i++ {
 				allLits = append(allLits, seq.Get(i))
 				if len(allLits) >= e.config.MaxLiterals {
@@ -370,9 +383,14 @@ func (e *Extractor) extractInner(re *syntax.Regexp, depth int) *Seq {
 
 	case syntax.OpAlternate:
 		// Union of all alternatives
+		// If ANY alternative has no inner literal requirement, the whole alternation has none
 		var allLits []Literal
 		for _, sub := range re.Sub {
 			seq := e.extractInner(sub, depth+1)
+			if seq.IsEmpty() {
+				// This branch has no inner literal requirement
+				return NewSeq()
+			}
 			for i := 0; i < seq.Len(); i++ {
 				allLits = append(allLits, seq.Get(i))
 				if len(allLits) >= e.config.MaxLiterals {

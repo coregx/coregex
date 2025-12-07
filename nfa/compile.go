@@ -580,8 +580,8 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 // compileAnyChar compiles '.' matching any character (including \n if DotNewline is true)
 func (c *Compiler) compileAnyChar() (start, end StateID, err error) {
 	if c.config.DotNewline {
-		// Match any byte
-		id := c.builder.AddByteRange(0, 255, InvalidState)
+		// Match any byte (including newlines): [0x00-0xFF]
+		id := c.builder.AddByteRange(0x00, 0xFF, InvalidState)
 		return id, id, nil
 	}
 	return c.compileAnyCharNotNL()
@@ -589,15 +589,19 @@ func (c *Compiler) compileAnyChar() (start, end StateID, err error) {
 
 // compileAnyCharNotNL compiles '.' matching any character except \n
 func (c *Compiler) compileAnyCharNotNL() (start, end StateID, err error) {
-	// Match any byte except '\n' (0x0A)
-	// Use sparse transitions: [0x00-0x09], [0x0B-0xFF]
-	target := c.builder.AddEpsilon(InvalidState)
+	// Match any byte except '\n': [0x00-0x09] | [0x0B-0xFF]
+	// Use sparse transitions which are handled efficiently by PikeVM
+	// Create the sparse state with both byte ranges pointing to a shared end state
+	endEpsilon := c.builder.AddEpsilon(InvalidState)
+
+	// Create sparse state with multiple transitions to the same target
 	transitions := []Transition{
-		{Lo: 0x00, Hi: 0x09, Next: target},
-		{Lo: 0x0B, Hi: 0xFF, Next: target},
+		{Lo: 0x00, Hi: 0x09, Next: endEpsilon},
+		{Lo: 0x0B, Hi: 0xFF, Next: endEpsilon},
 	}
 	id := c.builder.AddSparse(transitions)
-	return id, target, nil
+
+	return id, endEpsilon, nil
 }
 
 // compileConcat compiles concatenation (e.g., "abc")
@@ -1069,18 +1073,34 @@ func (c *Compiler) isPatternAnchored(re *syntax.Regexp) bool {
 //
 // This is used to select the ReverseAnchored strategy which searches backward
 // from the end of haystack for O(m) instead of O(n*m) performance.
+//
+// IMPORTANT: This also checks for internal end anchors (like in `(a$)b$`).
+// If there's an end anchor that's NOT at the very end, ReverseAnchored won't work.
 func IsPatternEndAnchored(re *syntax.Regexp) bool {
+	// First check if pattern ends with $
+	if !isEndAnchored(re) {
+		return false
+	}
+	// Then check for internal end anchors (which would make ReverseAnchored incorrect)
+	if hasInternalEndAnchor(re) {
+		return false
+	}
+	return true
+}
+
+// isEndAnchored checks if the pattern ends with $ (without checking for internal anchors)
+func isEndAnchored(re *syntax.Regexp) bool {
 	switch re.Op {
 	case syntax.OpEndText: // Only OpEndText is truly end-anchored, not OpEndLine (multiline $)
 		return true
 	case syntax.OpConcat:
 		if len(re.Sub) > 0 {
 			// Check the last sub-expression
-			return IsPatternEndAnchored(re.Sub[len(re.Sub)-1])
+			return isEndAnchored(re.Sub[len(re.Sub)-1])
 		}
 	case syntax.OpCapture:
 		if len(re.Sub) > 0 {
-			return IsPatternEndAnchored(re.Sub[0])
+			return isEndAnchored(re.Sub[0])
 		}
 	case syntax.OpAlternate:
 		// All alternatives must be end-anchored
@@ -1088,11 +1108,62 @@ func IsPatternEndAnchored(re *syntax.Regexp) bool {
 			return false
 		}
 		for _, sub := range re.Sub {
-			if !IsPatternEndAnchored(sub) {
+			if !isEndAnchored(sub) {
 				return false
 			}
 		}
 		return true
+	}
+	return false
+}
+
+// hasInternalEndAnchor checks if there's an end anchor ($ or \z) that's NOT at the
+// very end of the pattern. Such patterns like `(a$)b$` have contradictory anchors.
+func hasInternalEndAnchor(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpConcat:
+		// In a concatenation, check all elements EXCEPT the last one for end anchors
+		// The last one is allowed to have an end anchor (that's the "end" anchor)
+		for i := 0; i < len(re.Sub)-1; i++ {
+			if containsEndAnchor(re.Sub[i]) {
+				return true
+			}
+		}
+		// Also check if the last element has internal anchors
+		if len(re.Sub) > 0 {
+			if hasInternalEndAnchor(re.Sub[len(re.Sub)-1]) {
+				return true
+			}
+		}
+	case syntax.OpCapture:
+		if len(re.Sub) > 0 {
+			return hasInternalEndAnchor(re.Sub[0])
+		}
+	case syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if hasInternalEndAnchor(sub) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsEndAnchor checks if the AST contains any end anchor ($ or \z)
+func containsEndAnchor(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpEndText, syntax.OpEndLine:
+		return true
+	case syntax.OpConcat, syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if containsEndAnchor(sub) {
+				return true
+			}
+		}
+	case syntax.OpCapture, syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		if len(re.Sub) > 0 {
+			return containsEndAnchor(re.Sub[0])
+		}
 	}
 	return false
 }
