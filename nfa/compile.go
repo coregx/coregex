@@ -166,13 +166,13 @@ func (c *Compiler) compileRegexp(re *syntax.Regexp) (start, end StateID, err err
 	case syntax.OpAlternate:
 		return c.compileAlternate(re.Sub)
 	case syntax.OpStar:
-		return c.compileStar(re.Sub[0])
+		return c.compileStar(re.Sub[0], re.Flags&syntax.NonGreedy != 0)
 	case syntax.OpPlus:
-		return c.compilePlus(re.Sub[0])
+		return c.compilePlus(re.Sub[0], re.Flags&syntax.NonGreedy != 0)
 	case syntax.OpQuest:
-		return c.compileQuest(re.Sub[0])
+		return c.compileQuest(re.Sub[0], re.Flags&syntax.NonGreedy != 0)
 	case syntax.OpRepeat:
-		return c.compileRepeat(re.Sub[0], re.Min, re.Max)
+		return c.compileRepeat(re.Sub[0], re.Min, re.Max, re.Flags&syntax.NonGreedy != 0)
 	case syntax.OpCapture:
 		return c.compileCapture(re)
 	case syntax.OpBeginText:
@@ -688,8 +688,8 @@ func (c *Compiler) buildSplitChain(targets []StateID) StateID {
 	return c.builder.AddSplit(targets[0], right)
 }
 
-// compileStar compiles a* (zero or more)
-func (c *Compiler) compileStar(sub *syntax.Regexp) (start, end StateID, err error) {
+// compileStar compiles a* (greedy) or a*? (non-greedy)
+func (c *Compiler) compileStar(sub *syntax.Regexp, nonGreedy bool) (start, end StateID, err error) {
 	subStart, subEnd, err := c.compileRegexp(sub)
 	if err != nil {
 		return InvalidState, InvalidState, err
@@ -698,9 +698,17 @@ func (c *Compiler) compileStar(sub *syntax.Regexp) (start, end StateID, err erro
 	// Create split: either enter sub or skip
 	// split -> [sub, end]
 	// sub -> split (loop back)
-	// Use AddQuantifierSplit - quantifier splits don't affect priority
 	end = c.builder.AddEpsilon(InvalidState)
-	split := c.builder.AddQuantifierSplit(subStart, end)
+	// For greedy: prefer continue (left=subStart) over exit (right=end)
+	//   Use AddQuantifierSplit - no priority change, longer match wins
+	// For non-greedy: prefer exit (left=end) over continue (right=subStart)
+	//   Use AddSplit so priority favors exit path (shorter match wins)
+	var split StateID
+	if nonGreedy {
+		split = c.builder.AddSplit(end, subStart)
+	} else {
+		split = c.builder.AddQuantifierSplit(subStart, end)
+	}
 
 	// Connect sub end back to split (loop)
 	if err := c.builder.Patch(subEnd, split); err != nil {
@@ -713,8 +721,8 @@ func (c *Compiler) compileStar(sub *syntax.Regexp) (start, end StateID, err erro
 	return split, end, nil
 }
 
-// compilePlus compiles a+ (one or more)
-func (c *Compiler) compilePlus(sub *syntax.Regexp) (start, end StateID, err error) {
+// compilePlus compiles a+ (greedy) or a+? (non-greedy)
+func (c *Compiler) compilePlus(sub *syntax.Regexp, nonGreedy bool) (start, end StateID, err error) {
 	subStart, subEnd, err := c.compileRegexp(sub)
 	if err != nil {
 		return InvalidState, InvalidState, err
@@ -722,9 +730,17 @@ func (c *Compiler) compilePlus(sub *syntax.Regexp) (start, end StateID, err erro
 
 	// Must match at least once
 	// sub -> split -> [sub, end]
-	// Use AddQuantifierSplit - quantifier splits don't affect priority
 	end = c.builder.AddEpsilon(InvalidState)
-	split := c.builder.AddQuantifierSplit(subStart, end)
+	// For greedy: prefer continue (left=subStart) over exit (right=end)
+	//   Use AddQuantifierSplit - no priority change, longer match wins
+	// For non-greedy: prefer exit (left=end) over continue (right=subStart)
+	//   Use AddSplit so priority favors exit path (shorter match wins)
+	var split StateID
+	if nonGreedy {
+		split = c.builder.AddSplit(end, subStart)
+	} else {
+		split = c.builder.AddQuantifierSplit(subStart, end)
+	}
 
 	// Connect sub end to split (loop)
 	if err := c.builder.Patch(subEnd, split); err != nil {
@@ -737,17 +753,25 @@ func (c *Compiler) compilePlus(sub *syntax.Regexp) (start, end StateID, err erro
 	return subStart, end, nil
 }
 
-// compileQuest compiles a? (zero or one)
-func (c *Compiler) compileQuest(sub *syntax.Regexp) (start, end StateID, err error) {
+// compileQuest compiles a? (greedy) or a?? (non-greedy)
+func (c *Compiler) compileQuest(sub *syntax.Regexp, nonGreedy bool) (start, end StateID, err error) {
 	subStart, subEnd, err := c.compileRegexp(sub)
 	if err != nil {
 		return InvalidState, InvalidState, err
 	}
 
 	// Either match sub or skip
-	// Use AddQuantifierSplit - quantifier splits don't affect priority
 	end = c.builder.AddEpsilon(InvalidState)
-	split := c.builder.AddQuantifierSplit(subStart, end)
+	// For greedy: prefer match (left=subStart) over skip (right=end)
+	//   Use AddQuantifierSplit - no priority change, longer match wins
+	// For non-greedy: prefer skip (left=end) over match (right=subStart)
+	//   Use AddSplit so priority favors skip path (shorter match wins)
+	var split StateID
+	if nonGreedy {
+		split = c.builder.AddSplit(end, subStart)
+	} else {
+		split = c.builder.AddQuantifierSplit(subStart, end)
+	}
 
 	// Connect sub end to end
 	if err := c.builder.Patch(subEnd, end); err != nil {
@@ -760,18 +784,18 @@ func (c *Compiler) compileQuest(sub *syntax.Regexp) (start, end StateID, err err
 	return split, end, nil
 }
 
-// compileRepeat compiles a{m,n} (min to max repetitions)
-func (c *Compiler) compileRepeat(sub *syntax.Regexp, minCount, maxCount int) (start, end StateID, err error) {
+// compileRepeat compiles a{m,n} (greedy) or a{m,n}? (non-greedy)
+func (c *Compiler) compileRepeat(sub *syntax.Regexp, minCount, maxCount int, nonGreedy bool) (start, end StateID, err error) {
 	if maxCount == -1 {
 		// a{m,} = aaa...a* (minCount copies + star)
-		return c.compileRepeatMin(sub, minCount)
+		return c.compileRepeatMin(sub, minCount, nonGreedy)
 	}
 	if minCount == maxCount {
-		// a{n} = aaa...a (exactly n copies)
+		// a{n} = aaa...a (exactly n copies) - greedy/non-greedy doesn't matter
 		return c.compileRepeatExact(sub, minCount)
 	}
 	// a{m,n} = aaa...a(a?a?a?...) (minCount copies + (maxCount-minCount) optional copies)
-	return c.compileRepeatRange(sub, minCount, maxCount)
+	return c.compileRepeatRange(sub, minCount, maxCount, nonGreedy)
 }
 
 // compileRepeatExact compiles a{n}
@@ -791,10 +815,10 @@ func (c *Compiler) compileRepeatExact(sub *syntax.Regexp, n int) (start, end Sta
 	return c.compileConcat(subs)
 }
 
-// compileRepeatMin compiles a{m,}
-func (c *Compiler) compileRepeatMin(sub *syntax.Regexp, minCount int) (start, end StateID, err error) {
+// compileRepeatMin compiles a{m,} (greedy) or a{m,}? (non-greedy)
+func (c *Compiler) compileRepeatMin(sub *syntax.Regexp, minCount int, nonGreedy bool) (start, end StateID, err error) {
 	if minCount == 0 {
-		return c.compileStar(sub)
+		return c.compileStar(sub, nonGreedy)
 	}
 
 	// Concatenate minCount copies + star
@@ -802,15 +826,21 @@ func (c *Compiler) compileRepeatMin(sub *syntax.Regexp, minCount int) (start, en
 	for i := 0; i < minCount; i++ {
 		subs = append(subs, sub)
 	}
+	// Create synthetic star with correct NonGreedy flag
+	starFlags := syntax.Flags(0)
+	if nonGreedy {
+		starFlags |= syntax.NonGreedy
+	}
 	subs = append(subs, &syntax.Regexp{
-		Op:  syntax.OpStar,
-		Sub: []*syntax.Regexp{sub},
+		Op:    syntax.OpStar,
+		Flags: starFlags,
+		Sub:   []*syntax.Regexp{sub},
 	})
 	return c.compileConcat(subs)
 }
 
-// compileRepeatRange compiles a{m,n}
-func (c *Compiler) compileRepeatRange(sub *syntax.Regexp, minCount, maxCount int) (start, end StateID, err error) {
+// compileRepeatRange compiles a{m,n} (greedy) or a{m,n}? (non-greedy)
+func (c *Compiler) compileRepeatRange(sub *syntax.Regexp, minCount, maxCount int, nonGreedy bool) (start, end StateID, err error) {
 	if minCount > maxCount {
 		return InvalidState, InvalidState, &CompileError{
 			Err: fmt.Errorf("invalid repeat range {%d,%d}", minCount, maxCount),
@@ -822,10 +852,16 @@ func (c *Compiler) compileRepeatRange(sub *syntax.Regexp, minCount, maxCount int
 	for i := 0; i < minCount; i++ {
 		subs = append(subs, sub)
 	}
+	// Create synthetic quest nodes with correct NonGreedy flag
+	questFlags := syntax.Flags(0)
+	if nonGreedy {
+		questFlags |= syntax.NonGreedy
+	}
 	for i := 0; i < maxCount-minCount; i++ {
 		subs = append(subs, &syntax.Regexp{
-			Op:  syntax.OpQuest,
-			Sub: []*syntax.Regexp{sub},
+			Op:    syntax.OpQuest,
+			Flags: questFlags,
+			Sub:   []*syntax.Regexp{sub},
 		})
 	}
 	return c.compileConcat(subs)
