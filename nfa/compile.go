@@ -579,17 +579,20 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 	return split, target, nil
 }
 
-// compileAnyChar compiles '.' matching any character (including \n if DotNewline is true)
+// compileAnyChar compiles '.' matching any character including newlines.
+// This is used for OpAnyChar which the parser generates when DotNL flag is set
+// (either globally via syntax.DotNL or locally via inline flag (?s:...)).
+//
+//nolint:unparam // err is always nil but signature matches other compile methods
 func (c *Compiler) compileAnyChar() (start, end StateID, err error) {
-	if c.config.DotNewline {
-		// Match any byte (including newlines): [0x00-0xFF]
-		id := c.builder.AddByteRange(0x00, 0xFF, InvalidState)
-		return id, id, nil
-	}
-	return c.compileAnyCharNotNL()
+	// Match any byte (including newlines): [0x00-0xFF]
+	id := c.builder.AddByteRange(0x00, 0xFF, InvalidState)
+	return id, id, nil
 }
 
 // compileAnyCharNotNL compiles '.' matching any character except \n
+//
+//nolint:unparam // err is always nil but signature matches other compile methods
 func (c *Compiler) compileAnyCharNotNL() (start, end StateID, err error) {
 	// Match any byte except '\n': [0x00-0x09] | [0x0B-0xFF]
 	// Use sparse transitions which are handled efficiently by PikeVM
