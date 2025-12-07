@@ -428,3 +428,59 @@ func TestHelperFunctions(t *testing.T) {
 		}
 	})
 }
+
+// TestBug8_InlineFlags tests Bug #8: Inline flags (?s:...) not working
+// The pattern (?s:.) should match newlines within the scope of the flag.
+// Reported by Ben Hoyt in GoAWK integration testing.
+func TestBug8_InlineFlags(t *testing.T) {
+	tests := []struct {
+		pattern string
+		input   string
+		want    bool
+	}{
+		// Basic inline flag tests
+		{`(?s:.)`, "\n", true},
+		{`(?s:.)`, "a", true},
+		{`.`, "\n", false},
+		{`.`, "a", true},
+
+		// Scoped inline flags
+		{`a(?s:.)b`, "a\nb", true},
+		{`a(?s:.)b`, "axb", true},
+		{`a.b`, "a\nb", false},
+		{`a.b`, "axb", true},
+
+		// Full pattern with inline flags (Ben Hoyt's test case)
+		{`(?s:^a.*c$)`, "a\nb\nc", true},
+		{`^a.*c$`, "a\nb\nc", false},
+
+		// Multiple dots with mixed behavior
+		{`a(?s:.)b.c`, "a\nbxc", true},
+		{`a(?s:.)b.c`, "a\nb\nc", false}, // second dot doesn't match \n
+
+		// Case insensitive inline flag
+		{`(?i:abc)`, "ABC", true},
+		{`(?i:abc)`, "abc", true},
+		{`abc`, "ABC", false},
+
+		// Combined flags
+		{`(?is:^a.*z$)`, "A\nB\nZ", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern+"_"+tt.input, func(t *testing.T) {
+			compiler := NewDefaultCompiler()
+			nfa, err := compiler.Compile(tt.pattern)
+			if err != nil {
+				t.Fatalf("Compile(%q) error: %v", tt.pattern, err)
+			}
+
+			vm := NewPikeVM(nfa)
+			_, _, got := vm.Search([]byte(tt.input))
+
+			if got != tt.want {
+				t.Errorf("pattern %q, input %q: got %v, want %v", tt.pattern, tt.input, got, tt.want)
+			}
+		})
+	}
+}
