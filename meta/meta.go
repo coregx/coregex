@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"errors"
 	"regexp/syntax"
 
 	"github.com/coregx/coregex/dfa/lazy"
@@ -851,10 +852,15 @@ type CompileError struct {
 }
 
 // Error implements the error interface.
+// For syntax errors, returns the error directly to match stdlib behavior.
 func (e *CompileError) Error() string {
-	if e.Pattern != "" {
-		return "regexp: error parsing regexp: " + e.Err.Error()
+	// If the underlying error is from regexp/syntax, return it directly
+	// to match stdlib behavior (no extra prefix)
+	var syntaxErr *syntax.Error
+	if errors.As(e.Err, &syntaxErr) {
+		return e.Err.Error()
 	}
+	// For other errors, add the regexp: prefix
 	return "regexp: " + e.Err.Error()
 }
 

@@ -14,6 +14,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.7] - 2025-12-07
+
+### Fixed
+- **Error message format now matches stdlib exactly**
+  - Was: `regexp: error parsing regexp: error parsing regexp: invalid escape...` (duplicate prefix)
+  - Now: `error parsing regexp: invalid escape...` (same as stdlib)
+  - `CompileError.Error()` now returns `*syntax.Error` message directly without extra wrapping
+  - Tests updated to verify exact match with stdlib error messages
+
+### Technical Details
+- `meta/meta.go`: Fixed `CompileError.Error()` to use `errors.As` and return syntax errors directly
+- `error_test.go`: Updated to compare error messages with stdlib exactly
+
+---
+
 ## [0.8.6] - 2025-12-07
 
 ### Fixed

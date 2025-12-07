@@ -8,60 +8,34 @@ import (
 	"github.com/coregx/coregex/meta"
 )
 
-// TestErrorMessagePrefix verifies that error messages use "regexp:" prefix
-// for stdlib compatibility (issue #13).
-func TestErrorMessagePrefix(t *testing.T) {
-	tests := []struct {
-		name           string
-		pattern        string
-		wantPrefix     string
-		wantSubstrings []string
-	}{
-		{
-			name:           "invalid bracket expression",
-			pattern:        "[invalid",
-			wantPrefix:     "regexp:",
-			wantSubstrings: []string{"regexp:", "error parsing regexp"},
-		},
-		{
-			name:           "invalid escape sequence",
-			pattern:        `\`,
-			wantPrefix:     "regexp:",
-			wantSubstrings: []string{"regexp:"},
-		},
-		{
-			name:           "unmatched parenthesis",
-			pattern:        "(abc",
-			wantPrefix:     "regexp:",
-			wantSubstrings: []string{"regexp:"},
-		},
-		{
-			name:           "invalid repetition",
-			pattern:        "*abc",
-			wantPrefix:     "regexp:",
-			wantSubstrings: []string{"regexp:"},
-		},
+// TestErrorMessageFormat verifies that error messages match stdlib format.
+// stdlib returns *syntax.Error directly with format: "error parsing regexp: ..."
+func TestErrorMessageFormat(t *testing.T) {
+	patterns := []string{
+		"[invalid",
+		`\`,
+		"(abc",
+		"*abc",
+		`\8`,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := Compile(tt.pattern)
-			if err == nil {
-				t.Fatalf("Compile(%q) expected error, got nil", tt.pattern)
+	for _, pattern := range patterns {
+		t.Run(pattern, func(t *testing.T) {
+			_, stdlibErr := regexp.Compile(pattern)
+			_, ourErr := Compile(pattern)
+
+			if stdlibErr == nil {
+				t.Skip("stdlib accepts this pattern")
 			}
 
-			errMsg := err.Error()
-
-			// Check prefix
-			if !strings.HasPrefix(errMsg, tt.wantPrefix) {
-				t.Errorf("error message should start with %q, got: %s", tt.wantPrefix, errMsg)
+			if ourErr == nil {
+				t.Fatalf("Compile(%q) expected error, got nil", pattern)
 			}
 
-			// Check substrings
-			for _, sub := range tt.wantSubstrings {
-				if !strings.Contains(errMsg, sub) {
-					t.Errorf("error message should contain %q, got: %s", sub, errMsg)
-				}
+			// Error messages should match exactly
+			if ourErr.Error() != stdlibErr.Error() {
+				t.Errorf("error message mismatch:\n  got:  %q\n  want: %q",
+					ourErr.Error(), stdlibErr.Error())
 			}
 		})
 	}
@@ -150,10 +124,11 @@ func TestCompileErrorVsStdlib(t *testing.T) {
 				t.Errorf("stdlib rejects %q but we accept it", pattern)
 			}
 
-			// Our error should use regexp: prefix like stdlib
-			if ourErr != nil {
-				if !strings.HasPrefix(ourErr.Error(), "regexp:") {
-					t.Errorf("our error should use 'regexp:' prefix, got: %s", ourErr.Error())
+			// Our error should match stdlib format exactly
+			if ourErr != nil && stdlibErr != nil {
+				if ourErr.Error() != stdlibErr.Error() {
+					t.Errorf("error message mismatch:\n  got:  %q\n  want: %q",
+						ourErr.Error(), stdlibErr.Error())
 				}
 			}
 		})
