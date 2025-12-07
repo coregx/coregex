@@ -547,3 +547,50 @@ func TestByteClassesLiteralPattern(t *testing.T) {
 		t.Errorf("Find() = %d, want 9", got)
 	}
 }
+
+// TestIssue15_CaptureGroupIsMatch tests that IsMatch works correctly with capture groups.
+// This is a regression test for Issue #15 where epsilonClosure didn't follow StateCapture.
+func TestIssue15_CaptureGroupIsMatch(t *testing.T) {
+	tests := []struct {
+		pattern string
+		input   string
+		want    bool
+	}{
+		// The original failing pattern from GoAWK datanonl test
+		{`\w+@([[:alnum:]]+\.)+[[:alnum:]]+[[:blank:]]+`, "bleble@foo1.bh.pl       deny", true},
+		// Simple capture group patterns
+		{`(abc)+`, "abcabc", true},
+		{`a(b+)c`, "abbc", true},
+		{`(\d+)\.(\d+)`, "123.456", true},
+		{`((ab)+c)+`, "ababcababc", true},
+		// Anchor patterns with captures
+		{`(^)`, "12345", true},
+		{`($)`, "12345", true},
+		{`(^)|($)`, "12345", true},
+		// Non-matching
+		{`(xyz)+`, "abc", false},
+		{`(\d+)\.(\d+)`, "no digits", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern, func(t *testing.T) {
+			// Compare with stdlib
+			re := regexp.MustCompile(tt.pattern)
+			stdWant := re.MatchString(tt.input)
+
+			// Our DFA
+			dfa, err := CompilePattern(tt.pattern)
+			if err != nil {
+				t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
+			}
+
+			got := dfa.IsMatch([]byte(tt.input))
+			if got != stdWant {
+				t.Errorf("IsMatch(%q, %q) = %v, stdlib says %v", tt.pattern, tt.input, got, stdWant)
+			}
+			if got != tt.want {
+				t.Errorf("IsMatch(%q, %q) = %v, want %v", tt.pattern, tt.input, got, tt.want)
+			}
+		})
+	}
+}

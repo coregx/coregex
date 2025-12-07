@@ -14,6 +14,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.8] - 2025-12-07
+
+### Fixed
+- **Issue #15: DFA.IsMatch returns false for patterns with capture groups**
+  - `epsilonClosure` in DFA builder didn't follow `StateCapture` transitions
+  - Capture states are semantically epsilon transitions (record position but don't consume input)
+  - Patterns like `\w+@([[:alnum:]]+\.)+[[:alnum:]]+[[:blank:]]+` now work correctly
+  - Discovered via GoAWK integration testing (`datanonl.awk` test)
+
+### Technical Details
+- `dfa/lazy/builder.go`: Added `StateCapture` handling in `epsilonClosure` and `resolveWordBoundaries`
+- New test: `TestIssue15_CaptureGroupIsMatch` with comprehensive capture group patterns
+
+---
+
 ## [0.8.7] - 2025-12-07
 
 ### Fixed

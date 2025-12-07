@@ -195,6 +195,17 @@ func (b *Builder) epsilonClosure(states []nfa.StateID, lookHave LookSet) []nfa.S
 				closure.Add(next)
 				stack = append(stack, next)
 			}
+
+		case nfa.StateCapture:
+			// Capture states are epsilon transitions that record positions.
+			// The DFA ignores captures (it only tracks match/no-match),
+			// but we must follow through to reach the actual consuming states.
+			// Fix for Issue #15: DFA.IsMatch returns false for patterns with capture groups.
+			_, _, next := state.Capture()
+			if next != nfa.InvalidState && !closure.Contains(next) {
+				closure.Add(next)
+				stack = append(stack, next)
+			}
 		}
 	}
 
@@ -400,6 +411,15 @@ func (b *Builder) resolveWordBoundaries(states []nfa.StateID, wordBoundarySatisf
 			if right != nfa.InvalidState && !crossedBoundary.Contains(right) {
 				crossedBoundary.Add(right)
 				stack = append(stack, right)
+			}
+
+		case nfa.StateCapture:
+			// Follow through capture states when resolving word boundaries
+			// Fix for Issue #15: capture states are epsilon transitions
+			_, _, next := state.Capture()
+			if next != nfa.InvalidState && !crossedBoundary.Contains(next) {
+				crossedBoundary.Add(next)
+				stack = append(stack, next)
 			}
 		}
 	}
