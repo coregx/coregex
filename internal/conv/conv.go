@@ -12,10 +12,12 @@ import "math"
 //
 //go:inline
 func IntToUint32(n int) uint32 {
-	if n < 0 || n > math.MaxUint32 {
+	// Use uint for comparison to avoid overflow on 32-bit platforms
+	// where int cannot represent math.MaxUint32
+	if n < 0 || uint(n) > math.MaxUint32 {
 		panic("integer overflow: int value out of uint32 range")
 	}
-	return uint32(n)
+	return uint32(n) //nolint:gosec // bounds checked above
 }
 
 // IntToUint16 safely converts an int to uint16.

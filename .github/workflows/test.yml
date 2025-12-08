@@ -70,6 +70,28 @@ jobs:
         flags: unittests
         name: codecov-unit
 
+  # 32-bit build verification (GOARCH=386)
+  # GoAWK tests on 386, we must support it
+  build-386:
+    name: Build - Linux 386
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+        cache: true
+
+    - name: Build for 386
+      run: GOARCH=386 go build ./...
+
+    - name: Run tests for 386
+      run: GOARCH=386 go test -short ./...
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

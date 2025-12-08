@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.13] - 2025-12-08
+
+### Fixed
+- **32-bit platform support**: Fixed build failure on GOARCH=386
+  - `internal/conv.IntToUint32()` used `n > math.MaxUint32` which overflows on 32-bit
+  - Changed to `uint(n) > math.MaxUint32` for portable comparison
+  - Discovered via GoAWK CI testing on Linux 386
+
+---
+
 ## [0.8.12] - 2025-12-08
 
 ### Added
