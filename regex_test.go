@@ -2,6 +2,7 @@ package coregex
 
 import (
 	"reflect"
+	"regexp"
 	"testing"
 )
 
@@ -527,5 +528,95 @@ func TestFindAllSubmatchIndex(t *testing.T) {
 	// Group 2 (1): 2-3
 	if indices[0][0] != 0 || indices[0][1] != 3 {
 		t.Errorf("indices[0][0:2] = [%d, %d], want [0, 3]", indices[0][0], indices[0][1])
+	}
+}
+
+// TestLongest tests leftmost-longest (POSIX) matching semantics.
+// Verifies that Longest() changes alternation behavior from
+// leftmost-first (Perl) to leftmost-longest (POSIX).
+func TestLongest(t *testing.T) {
+	tests := []struct {
+		name        string
+		pattern     string
+		input       string
+		wantDefault string // leftmost-first (Perl)
+		wantLongest string // leftmost-longest (POSIX)
+	}{
+		{
+			name:        "alternation a|ab",
+			pattern:     `(a|ab)`,
+			input:       "ab",
+			wantDefault: "a",
+			wantLongest: "ab",
+		},
+		{
+			name:        "alternation #|#!",
+			pattern:     `(#|#!)`,
+			input:       "#!a",
+			wantDefault: "#",
+			wantLongest: "#!",
+		},
+		{
+			name:        "alternation cat|catalog",
+			pattern:     `(cat|catalog)`,
+			input:       "catalog",
+			wantDefault: "cat",
+			wantLongest: "catalog",
+		},
+		{
+			name:        "no difference for simple patterns",
+			pattern:     `a+`,
+			input:       "aaaa",
+			wantDefault: "aaaa",
+			wantLongest: "aaaa",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test default behavior (leftmost-first)
+			re := MustCompile(tt.pattern)
+			gotDefault := re.FindString(tt.input)
+			if gotDefault != tt.wantDefault {
+				t.Errorf("Default FindString() = %q, want %q", gotDefault, tt.wantDefault)
+			}
+
+			// Test after Longest() (leftmost-longest)
+			re.Longest()
+			gotLongest := re.FindString(tt.input)
+			if gotLongest != tt.wantLongest {
+				t.Errorf("Longest() FindString() = %q, want %q", gotLongest, tt.wantLongest)
+			}
+		})
+	}
+}
+
+// TestLongestMatchesStdlib verifies that Longest() behavior matches stdlib regexp.
+func TestLongestMatchesStdlib(t *testing.T) {
+	patterns := []string{
+		`(a|ab)`,
+		`(#|#!)`,
+		`(cat|catalog)`,
+		`(foo|foobar)`,
+	}
+	inputs := []string{"ab", "#!a", "catalog", "foobar"}
+
+	for i, pattern := range patterns {
+		input := inputs[i]
+		t.Run(pattern, func(t *testing.T) {
+			// stdlib
+			stdRe := regexp.MustCompile(pattern)
+			stdRe.Longest()
+			stdResult := stdRe.FindString(input)
+
+			// coregex
+			cgRe := MustCompile(pattern)
+			cgRe.Longest()
+			cgResult := cgRe.FindString(input)
+
+			if cgResult != stdResult {
+				t.Errorf("coregex Longest() = %q, stdlib = %q", cgResult, stdResult)
+			}
+		})
 	}
 }

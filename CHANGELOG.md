@@ -14,6 +14,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.12] - 2025-12-08
+
+### Added
+- **Issue #26: `Longest()` method now works correctly (leftmost-longest semantics)**
+  - Previously was a no-op stub with incorrect documentation
+  - Now properly implements POSIX leftmost-longest matching
+  - Alternations like `(a|ab)` on "ab" return "ab" (longest) instead of "a" (first)
+  - Essential for AWK/POSIX compatibility
+  - Files: `regex.go`, `meta/meta.go`, `nfa/pikevm.go`
+  - No performance regression in default (leftmost-first) mode
+
+### Fixed
+- **Documentation**: Corrected misleading docs claiming coregex used leftmost-longest by default
+  - coregex uses leftmost-first (Perl) by default, matching Go stdlib
+  - `Longest()` switches to leftmost-longest (POSIX) semantics
+
+---
+
 ## [0.8.11] - 2025-12-08
 
 ### Fixed

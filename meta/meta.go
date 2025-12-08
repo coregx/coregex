@@ -52,6 +52,10 @@ type Engine struct {
 	onepass      *onepass.DFA
 	onepassCache *onepass.Cache
 
+	// longest enables leftmost-longest (POSIX) matching semantics
+	// By default (false), uses leftmost-first (Perl) semantics
+	longest bool
+
 	// Statistics (useful for debugging and tuning)
 	stats Stats
 }
@@ -510,6 +514,18 @@ func (e *Engine) NumCaptures() int {
 // This matches stdlib regexp.Regexp.SubexpNames() behavior.
 func (e *Engine) SubexpNames() []string {
 	return e.nfa.SubexpNames()
+}
+
+// SetLongest enables or disables leftmost-longest (POSIX) matching semantics.
+// By default, the engine uses leftmost-first (Perl) semantics where the first
+// alternative in an alternation wins. With longest=true, the longest match wins.
+//
+// This affects how alternations like `(a|ab)` match:
+//   - longest=false (default): "a" wins (first branch)
+//   - longest=true: "ab" wins (longest match)
+func (e *Engine) SetLongest(longest bool) {
+	e.longest = longest
+	e.pikevm.SetLongest(longest)
 }
 
 // findNFA searches using NFA (PikeVM) directly.
