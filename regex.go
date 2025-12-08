@@ -63,6 +63,7 @@ import (
 type Regex struct {
 	engine  *meta.Engine
 	pattern string
+	longest bool // if true, prefer leftmost-longest match (POSIX semantics)
 }
 
 // Regexp is an alias for Regex to provide drop-in compatibility with stdlib regexp.
@@ -389,19 +390,23 @@ func (r *Regex) String() string {
 
 // Longest makes future searches prefer the leftmost-longest match.
 //
-// Note: coregex already uses leftmost-longest semantics by default for all
-// matching strategies (DFA, NFA, OnePass), so this method is a no-op provided
-// for API compatibility with stdlib regexp.
-//
-// Unlike stdlib regexp, calling this method has no effect and is safe to call
-// concurrently.
+// By default, coregex uses leftmost-first (Perl) semantics where the first
+// alternative in an alternation wins. After calling Longest(), coregex uses
+// leftmost-longest (POSIX) semantics where the longest match wins.
 //
 // Example:
 //
-//	re := coregex.MustCompile(`a+`)
-//	re.Longest() // no-op, already leftmost-longest
+//	re := coregex.MustCompile(`(a|ab)`)
+//	re.FindString("ab")    // returns "a" (leftmost-first: first branch wins)
+//
+//	re.Longest()
+//	re.FindString("ab")    // returns "ab" (leftmost-longest: longest wins)
+//
+// Note: Unlike stdlib, calling Longest() modifies the regex state and should
+// not be called concurrently with search methods.
 func (r *Regex) Longest() {
-	// No-op: coregex already uses leftmost-longest semantics
+	r.longest = true
+	r.engine.SetLongest(true)
 }
 
 // NumSubexp returns the number of parenthesized subexpressions (capture groups).
