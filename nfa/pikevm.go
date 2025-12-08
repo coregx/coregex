@@ -31,6 +31,34 @@ type PikeVM struct {
 	longest bool
 }
 
+// isBetterMatch returns true if the candidate match is better than the current best.
+// This implements both leftmost-first and leftmost-longest match semantics.
+func (p *PikeVM) isBetterMatch(bestStart, bestEnd int, bestPriority uint32,
+	candStart, candEnd int, candPriority uint32) bool {
+	// No current best - candidate always wins
+	if bestStart == -1 {
+		return true
+	}
+	// Leftmost start position always wins
+	if candStart < bestStart {
+		return true
+	}
+	if candStart > bestStart {
+		return false
+	}
+	// Same start position - apply semantics
+	if p.longest {
+		// Leftmost-longest (POSIX): longer match wins (ignore priority)
+		return candEnd > bestEnd
+	}
+	// Leftmost-first (Perl): higher priority (lower number) wins first,
+	// then longer match for same priority (greedy extension)
+	if candPriority < bestPriority {
+		return true
+	}
+	return candPriority == bestPriority && candEnd > bestEnd
+}
+
 // thread represents an execution thread in the PikeVM.
 // Each thread tracks a position in the NFA state graph and capture positions.
 type thread struct {
@@ -248,32 +276,10 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 		// Check for matches in current generation
 		// We check AFTER adding threads to ensure we capture all potential matches
 		for _, t := range p.queue {
-			if p.nfa.IsMatch(t.state) {
-				// Found a match ending at current position
-				// Update best match based on semantics:
-				if p.longest {
-					// Leftmost-longest (POSIX) semantics:
-					// 1. Leftmost start position wins
-					// 2. For same start, longer match wins (ignore priority)
-					if bestStart == -1 || t.startPos < bestStart ||
-						(t.startPos == bestStart && pos > bestEnd) {
-						bestStart = t.startPos
-						bestEnd = pos
-						bestPriority = t.priority
-					}
-				} else {
-					// Leftmost-first (Perl) semantics:
-					// 1. Leftmost start position wins
-					// 2. For same start, higher priority (lower number = first branch) wins
-					// 3. For same start and priority, longer match wins (greedy extension)
-					if bestStart == -1 || t.startPos < bestStart ||
-						(t.startPos == bestStart && t.priority < bestPriority) ||
-						(t.startPos == bestStart && t.priority == bestPriority && pos > bestEnd) {
-						bestStart = t.startPos
-						bestEnd = pos
-						bestPriority = t.priority
-					}
-				}
+			if p.nfa.IsMatch(t.state) && p.isBetterMatch(bestStart, bestEnd, bestPriority, t.startPos, pos, t.priority) {
+				bestStart = t.startPos
+				bestEnd = pos
+				bestPriority = t.priority
 			}
 		}
 
@@ -391,33 +397,11 @@ func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *M
 
 		// Check for matches in current generation
 		for _, t := range p.queue {
-			if p.nfa.IsMatch(t.state) {
-				// Update best match based on semantics:
-				if p.longest {
-					// Leftmost-longest (POSIX) semantics:
-					// 1. Leftmost start position wins
-					// 2. For same start, longer match wins (ignore priority)
-					if bestStart == -1 || t.startPos < bestStart ||
-						(t.startPos == bestStart && pos > bestEnd) {
-						bestStart = t.startPos
-						bestEnd = pos
-						bestPriority = t.priority
-						bestCaptures = t.captures.copyData()
-					}
-				} else {
-					// Leftmost-first (Perl) semantics:
-					// 1. Leftmost start position wins
-					// 2. For same start, higher priority (lower number) wins
-					// 3. For same start and priority, longer match wins (greedy extension)
-					if bestStart == -1 || t.startPos < bestStart ||
-						(t.startPos == bestStart && t.priority < bestPriority) ||
-						(t.startPos == bestStart && t.priority == bestPriority && pos > bestEnd) {
-						bestStart = t.startPos
-						bestEnd = pos
-						bestPriority = t.priority
-						bestCaptures = t.captures.copyData()
-					}
-				}
+			if p.nfa.IsMatch(t.state) && p.isBetterMatch(bestStart, bestEnd, bestPriority, t.startPos, pos, t.priority) {
+				bestStart = t.startPos
+				bestEnd = pos
+				bestPriority = t.priority
+				bestCaptures = t.captures.copyData()
 			}
 		}
 
@@ -479,24 +463,25 @@ func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithC
 
 	for pos := startPos; pos <= len(haystack); pos++ {
 		for _, t := range p.queue {
-			if p.nfa.IsMatch(t.state) {
-				if p.longest {
-					// Leftmost-longest: always prefer longer match (higher end position)
-					if pos > lastMatchPos {
-						lastMatchPos = pos
-						lastMatchPriority = t.priority
-						lastMatchCaptures = t.captures.copyData()
-					}
-				} else {
-					// Leftmost-first: prefer first branch (lower priority), then greedy extension
-					if lastMatchPos == -1 || t.priority < lastMatchPriority ||
-						t.priority == lastMatchPriority {
-						lastMatchPos = pos
-						lastMatchPriority = t.priority
-						lastMatchCaptures = t.captures.copyData()
-					}
-					break // Found a match at this position (leftmost-first)
-				}
+			if !p.nfa.IsMatch(t.state) {
+				continue
+			}
+			// Determine if this match is better than current best
+			shouldUpdate := false
+			if p.longest {
+				// Leftmost-longest: always prefer longer match
+				shouldUpdate = pos > lastMatchPos
+			} else {
+				// Leftmost-first: prefer first branch, then greedy extension
+				shouldUpdate = lastMatchPos == -1 || t.priority <= lastMatchPriority
+			}
+			if shouldUpdate {
+				lastMatchPos = pos
+				lastMatchPriority = t.priority
+				lastMatchCaptures = t.captures.copyData()
+			}
+			if !p.longest {
+				break // Found a match at this position (leftmost-first)
 			}
 		}
 
@@ -606,23 +591,24 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 	for pos := startPos; pos <= len(haystack); pos++ {
 		// Check if any current threads are in a match state
 		for _, t := range p.queue {
-			if p.nfa.IsMatch(t.state) {
-				if p.longest {
-					// Leftmost-longest: always prefer longer match (higher end position)
-					// Ignore priority - only match length matters
-					if pos > lastMatchPos {
-						lastMatchPos = pos
-						lastMatchPriority = t.priority
-					}
-				} else {
-					// Leftmost-first: prefer first branch (lower priority), then greedy extension
-					if lastMatchPos == -1 || t.priority < lastMatchPriority ||
-						t.priority == lastMatchPriority {
-						lastMatchPos = pos
-						lastMatchPriority = t.priority
-					}
-					break // Found a match at this position, record it (leftmost-first)
-				}
+			if !p.nfa.IsMatch(t.state) {
+				continue
+			}
+			// Determine if this match is better than current best
+			shouldUpdate := false
+			if p.longest {
+				// Leftmost-longest: always prefer longer match
+				shouldUpdate = pos > lastMatchPos
+			} else {
+				// Leftmost-first: prefer first branch, then greedy extension
+				shouldUpdate = lastMatchPos == -1 || t.priority <= lastMatchPriority
+			}
+			if shouldUpdate {
+				lastMatchPos = pos
+				lastMatchPriority = t.priority
+			}
+			if !p.longest {
+				break // Found a match at this position (leftmost-first)
 			}
 		}
 
