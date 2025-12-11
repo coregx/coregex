@@ -71,21 +71,19 @@ func NewReverseAnchoredSearcher(forwardNFA *nfa.NFA, config lazy.Config) (*Rever
 // Find searches backward from end of haystack and returns the match.
 //
 // Algorithm:
-//  1. Quick check with reverse DFA (zero-allocation backward scan)
-//  2. If DFA confirms match, reverse bytes for PikeVM to get exact bounds
-//  3. Convert reverse positions back to forward positions
+//  1. Use reverse DFA SearchReverse to find match START (zero-allocation)
+//  2. For $-anchored patterns, END is always len(haystack)
 //
-// For a pattern ending with $, the reverse NFA is anchored at start (^).
-// PikeVM on reverse NFA requires reversed bytes to find exact match bounds.
+// Performance:
+//   - ZERO-ALLOCATION: no byte reversal needed
+//   - Single DFA scan: O(m) where m = match length
+//   - Much faster than PikeVM + reverseBytes approach
 //
 // Example:
 //
 //	Forward pattern: "abc$"
 //	Forward haystack: "xxxabc"
-//	Reverse haystack: "cbaxxx"
-//	Reverse pattern: "^cba"
-//	Match in reverse: [0:3] = "cba"
-//	Convert to forward: [3:6] = "abc"
+//	SearchReverse finds start=3, end=6 (because $ anchor)
 func (s *ReverseAnchoredSearcher) Find(haystack []byte) *Match {
 	// For empty strings, use forward PikeVM
 	// Reverse NFA has issues with empty strings and certain alternations
@@ -97,43 +95,15 @@ func (s *ReverseAnchoredSearcher) Find(haystack []byte) *Match {
 		return NewMatch(start, end, haystack)
 	}
 
-	// Quick check: use zero-allocation reverse DFA scan
-	if !s.reverseDFA.IsMatchReverse(haystack, 0, len(haystack)) {
+	// Use SearchReverse to find match START (zero-allocation backward scan)
+	// For $-anchored patterns, the END is always len(haystack)
+	matchStart := s.reverseDFA.SearchReverse(haystack, 0, len(haystack))
+	if matchStart < 0 {
 		return nil
 	}
 
-	// Match confirmed - need exact bounds from PikeVM
-	// PikeVM requires reversed bytes for reverse NFA
-	reversed := reverseBytes(haystack)
-	revStart, revEnd, matched := s.pikevm.Search(reversed)
-	if !matched {
-		return nil
-	}
-
-	// Convert reverse positions to forward positions
-	// Reverse haystack: reversed[revStart:revEnd]
-	// Forward haystack: haystack[len-revEnd:len-revStart]
-	//
-	// Example: haystack="xxxabc" (len=6), reversed="cbaxxx"
-	// If reverse match is [0:3] (= "cba")
-	// Then forward match is [6-3:6-0] = [3:6] (= "abc")
-	n := len(haystack)
-	start := n - revEnd
-	end := n - revStart
-
-	return NewMatch(start, end, haystack)
-}
-
-// reverseBytes creates a reversed copy of the byte slice.
-// Only used by Find() for PikeVM, which requires reversed bytes.
-// IsMatch() uses zero-allocation IsMatchReverse() instead.
-func reverseBytes(b []byte) []byte {
-	n := len(b)
-	reversed := make([]byte, n)
-	for i := 0; i < n; i++ {
-		reversed[i] = b[n-1-i]
-	}
-	return reversed
+	// For $-anchored patterns, the match always ends at len(haystack)
+	return NewMatch(matchStart, len(haystack), haystack)
 }
 
 // IsMatch checks if the pattern matches at the end of haystack.
