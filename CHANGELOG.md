@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+- Look-around assertions
+- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
+- UTF-8 Automata optimization
+
+---
+
+## [0.8.15] - 2025-12-11
+
 ### Added
 - **Zero-allocation `IsMatch()`** (PR #36, Fixes #31)
   - `PikeVM.IsMatch()` returns immediately on first match without computing positions
@@ -21,11 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `Find()` and `FindIndex()` now use `FindIndices()` internally
 - `isMatchNFA()` now uses optimized `PikeVM.IsMatch()` instead of `Search()`
-
-### Planned
-- Look-around assertions
-- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
-- UTF-8 Automata optimization
 
 ---
 
