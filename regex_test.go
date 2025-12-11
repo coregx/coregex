@@ -428,6 +428,220 @@ func BenchmarkFindAll(b *testing.B) {
 	}
 }
 
+// BenchmarkFindIndex benchmarks FindIndex operations
+func BenchmarkFindIndex(b *testing.B) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   []byte
+	}{
+		{"literal", "fox", []byte("the quick brown fox jumps")},
+		{"digit", `\d+`, []byte("abc123def456")},
+		{"word", `\w+`, []byte("hello, world!")},
+	}
+
+	for _, tt := range tests {
+		re := MustCompile(tt.pattern)
+		b.Run(tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.FindIndex(tt.input)
+			}
+		})
+	}
+}
+
+// BenchmarkFindAllIndex benchmarks FindAllIndex operations
+func BenchmarkFindAllIndex(b *testing.B) {
+	re := MustCompile(`\w+`)
+	input := []byte("the quick brown fox jumps over the lazy dog")
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		re.FindAllIndex(input, -1)
+	}
+}
+
+// BenchmarkFindSubmatch benchmarks capture group extraction
+func BenchmarkFindSubmatch(b *testing.B) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   []byte
+	}{
+		{"simple", `(\w+)\s+(\w+)`, []byte("hello world")},
+		{"email", `(\w+)@(\w+)\.(\w+)`, []byte("user@example.com")},
+		{"nested", `([a-z]+)(\d+)`, []byte("abc123")},
+	}
+
+	for _, tt := range tests {
+		re := MustCompile(tt.pattern)
+		b.Run(tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.FindSubmatch(tt.input)
+			}
+		})
+	}
+}
+
+// BenchmarkSplit benchmarks Split operations
+func BenchmarkSplit(b *testing.B) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+	}{
+		{"comma", ",", "a,b,c,d,e,f,g,h,i,j"},
+		{"whitespace", `\s+`, "the quick brown fox jumps"},
+		{"digit", `\d`, "a1b2c3d4e5"},
+	}
+
+	for _, tt := range tests {
+		re := MustCompile(tt.pattern)
+		b.Run(tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.Split(tt.input, -1)
+			}
+		})
+	}
+}
+
+// BenchmarkReplaceAll benchmarks ReplaceAll operations
+func BenchmarkReplaceAll(b *testing.B) {
+	tests := []struct {
+		name        string
+		pattern     string
+		input       []byte
+		replacement []byte
+	}{
+		{"simple", "[aeiou]", []byte("hello world"), []byte("X")},
+		{"word", `\w+`, []byte("foo bar baz"), []byte("X")},
+		{"capture", `(\w+)`, []byte("hello world"), []byte("[$1]")},
+	}
+
+	for _, tt := range tests {
+		re := MustCompile(tt.pattern)
+		b.Run(tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.ReplaceAll(tt.input, tt.replacement)
+			}
+		})
+	}
+}
+
+// BenchmarkReplaceAllFunc benchmarks ReplaceAllFunc operations
+func BenchmarkReplaceAllFunc(b *testing.B) {
+	re := MustCompile(`\w+`)
+	input := []byte("hello world foo bar")
+	toUpper := func(match []byte) []byte {
+		result := make([]byte, len(match))
+		for i, c := range match {
+			if c >= 'a' && c <= 'z' {
+				result[i] = c - 32
+			} else {
+				result[i] = c
+			}
+		}
+		return result
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		re.ReplaceAllFunc(input, toUpper)
+	}
+}
+
+// BenchmarkMatchString benchmarks MatchString (string input)
+func BenchmarkMatchString(b *testing.B) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+	}{
+		{"literal", "fox", "the quick brown fox"},
+		{"digit", `\d+`, "abc123def"},
+		{"anchored", `^hello`, "hello world"},
+		{"suffix", `\.txt$`, "document.txt"},
+	}
+
+	for _, tt := range tests {
+		re := MustCompile(tt.pattern)
+		b.Run(tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.MatchString(tt.input)
+			}
+		})
+	}
+}
+
+// BenchmarkLiteral benchmarks literal pattern performance
+func BenchmarkLiteral(b *testing.B) {
+	sizes := []struct {
+		name string
+		size int
+	}{
+		{"100B", 100},
+		{"1KB", 1024},
+		{"10KB", 10 * 1024},
+	}
+
+	for _, size := range sizes {
+		// Create text with pattern at the end
+		text := make([]byte, size.size)
+		for i := range text {
+			text[i] = byte('a' + (i % 26))
+		}
+		copy(text[len(text)-10:], "__hello___")
+
+		re := MustCompile("hello")
+		b.Run(size.name, func(b *testing.B) {
+			b.SetBytes(int64(size.size))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.Find(text)
+			}
+		})
+	}
+}
+
+// BenchmarkCharClass benchmarks character class patterns
+func BenchmarkCharClass(b *testing.B) {
+	input := []byte("abc123def456ghi789")
+
+	patterns := []struct {
+		name string
+		re   string
+	}{
+		{"digit", `\d+`},
+		{"word", `\w+`},
+		{"alpha", `[a-z]+`},
+	}
+
+	for _, pat := range patterns {
+		re := MustCompile(pat.re)
+		b.Run(pat.name+"/Find", func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.Find(input)
+			}
+		})
+		b.Run(pat.name+"/FindAll", func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.FindAll(input, -1)
+			}
+		})
+	}
+}
+
 // TestCount tests counting matches
 func TestCount(t *testing.T) {
 	tests := []struct {
