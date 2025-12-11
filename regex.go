@@ -304,17 +304,27 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 	var matches [][]byte
 	pos := 0
 	lastMatchEnd := -1 // Track where the last non-empty match ended
+
 	for {
-		// Search from current position using FindAt to preserve absolute positions
-		// This is critical for correct anchor handling (^ should only match at pos 0)
-		match := r.engine.FindAt(b, pos)
-		if match == nil {
+		// Use zero-allocation FindIndicesAt instead of FindAt (avoids Match object creation)
+		start, end, found := r.engine.FindIndicesAt(b, pos)
+		if !found {
 			break
 		}
 
-		// Match positions are already absolute (FindAt preserves them)
-		start := match.Start()
-		end := match.End()
+		// Lazy allocation: only allocate once we find the first match
+		if matches == nil {
+			// Pre-allocate with estimated capacity
+			// Heuristic: for typical patterns, estimate ~10 matches per 1KB
+			estimatedCap := len(b) / 100
+			if estimatedCap < 4 {
+				estimatedCap = 4
+			}
+			if n > 0 && estimatedCap > n {
+				estimatedCap = n
+			}
+			matches = make([][]byte, 0, estimatedCap)
+		}
 
 		// Skip empty matches that start exactly where the previous non-empty match ended.
 		// This matches Go's stdlib behavior for preventing duplicate empty matches.
@@ -537,17 +547,27 @@ func (r *Regex) FindAllIndex(b []byte, n int) [][]int {
 	var indices [][]int
 	pos := 0
 	lastMatchEnd := -1 // Track where the last non-empty match ended
+
 	for {
-		// Search from current position using FindAt to preserve absolute positions
-		// This is critical for correct anchor handling (^ should only match at pos 0)
-		match := r.engine.FindAt(b, pos)
-		if match == nil {
+		// Use zero-allocation FindIndicesAt instead of FindAt (avoids Match object creation)
+		start, end, found := r.engine.FindIndicesAt(b, pos)
+		if !found {
 			break
 		}
 
-		// Match positions are already absolute (FindAt preserves them)
-		start := match.Start()
-		end := match.End()
+		// Lazy allocation: only allocate once we find the first match
+		if indices == nil {
+			// Pre-allocate with estimated capacity
+			// Heuristic: for typical patterns, estimate ~10 matches per 1KB
+			estimatedCap := len(b) / 100
+			if estimatedCap < 4 {
+				estimatedCap = 4
+			}
+			if n > 0 && estimatedCap > n {
+				estimatedCap = n
+			}
+			indices = make([][]int, 0, estimatedCap)
+		}
 
 		// Skip empty matches that start exactly where the previous non-empty match ended.
 		// This matches Go's stdlib behavior:
@@ -748,7 +768,14 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 		return r.ReplaceAllLiteral(src, repl)
 	}
 
-	var result []byte
+	// Pre-allocate result buffer based on input size
+	// Estimate: input size + 25% for replacements
+	estimatedLen := len(src) * 5 / 4
+	result := make([]byte, 0, estimatedLen)
+
+	// Pre-allocate matchIndices buffer and reuse it (avoid allocation per match)
+	matchIndices := make([]int, numGroups*2)
+
 	lastEnd := 0
 	pos := 0
 	lastNonEmptyMatchEnd := -1 // Track where the last non-empty match ended
@@ -762,7 +789,7 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 		}
 
 		// Get match indices (already absolute from FindSubmatchAt)
-		matchIndices := make([]int, numGroups*2)
+		// Reuse pre-allocated buffer (reset values each iteration)
 		for i := 0; i < numGroups; i++ {
 			idx := matchData.GroupIndex(i)
 			if len(idx) >= 2 {
