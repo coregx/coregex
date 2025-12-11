@@ -14,6 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.17] - 2025-12-12
+
+### Added
+- **BoundedBacktracker Engine** (PR #38)
+  - Recursive backtracking engine with bit-vector visited tracking for O(1) lookup
+  - Optimal for character class patterns (`\d+`, `\w+`, `[a-z]+`) without good literals
+  - 2-5x faster than PikeVM for simple patterns, now **2.5x faster than stdlib** (was 2-3x slower)
+  - Automatic strategy selection via `UseBoundedBacktracker` in meta-engine
+  - Memory-bounded: max 256KB visited bit vector (falls back to PikeVM for larger inputs)
+
+---
+
 ## [0.8.16] - 2025-12-11
 
 ### Added
