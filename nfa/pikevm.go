@@ -205,6 +205,254 @@ func (p *PikeVM) Search(haystack []byte) (int, int, bool) {
 	return p.SearchAt(haystack, 0)
 }
 
+// IsMatch returns true if the pattern matches anywhere in the haystack.
+// This is optimized for boolean-only matching - it returns as soon as any
+// match is found without computing exact match positions.
+//
+// This is significantly faster than Search() when you only need to know
+// if a match exists, not where it is.
+func (p *PikeVM) IsMatch(haystack []byte) bool {
+	if len(haystack) == 0 {
+		return p.matchesEmpty()
+	}
+
+	if p.nfa.IsAnchored() {
+		return p.isMatchAnchored(haystack)
+	}
+
+	return p.isMatchUnanchored(haystack)
+}
+
+// isMatchUnanchored implements fast boolean-only matching for unanchored patterns.
+// Unlike searchUnanchoredAt, this doesn't track match positions - just returns
+// true as soon as any match state is reached.
+func (p *PikeVM) isMatchUnanchored(haystack []byte) bool {
+	// Reset state
+	p.queue = p.queue[:0]
+	p.nextQueue = p.nextQueue[:0]
+	p.visited.Clear()
+
+	// Process each byte position
+	for pos := 0; pos <= len(haystack); pos++ {
+		// Add new start thread at current position
+		p.visited.Clear()
+		p.addThreadForMatch(p.nfa.StartAnchored(), haystack, pos)
+
+		// Check for matches in current generation - return immediately on first match
+		for _, t := range p.queue {
+			if p.nfa.IsMatch(t.state) {
+				return true // FAST EXIT - no position tracking needed
+			}
+		}
+
+		if pos >= len(haystack) {
+			break
+		}
+
+		// Process current byte for all active threads
+		if len(p.queue) > 0 {
+			b := haystack[pos]
+			p.visited.Clear()
+			for _, t := range p.queue {
+				p.stepForMatch(t, b, haystack, pos+1)
+			}
+		}
+
+		// Swap queues
+		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+	}
+
+	return false
+}
+
+// isMatchAnchored implements fast boolean-only matching for anchored patterns.
+func (p *PikeVM) isMatchAnchored(haystack []byte) bool {
+	// Reset state
+	p.queue = p.queue[:0]
+	p.nextQueue = p.nextQueue[:0]
+	p.visited.Clear()
+
+	// Initialize with start state
+	p.addThreadForMatch(p.nfa.StartAnchored(), haystack, 0)
+
+	// Process each byte position
+	for pos := 0; pos <= len(haystack); pos++ {
+		// Check for match - return immediately
+		for _, t := range p.queue {
+			if p.nfa.IsMatch(t.state) {
+				return true
+			}
+		}
+
+		if len(p.queue) == 0 || pos >= len(haystack) {
+			break
+		}
+
+		b := haystack[pos]
+		p.visited.Clear()
+
+		for _, t := range p.queue {
+			p.stepForMatch(t, b, haystack, pos+1)
+		}
+
+		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+	}
+
+	return false
+}
+
+// addThreadForMatch adds thread for IsMatch - simplified without captures/priority
+func (p *PikeVM) addThreadForMatch(id StateID, haystack []byte, pos int) {
+	if p.visited.Contains(uint32(id)) {
+		return
+	}
+	p.visited.Insert(uint32(id))
+
+	state := p.nfa.State(id)
+	if state == nil {
+		return
+	}
+
+	switch state.Kind() {
+	case StateMatch:
+		p.queue = append(p.queue, thread{state: id})
+
+	case StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
+		p.queue = append(p.queue, thread{state: id})
+
+	case StateEpsilon:
+		next := state.Epsilon()
+		if next != InvalidState {
+			p.addThreadForMatch(next, haystack, pos)
+		}
+
+	case StateSplit:
+		left, right := state.Split()
+		if left != InvalidState {
+			p.addThreadForMatch(left, haystack, pos)
+		}
+		if right != InvalidState {
+			p.addThreadForMatch(right, haystack, pos)
+		}
+
+	case StateCapture:
+		_, _, next := state.Capture()
+		if next != InvalidState {
+			p.addThreadForMatch(next, haystack, pos)
+		}
+
+	case StateLook:
+		look, next := state.Look()
+		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+			p.addThreadForMatch(next, haystack, pos)
+		}
+
+	case StateFail:
+		// Dead state - ignore
+	}
+}
+
+// stepForMatch processes byte transition for IsMatch - simplified
+func (p *PikeVM) stepForMatch(t thread, b byte, haystack []byte, nextPos int) {
+	state := p.nfa.State(t.state)
+	if state == nil {
+		return
+	}
+
+	switch state.Kind() {
+	case StateByteRange:
+		lo, hi, next := state.ByteRange()
+		if b >= lo && b <= hi {
+			p.addThreadToNextForMatch(next, haystack, nextPos)
+		}
+
+	case StateSparse:
+		for _, tr := range state.Transitions() {
+			if b >= tr.Lo && b <= tr.Hi {
+				p.addThreadToNextForMatch(tr.Next, haystack, nextPos)
+			}
+		}
+
+	case StateRuneAny:
+		if b >= 0x80 && b <= 0xBF {
+			p.nextQueue = append(p.nextQueue, t)
+			return
+		}
+		runePos := nextPos - 1
+		if runePos < len(haystack) {
+			r, width := utf8.DecodeRune(haystack[runePos:])
+			if r != utf8.RuneError || width == 1 {
+				next := state.RuneAny()
+				newPos := runePos + width
+				p.addThreadToNextForMatch(next, haystack, newPos)
+			}
+		}
+
+	case StateRuneAnyNotNL:
+		if b >= 0x80 && b <= 0xBF {
+			p.nextQueue = append(p.nextQueue, t)
+			return
+		}
+		runePos := nextPos - 1
+		if runePos < len(haystack) {
+			r, width := utf8.DecodeRune(haystack[runePos:])
+			if (r != utf8.RuneError || width == 1) && r != '\n' {
+				next := state.RuneAnyNotNL()
+				newPos := runePos + width
+				p.addThreadToNextForMatch(next, haystack, newPos)
+			}
+		}
+	}
+}
+
+// addThreadToNextForMatch adds to next queue for IsMatch - simplified
+func (p *PikeVM) addThreadToNextForMatch(id StateID, haystack []byte, pos int) {
+	if p.visited.Contains(uint32(id)) {
+		return
+	}
+	p.visited.Insert(uint32(id))
+
+	state := p.nfa.State(id)
+	if state == nil {
+		return
+	}
+
+	switch state.Kind() {
+	case StateEpsilon:
+		next := state.Epsilon()
+		if next != InvalidState {
+			p.addThreadToNextForMatch(next, haystack, pos)
+		}
+		return
+
+	case StateSplit:
+		left, right := state.Split()
+		if left != InvalidState {
+			p.addThreadToNextForMatch(left, haystack, pos)
+		}
+		if right != InvalidState {
+			p.addThreadToNextForMatch(right, haystack, pos)
+		}
+		return
+
+	case StateCapture:
+		_, _, next := state.Capture()
+		if next != InvalidState {
+			p.addThreadToNextForMatch(next, haystack, pos)
+		}
+		return
+
+	case StateLook:
+		look, next := state.Look()
+		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+			p.addThreadToNextForMatch(next, haystack, pos)
+		}
+		return
+	}
+
+	p.nextQueue = append(p.nextQueue, thread{state: id})
+}
+
 // SearchAt finds the first match in the haystack starting from position 'at'.
 // Returns (start, end, true) if a match is found, or (-1, -1, false) if not.
 //
