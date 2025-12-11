@@ -401,8 +401,9 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 // isMatchNFA checks for match using NFA (PikeVM) with early termination.
 func (e *Engine) isMatchNFA(haystack []byte) bool {
 	e.stats.NFASearches++
-	_, _, matched := e.pikevm.Search(haystack)
-	return matched
+	// Use optimized IsMatch that returns immediately on first match
+	// without computing exact match positions
+	return e.pikevm.IsMatch(haystack)
 }
 
 // isMatchDFA checks for match using DFA with early termination.
@@ -526,6 +527,181 @@ func (e *Engine) SubexpNames() []string {
 func (e *Engine) SetLongest(longest bool) {
 	e.longest = longest
 	e.pikevm.SetLongest(longest)
+}
+
+// FindIndices returns the start and end indices of the first match.
+// Returns (-1, -1, false) if no match is found.
+//
+// This is a zero-allocation alternative to Find() - it returns indices
+// directly instead of creating a Match object.
+func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
+	switch e.strategy {
+	case UseNFA:
+		return e.findIndicesNFA(haystack)
+	case UseDFA:
+		return e.findIndicesDFA(haystack)
+	case UseBoth:
+		return e.findIndicesAdaptive(haystack)
+	case UseReverseAnchored:
+		return e.findIndicesReverseAnchored(haystack)
+	case UseReverseSuffix:
+		return e.findIndicesReverseSuffix(haystack)
+	case UseReverseInner:
+		return e.findIndicesReverseInner(haystack)
+	default:
+		return e.findIndicesNFA(haystack)
+	}
+}
+
+// FindIndicesAt returns the start and end indices of the first match starting at position 'at'.
+// Returns (-1, -1, false) if no match is found.
+func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found bool) {
+	switch e.strategy {
+	case UseNFA:
+		return e.findIndicesNFAAt(haystack, at)
+	case UseDFA:
+		return e.findIndicesDFAAt(haystack, at)
+	case UseBoth:
+		return e.findIndicesAdaptiveAt(haystack, at)
+	default:
+		return e.findIndicesNFAAt(haystack, at)
+	}
+}
+
+// findIndicesNFA searches using NFA (PikeVM) directly - zero alloc.
+func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
+	e.stats.NFASearches++
+	return e.pikevm.Search(haystack)
+}
+
+// findIndicesNFAAt searches using NFA starting at position - zero alloc.
+func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
+	e.stats.NFASearches++
+	return e.pikevm.SearchAt(haystack, at)
+}
+
+// findIndicesDFA searches using DFA with prefilter - zero alloc.
+func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
+	e.stats.DFASearches++
+
+	// Literal fast path
+	if e.prefilter != nil && e.prefilter.IsComplete() {
+		pos := e.prefilter.Find(haystack, 0)
+		if pos == -1 {
+			return -1, -1, false
+		}
+		e.stats.PrefilterHits++
+		literalLen := e.prefilter.LiteralLen()
+		if literalLen > 0 {
+			return pos, pos + literalLen, true
+		}
+		return e.pikevm.Search(haystack)
+	}
+
+	// Use DFA search
+	pos := e.dfa.Find(haystack)
+	if pos == -1 {
+		return -1, -1, false
+	}
+
+	// DFA returns end position, need NFA for start
+	return e.pikevm.Search(haystack)
+}
+
+// findIndicesDFAAt searches using DFA starting at position - zero alloc.
+func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
+	e.stats.DFASearches++
+
+	// Literal fast path
+	if e.prefilter != nil && e.prefilter.IsComplete() {
+		pos := e.prefilter.Find(haystack, at)
+		if pos == -1 {
+			return -1, -1, false
+		}
+		e.stats.PrefilterHits++
+		literalLen := e.prefilter.LiteralLen()
+		if literalLen > 0 {
+			return pos, pos + literalLen, true
+		}
+		return e.pikevm.SearchAt(haystack, at)
+	}
+
+	pos := e.dfa.FindAt(haystack, at)
+	if pos == -1 {
+		return -1, -1, false
+	}
+	return e.pikevm.SearchAt(haystack, at)
+}
+
+// findIndicesAdaptive tries DFA first, falls back to NFA - zero alloc.
+func (e *Engine) findIndicesAdaptive(haystack []byte) (int, int, bool) {
+	if e.dfa != nil {
+		e.stats.DFASearches++
+		pos := e.dfa.Find(haystack)
+		if pos != -1 {
+			return e.pikevm.Search(haystack)
+		}
+		size, capacity, _, _, _ := e.dfa.CacheStats()
+		if size >= int(capacity)*9/10 {
+			e.stats.DFACacheFull++
+		}
+	}
+	return e.findIndicesNFA(haystack)
+}
+
+// findIndicesAdaptiveAt tries DFA first at position, falls back to NFA - zero alloc.
+func (e *Engine) findIndicesAdaptiveAt(haystack []byte, at int) (int, int, bool) {
+	if e.dfa != nil {
+		e.stats.DFASearches++
+		pos := e.dfa.FindAt(haystack, at)
+		if pos != -1 {
+			return e.pikevm.SearchAt(haystack, at)
+		}
+		size, capacity, _, _, _ := e.dfa.CacheStats()
+		if size >= int(capacity)*9/10 {
+			e.stats.DFACacheFull++
+		}
+	}
+	return e.findIndicesNFAAt(haystack, at)
+}
+
+// findIndicesReverseAnchored searches using reverse DFA - zero alloc.
+func (e *Engine) findIndicesReverseAnchored(haystack []byte) (int, int, bool) {
+	if e.reverseSearcher == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	e.stats.DFASearches++
+	match := e.reverseSearcher.Find(haystack)
+	if match == nil {
+		return -1, -1, false
+	}
+	return match.Start(), match.End(), true
+}
+
+// findIndicesReverseSuffix searches using reverse suffix optimization - zero alloc.
+func (e *Engine) findIndicesReverseSuffix(haystack []byte) (int, int, bool) {
+	if e.reverseSuffixSearcher == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	e.stats.DFASearches++
+	match := e.reverseSuffixSearcher.Find(haystack)
+	if match == nil {
+		return -1, -1, false
+	}
+	return match.Start(), match.End(), true
+}
+
+// findIndicesReverseInner searches using reverse inner optimization - zero alloc.
+func (e *Engine) findIndicesReverseInner(haystack []byte) (int, int, bool) {
+	if e.reverseInnerSearcher == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	e.stats.DFASearches++
+	match := e.reverseInnerSearcher.Find(haystack)
+	if match == nil {
+		return -1, -1, false
+	}
+	return match.Start(), match.End(), true
 }
 
 // findNFA searches using NFA (PikeVM) directly.

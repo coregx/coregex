@@ -233,11 +233,12 @@ func (r *Regex) MatchString(s string) bool {
 //	match := re.Find([]byte("age: 42"))
 //	println(string(match)) // "42"
 func (r *Regex) Find(b []byte) []byte {
-	match := r.engine.Find(b)
-	if match == nil {
+	// Use zero-allocation FindIndices internally
+	start, end, found := r.engine.FindIndices(b)
+	if !found {
 		return nil
 	}
-	return match.Bytes()
+	return b[start:end]
 }
 
 // FindString returns a string holding the text of the leftmost match in s.
@@ -266,11 +267,12 @@ func (r *Regex) FindString(s string) string {
 //	loc := re.FindIndex([]byte("age: 42"))
 //	println(loc[0], loc[1]) // 5, 7
 func (r *Regex) FindIndex(b []byte) []int {
-	match := r.engine.Find(b)
-	if match == nil {
+	// Use zero-allocation FindIndices internally
+	start, end, found := r.engine.FindIndices(b)
+	if !found {
 		return nil
 	}
-	return []int{match.Start(), match.End()}
+	return []int{start, end}
 }
 
 // FindStringIndex returns a two-element slice of integers defining the location
