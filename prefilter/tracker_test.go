@@ -23,6 +23,7 @@ func (m *mockPrefilter) Find(haystack []byte, start int) int {
 }
 
 func (m *mockPrefilter) IsComplete() bool { return m.complete }
+func (m *mockPrefilter) LiteralLen() int  { return 0 }
 func (m *mockPrefilter) HeapBytes() int   { return 0 }
 func (m *mockPrefilter) Reset()           { m.idx = 0 }
 

@@ -462,6 +462,16 @@ func (t *Teddy) IsComplete() bool {
 	return t.complete
 }
 
+// LiteralLen implements Prefilter.LiteralLen.
+//
+// For Teddy, this returns 0 because Teddy handles multiple patterns
+// of potentially different lengths, so there's no single literal length.
+// Even when complete=true, the matched pattern length varies.
+func (t *Teddy) LiteralLen() int {
+	// Teddy handles multiple patterns, so no single literal length
+	return 0
+}
+
 // HeapBytes implements Prefilter.HeapBytes.
 //
 // Returns approximate heap memory used by Teddy:

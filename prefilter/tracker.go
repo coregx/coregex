@@ -150,6 +150,11 @@ func (t *Tracker) IsComplete() bool {
 	return t.inner.IsComplete()
 }
 
+// LiteralLen delegates to the inner prefilter's LiteralLen.
+func (t *Tracker) LiteralLen() int {
+	return t.inner.LiteralLen()
+}
+
 // HeapBytes returns the memory used by the inner prefilter.
 func (t *Tracker) HeapBytes() int {
 	return t.inner.HeapBytes()
@@ -248,6 +253,11 @@ func (tp *TrackedPrefilter) Find(haystack []byte, start int) int {
 // IsComplete implements Prefilter.IsComplete.
 func (tp *TrackedPrefilter) IsComplete() bool {
 	return tp.Tracker.IsComplete()
+}
+
+// LiteralLen implements Prefilter.LiteralLen.
+func (tp *TrackedPrefilter) LiteralLen() int {
+	return tp.Tracker.LiteralLen()
 }
 
 // HeapBytes implements Prefilter.HeapBytes.
