@@ -234,7 +234,8 @@ coregex uses Go's `regexp/syntax` for pattern parsing, supporting:
 **Performance Notes:**
 - 🚀 Best speedup on patterns with literal prefixes/suffixes
 - 🚀 Excellent for log parsing, email/URL extraction
-- ⚡ May be slower than stdlib on trivial patterns (overhead)
+- 🚀 Simple literal patterns (`hello`, `foo`) are **~2x faster** than stdlib
+- ⚡ Character class patterns (`[0-9]+`, `\d+`) may have higher baseline overhead
 - ⚡ First match slower (compilation cost), repeated matches faster
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
