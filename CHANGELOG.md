@@ -7,17 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+- Look-around assertions
+- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
+- UTF-8 Automata optimization
+
+---
+
+## [0.8.14] - 2025-12-11
+
 ### Added
 - **Literal fast path optimization** (PR #30, Fixes #29)
   - Add `LiteralLen()` method to Prefilter interface
   - For exact literal patterns, bypass PikeVM entirely
   - Simple literals (`hello`, `foo`) now **~2x faster** than stdlib
   - Was 5x slower before this fix
-
-### Planned
-- Look-around assertions
-- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
-- UTF-8 Automata optimization
+  - Thanks to @benhoyt for detailed performance analysis
 
 ---
 
