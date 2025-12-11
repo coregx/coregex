@@ -252,7 +252,8 @@ echo ""
 
 # 8. Test coverage check
 log_info "Checking test coverage..."
-COVERAGE=$(go test -cover ./... 2>&1 | grep "coverage:" | tail -1 | awk '{print $5}' | sed 's/%//')
+# Filter out "[no statements]" packages and get root package coverage
+COVERAGE=$(go test -cover ./... 2>&1 | grep "coverage:" | grep -v "\[no statements\]" | head -1 | awk '{print $5}' | sed 's/%//')
 if [ -n "$COVERAGE" ]; then
     echo "  • overall coverage: ${COVERAGE}%"
     if awk -v cov="$COVERAGE" 'BEGIN {exit !(cov >= 70.0)}'; then
