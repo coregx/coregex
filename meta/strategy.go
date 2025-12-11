@@ -73,6 +73,14 @@ const (
 	//   - Has wildcards both before AND after inner literal
 	//   - Speedup: 10-100x for patterns like `ERROR.*connection.*timeout`
 	UseReverseInner
+
+	// UseBoundedBacktracker uses bounded backtracking with bit-vector visited tracking.
+	// Selected for:
+	//   - Simple character class patterns (\d+, \w+, [a-z]+) without literals
+	//   - Small enough input (states * inputLen <= threshold)
+	//   - No prefilter benefit (no extractable literals)
+	//   - Speedup: 2-4x over PikeVM for character class patterns
+	UseBoundedBacktracker
 )
 
 // String returns a human-readable representation of the Strategy.
@@ -92,6 +100,8 @@ func (s Strategy) String() string {
 		return "UseOnePass"
 	case UseReverseInner:
 		return "UseReverseInner"
+	case UseBoundedBacktracker:
+		return "UseBoundedBacktracker"
 	default:
 		return "Unknown"
 	}
@@ -322,10 +332,10 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	}
 
 	// Check for simple character class patterns without literals
-	// Patterns like [0-9]+, \d+, \w+ have poor DFA performance due to overhead
-	// without prefilter benefit. Use NFA directly.
+	// Patterns like [0-9]+, \d+, \w+ benefit from BoundedBacktracker:
+	// 2-4x faster than PikeVM due to bit-vector visited tracking instead of SparseSet.
 	if !hasGoodLiterals && isSimpleCharClass(re) {
-		return UseNFA
+		return UseBoundedBacktracker
 	}
 
 	// Good literals → use prefilter + DFA (best performance)
@@ -379,19 +389,6 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 		if nfaSize < 20 {
 			return "tiny NFA (< 20 states), DFA overhead not worth it"
 		}
-		// Check if it's a simple character class pattern
-		hasGoodLiterals := false
-		if literals != nil && !literals.IsEmpty() {
-			lcp := literals.LongestCommonPrefix()
-			if len(lcp) >= config.MinLiteralLen {
-				hasGoodLiterals = true
-			}
-		}
-		// Note: re is available from outer scope in SelectStrategy, but not here
-		// We'll rely on the reason being called after SelectStrategy
-		if !hasGoodLiterals {
-			return "simple character class pattern without literals (DFA overhead not beneficial)"
-		}
 		return "no good literals and small NFA"
 
 	case UseDFA:
@@ -420,6 +417,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseReverseInner:
 		return "inner literal prefilter + bidirectional DFA (10-100x for patterns like ERROR.*connection.*timeout)"
+
+	case UseBoundedBacktracker:
+		return "bounded backtracker for simple character class pattern (2-4x faster than PikeVM)"
 
 	default:
 		return "unknown strategy"
