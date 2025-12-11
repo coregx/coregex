@@ -22,7 +22,7 @@ A **production-grade regex engine** for Go with dramatic performance improvement
 - 🚀 **Up to 263x faster** than Go's `regexp` package (case-insensitive patterns)
 - 🎯 **SIMD-accelerated** search with AVX2/SSSE3 assembly (10-15x faster substring search)
 - 📊 **Multi-pattern search** (Teddy SIMD algorithm for 2-8 literals)
-- 💾 **Zero allocations** in hot paths through object pooling
+- 💾 **Zero allocations** in hot paths (`IsMatch`, `FindIndices` - 0 allocs/op)
 
 🏗️ **Architecture**
 - 🧠 **Meta-engine** orchestrates strategy selection (DFA/NFA/ReverseAnchored/ReverseInner)
@@ -192,6 +192,7 @@ See [benchmark/](benchmark/) for detailed comparisons.
 | **Meta-Engine**      | ✅     | DFA/NFA/ReverseAnchored orchestration |
 | **Lazy DFA**         | ✅     | On-demand state construction |
 | **Pike VM (NFA)**    | ✅     | Thompson's construction |
+| **Zero-alloc API**   | ✅     | **NEW in v0.8.15** - `IsMatch`, `FindIndices` with 0 allocs |
 | **Reverse Search**   | ✅     | ReverseAnchored (v0.4.0), ReverseSuffix (v0.6.0), **ReverseInner (v0.8.0)** |
 | **OnePass DFA**      | ✅     | **NEW in v0.7.0** - 10x faster captures, 0 allocs |
 | **Unicode support**  | ✅     | Via `regexp/syntax` |
@@ -235,6 +236,8 @@ coregex uses Go's `regexp/syntax` for pattern parsing, supporting:
 - 🚀 Best speedup on patterns with literal prefixes/suffixes
 - 🚀 Excellent for log parsing, email/URL extraction
 - 🚀 Simple literal patterns (`hello`, `foo`) are **~2x faster** than stdlib
+- 🚀 **Zero-allocation** `IsMatch()` - returns immediately on first match (v0.8.15)
+- 🚀 **Zero-allocation** `FindIndices()` - returns `(start, end, found)` tuple (v0.8.15)
 - ⚡ Character class patterns (`[0-9]+`, `\d+`) may have higher baseline overhead
 - ⚡ First match slower (compilation cost), repeated matches faster
 

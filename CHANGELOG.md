@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Zero-allocation `IsMatch()`** (PR #36, Fixes #31)
+  - `PikeVM.IsMatch()` returns immediately on first match without computing positions
+  - 0 B/op, 0 allocs/op in hot path
+  - Speedup vs stdlib: 52-1863x faster (depending on input size)
+
+- **Zero-allocation `FindIndices()`** (PR #36, Fixes #32)
+  - `Engine.FindIndices()` returns `(start, end int, found bool)` tuple
+  - 0 B/op, 0 allocs/op - no Match object allocation
+  - Used internally by `Find()` and `FindIndex()` public API
+
+### Changed
+- `Find()` and `FindIndex()` now use `FindIndices()` internally
+- `isMatchNFA()` now uses optimized `PikeVM.IsMatch()` instead of `Search()`
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
