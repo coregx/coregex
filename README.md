@@ -235,10 +235,11 @@ coregex uses Go's `regexp/syntax` for pattern parsing, supporting:
 **Performance Notes:**
 - 🚀 Best speedup on patterns with literal prefixes/suffixes
 - 🚀 Excellent for log parsing, email/URL extraction
-- 🚀 Simple literal patterns (`hello`, `foo`) are **~2x faster** than stdlib
+- 🚀 Simple literal patterns (`hello`, `foo`) are **~7x faster** than stdlib (v0.8.16)
 - 🚀 **Zero-allocation** `IsMatch()` - returns immediately on first match (v0.8.15)
 - 🚀 **Zero-allocation** `FindIndices()` - returns `(start, end, found)` tuple (v0.8.15)
-- ⚡ Character class patterns (`[0-9]+`, `\d+`) may have higher baseline overhead
+- 🚀 Optimized `FindAll`/`ReplaceAll` with lazy allocation (v0.8.16)
+- ⚡ Character class patterns (`[0-9]+`, `\d+`) use smart NFA strategy (v0.8.16)
 - ⚡ First match slower (compilation cost), repeated matches faster
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.

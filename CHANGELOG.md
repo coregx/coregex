@@ -14,6 +14,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.16] - 2025-12-11
+
+### Added
+- **Character class pattern optimization** (PR #37, Fixes #33)
+  - Simple patterns like `[0-9]+`, `\d+`, `\w+` now use NFA directly
+  - Skip DFA overhead when no prefilter benefit
+  - Added `isSimpleCharClass()` detection in strategy selection
+
+### Changed
+- **ReplaceAll optimization** (PR #37, Fixes #34)
+  - Pre-allocate result buffer (input + 25%)
+  - Reuse `matchIndices` buffer across iterations (was allocating per match)
+
+- **FindAll/FindAllIndex optimization** (PR #37, Fixes #35)
+  - Use `FindIndicesAt()` instead of `FindAt()` (avoids Match object creation)
+  - Lazy allocation - only allocate when first match found
+  - Pre-allocate with estimated capacity (10 matches per 1KB)
+
+### Performance
+- Find/hello: **85% faster** (619ns → 88ns)
+- OnePassIsMatch: **19% faster**
+- LazyDFARepetition: **21% faster**
+
+---
+
 ## [0.8.15] - 2025-12-11
 
 ### Added
