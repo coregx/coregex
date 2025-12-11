@@ -167,6 +167,112 @@ func (d *DFA) FindAt(haystack []byte, at int) int {
 	return d.searchAt(haystack, at)
 }
 
+// SearchAt performs DFA search from position 'at' WITHOUT using prefilter.
+// Returns the end position of the match, or -1 if no match.
+//
+// This is useful when the caller has already located a candidate position
+// (e.g., via reverse search) and needs forward DFA scan for greedy matching.
+// Unlike FindAt, this always uses direct DFA search, avoiding prefilter overhead.
+func (d *DFA) SearchAt(haystack []byte, at int) int {
+	if at > len(haystack) {
+		return -1
+	}
+
+	if at == len(haystack) {
+		if d.matchesEmpty() {
+			return at
+		}
+		return -1
+	}
+
+	if len(haystack) == 0 {
+		if d.matchesEmpty() {
+			return 0
+		}
+		return -1
+	}
+
+	// Direct DFA search without prefilter
+	return d.searchAt(haystack, at)
+}
+
+// SearchAtAnchored performs ANCHORED DFA search from position 'at'.
+// Returns the end position of the match, or -1 if no match.
+//
+// Unlike SearchAt (unanchored), this uses the anchored start state which
+// requires the match to begin exactly at position 'at' (no implicit (?s:.)*? prefix).
+// This is used by ReverseSuffix after finding match start via reverse DFA.
+func (d *DFA) SearchAtAnchored(haystack []byte, at int) int {
+	if at > len(haystack) {
+		return -1
+	}
+
+	if at == len(haystack) {
+		if d.matchesEmpty() {
+			return at
+		}
+		return -1
+	}
+
+	if len(haystack) == 0 {
+		if d.matchesEmpty() {
+			return 0
+		}
+		return -1
+	}
+
+	// Get ANCHORED start state (requires match to start exactly at 'at')
+	currentState := d.getStartState(haystack, at, true)
+	if currentState == nil {
+		return d.nfaFallback(haystack, at)
+	}
+
+	lastMatch := -1
+	if currentState.IsMatch() {
+		lastMatch = at
+	}
+
+	for pos := at; pos < len(haystack); pos++ {
+		b := haystack[pos]
+
+		if d.checkWordBoundaryMatch(currentState, b) {
+			return pos
+		}
+
+		nextID, ok := currentState.Transition(b)
+		switch {
+		case !ok:
+			nextState, err := d.determinize(currentState, b)
+			if err != nil {
+				return d.nfaFallback(haystack, at)
+			}
+			if nextState == nil {
+				return lastMatch
+			}
+			currentState = nextState
+
+		case nextID == DeadState:
+			return lastMatch
+
+		default:
+			currentState = d.getState(nextID)
+			if currentState == nil {
+				return d.nfaFallback(haystack, at)
+			}
+		}
+
+		if currentState.IsMatch() {
+			lastMatch = pos + 1
+		}
+	}
+
+	if d.checkEOIMatch(currentState) {
+		return len(haystack)
+	}
+
+	return lastMatch
+}
+
 // IsMatch returns true if the pattern matches anywhere in the haystack.
 //
 // This is optimized for early termination: returns true as soon as any

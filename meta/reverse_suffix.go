@@ -121,86 +121,70 @@ func NewReverseSuffixSearcher(
 
 // Find searches using suffix literal prefilter + reverse DFA and returns the match.
 //
-// Algorithm (leftmost-longest/greedy semantics):
-//  1. Use prefilter to find ALL suffix literal candidates
-//  2. For the FIRST candidate that produces a valid match:
-//     a. Use reverse DFA SearchReverse to find match START (leftmost)
-//     b. Record this as the leftmost match start
-//  3. Continue scanning for more candidates with the SAME match start
-//     a. Keep track of the longest match end (greedy)
-//  4. Return the match with leftmost start and longest end
+// Algorithm (find LAST suffix for greedy semantics):
+//  1. Use prefilter to find the LAST suffix literal candidate
+//  2. Use reverse DFA to find match START (leftmost)
+//  3. Return match immediately (no forward scan needed!)
+//
+// Why find LAST suffix?
+//   - Pattern `.*\.txt` is greedy - `.*` matches as much as possible
+//   - For input "a.txt.txt", the greedy match is the ENTIRE string [0:9]
+//   - Finding the LAST `.txt` (at position 5) and reverse scanning gives us this
+//   - No expensive forward DFA scan needed!
 //
 // Performance:
-//   - ZERO PikeVM calls - uses DFA exclusively
-//   - Single reverse DFA scan finds both match validity AND start position
-//   - Multiple candidates scanned for greedy semantics
+//   - Single prefilter scan to find last suffix: O(n)
+//   - Single reverse DFA scan: O(n)
+//   - Total: O(n) with small constant
 //
-// Example (greedy matching):
+// Example:
 //
 //	Pattern: `.*\.txt`
 //	Haystack: "a.txt.txt"
 //	Suffix literal: `.txt`
 //
-//	1. Prefilter finds `.txt` at position 1, then at position 5
-//	2. Candidate 1 (pos=1): SearchReverse returns 0, match = [0:5]
-//	3. Candidate 2 (pos=5): SearchReverse returns 0, match = [0:9] (longer!)
-//	4. Return [0:9] = "a.txt.txt" (greedy)
+//	1. Prefilter finds LAST `.txt` at position 5
+//	2. Reverse DFA from [0,9] finds match start = 0
+//	3. Return [0:9] = "a.txt.txt" (greedy!)
 func (s *ReverseSuffixSearcher) Find(haystack []byte) *Match {
 	if len(haystack) == 0 {
 		return nil
 	}
 
-	// Track the best (leftmost-longest) match found
-	bestMatchStart := -1
-	bestMatchEnd := -1
-
-	// Use prefilter to find suffix candidates
+	// Find the LAST suffix candidate for greedy matching
+	lastPos := -1
 	start := 0
 	for {
-		// Find next suffix candidate
 		pos := s.prefilter.Find(haystack, start)
 		if pos == -1 {
-			// No more candidates - return best match if found
 			break
 		}
-
-		// Reverse search from haystack start to suffix end
-		// pos is the START of the suffix, so we need to add suffixLen
-		revEnd := pos + s.suffixLen
-		if revEnd > len(haystack) {
-			revEnd = len(haystack)
-		}
-
-		// Use reverse DFA SearchReverse to find match START position
-		// ZERO-ALLOCATION: Scans backward without byte reversal
-		matchStart := s.reverseDFA.SearchReverse(haystack, 0, revEnd)
-		if matchStart >= 0 {
-			// Update best match if:
-			// 1. First valid match (bestMatchStart == -1)
-			// 2. Earlier start found (matchStart < bestMatchStart) - shouldn't happen, but be safe
-			// 3. Same start but longer end (matchStart == bestMatchStart && revEnd > bestMatchEnd) - greedy
-			// Ignore if matchStart > bestMatchStart (not leftmost)
-			switch {
-			case bestMatchStart == -1, matchStart < bestMatchStart:
-				// First match or earlier start
-				bestMatchStart = matchStart
-				bestMatchEnd = revEnd
-			case matchStart == bestMatchStart && revEnd > bestMatchEnd:
-				// Same start, but longer match (greedy)
-				bestMatchEnd = revEnd
-			}
-		}
-
-		// Continue to find more candidates for greedy matching
+		lastPos = pos
 		start = pos + 1
 		if start >= len(haystack) {
 			break
 		}
 	}
 
-	if bestMatchStart >= 0 {
-		return NewMatch(bestMatchStart, bestMatchEnd, haystack)
+	if lastPos == -1 {
+		// No suffix candidates found
+		return nil
 	}
+
+	// Reverse search from haystack start to last suffix end
+	revEnd := lastPos + s.suffixLen
+	if revEnd > len(haystack) {
+		revEnd = len(haystack)
+	}
+
+	// Use reverse DFA to find match START position
+	matchStart := s.reverseDFA.SearchReverse(haystack, 0, revEnd)
+	if matchStart >= 0 {
+		// Found valid match - return immediately
+		return NewMatch(matchStart, revEnd, haystack)
+	}
+
+	// No valid match found
 	return nil
 }
 
