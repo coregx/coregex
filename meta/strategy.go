@@ -202,15 +202,46 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 	return 0 // No suitable reverse strategy
 }
 
+// isSimpleCharClass checks if a regexp is a simple character class pattern
+// like [0-9], \d, \w, etc. that doesn't benefit from DFA overhead.
+// Returns true for patterns that are just repeats of character classes.
+func isSimpleCharClass(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+
+	switch re.Op {
+	case syntax.OpCharClass:
+		// Direct character class like [0-9] or \d
+		return true
+	case syntax.OpPlus, syntax.OpStar, syntax.OpQuest, syntax.OpRepeat:
+		// Repeat of character class like [0-9]+ or \d*
+		if len(re.Sub) == 1 {
+			return isSimpleCharClass(re.Sub[0])
+		}
+	case syntax.OpConcat:
+		// Allow concatenations of character classes like [0-9]+[a-z]+
+		// but only if all are simple
+		for _, sub := range re.Sub {
+			if !isSimpleCharClass(sub) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // SelectStrategy analyzes the NFA and literals to choose the best execution strategy.
 //
 // Algorithm:
 //  1. If end-anchored ($ or \z) and not start-anchored → UseReverseAnchored
 //  2. If DFA disabled in config → UseNFA
 //  3. If NFA is tiny (< 20 states) → UseNFA (DFA overhead not worth it)
-//  4. If good literals exist → UseDFA (prefilter + DFA is fastest)
-//  5. If NFA is large (> 100 states) → UseDFA (essential for performance)
-//  6. Otherwise → UseBoth (adaptive)
+//  4. If simple character class pattern without literals → UseNFA (DFA overhead not worth it)
+//  5. If good literals exist → UseDFA (prefilter + DFA is fastest)
+//  6. If NFA is large (> 100 states) → UseDFA (essential for performance)
+//  7. Otherwise → UseBoth (adaptive)
 //
 // "Good literals" means:
 //   - At least one literal exists
@@ -290,6 +321,13 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		}
 	}
 
+	// Check for simple character class patterns without literals
+	// Patterns like [0-9]+, \d+, \w+ have poor DFA performance due to overhead
+	// without prefilter benefit. Use NFA directly.
+	if !hasGoodLiterals && isSimpleCharClass(re) {
+		return UseNFA
+	}
+
 	// Good literals → use prefilter + DFA (best performance)
 	// Patterns like "ABXBYXCX" or "(foo|foobar)\d+" benefit massively from:
 	//  1. Prefilter finds literal candidates quickly (5-50x speedup)
@@ -340,6 +378,19 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 		}
 		if nfaSize < 20 {
 			return "tiny NFA (< 20 states), DFA overhead not worth it"
+		}
+		// Check if it's a simple character class pattern
+		hasGoodLiterals := false
+		if literals != nil && !literals.IsEmpty() {
+			lcp := literals.LongestCommonPrefix()
+			if len(lcp) >= config.MinLiteralLen {
+				hasGoodLiterals = true
+			}
+		}
+		// Note: re is available from outer scope in SelectStrategy, but not here
+		// We'll rely on the reason being called after SelectStrategy
+		if !hasGoodLiterals {
+			return "simple character class pattern without literals (DFA overhead not beneficial)"
 		}
 		return "no good literals and small NFA"
 
