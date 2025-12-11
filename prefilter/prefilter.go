@@ -99,6 +99,26 @@ type Prefilter interface {
 	//	}
 	IsComplete() bool
 
+	// LiteralLen returns the length of the matched literal when IsComplete() is true.
+	//
+	// This allows the regex engine to calculate exact match bounds without
+	// running the full automata: end = start + LiteralLen().
+	//
+	// Returns:
+	//   > 0 if IsComplete() is true (the length of the complete literal)
+	//   0 if IsComplete() is false or if the prefilter matches variable lengths
+	//
+	// Example:
+	//
+	//	if pf.IsComplete() {
+	//	    pos := pf.Find(haystack, start)
+	//	    if pos != -1 {
+	//	        matchEnd := pos + pf.LiteralLen()
+	//	        return haystack[pos:matchEnd]
+	//	    }
+	//	}
+	LiteralLen() int
+
 	// HeapBytes returns the number of bytes of heap memory used by this prefilter.
 	//
 	// This is useful for profiling and memory budgeting in the regex engine.
@@ -308,6 +328,14 @@ func (p *memchrPrefilter) IsComplete() bool {
 	return p.complete
 }
 
+// LiteralLen implements Prefilter.LiteralLen.
+func (p *memchrPrefilter) LiteralLen() int {
+	if p.complete {
+		return 1 // single byte literal
+	}
+	return 0
+}
+
 // HeapBytes implements Prefilter.HeapBytes.
 // Returns 0 as no heap allocation is needed.
 func (p *memchrPrefilter) HeapBytes() int {
@@ -370,6 +398,14 @@ func (p *memmemPrefilter) Find(haystack []byte, start int) int {
 // IsComplete implements Prefilter.IsComplete.
 func (p *memmemPrefilter) IsComplete() bool {
 	return p.complete
+}
+
+// LiteralLen implements Prefilter.LiteralLen.
+func (p *memmemPrefilter) LiteralLen() int {
+	if p.complete {
+		return len(p.needle)
+	}
+	return 0
 }
 
 // HeapBytes implements Prefilter.HeapBytes.

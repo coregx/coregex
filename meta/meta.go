@@ -544,16 +544,22 @@ func (e *Engine) findNFA(haystack []byte) *Match {
 func (e *Engine) findDFA(haystack []byte) *Match {
 	e.stats.DFASearches++
 
-	// If prefilter available and complete, use it to find candidates quickly
-	// then verify with NFA to get exact match bounds
+	// If prefilter available and complete, use literal fast path
+	// This bypasses PikeVM entirely for exact literal matches
 	if e.prefilter != nil && e.prefilter.IsComplete() {
 		pos := e.prefilter.Find(haystack, 0)
 		if pos == -1 {
 			return nil
 		}
 		e.stats.PrefilterHits++
-		// Prefilter found the literal, now get exact match bounds from NFA
-		// (NFA will start from the unanchored prefix and find the match)
+		// Literal fast path: prefilter already found exact match
+		// Use LiteralLen() to calculate end position directly
+		literalLen := e.prefilter.LiteralLen()
+		if literalLen > 0 {
+			// Direct return without PikeVM
+			return NewMatch(pos, pos+literalLen, haystack)
+		}
+		// Fallback to NFA if LiteralLen not available (e.g., Teddy multi-pattern)
 		start, end, matched := e.pikevm.Search(haystack)
 		if !matched {
 			return nil
@@ -619,14 +625,21 @@ func (e *Engine) findNFAAt(haystack []byte, at int) *Match {
 func (e *Engine) findDFAAt(haystack []byte, at int) *Match {
 	e.stats.DFASearches++
 
-	// If prefilter available and complete, use it starting from 'at'
+	// If prefilter available and complete, use literal fast path
 	if e.prefilter != nil && e.prefilter.IsComplete() {
 		pos := e.prefilter.Find(haystack, at)
 		if pos == -1 {
 			return nil
 		}
 		e.stats.PrefilterHits++
-		// Prefilter found the literal, now get exact match bounds from NFA
+		// Literal fast path: prefilter already found exact match
+		// Use LiteralLen() to calculate end position directly
+		literalLen := e.prefilter.LiteralLen()
+		if literalLen > 0 {
+			// Direct return without PikeVM
+			return NewMatch(pos, pos+literalLen, haystack)
+		}
+		// Fallback to NFA if LiteralLen not available (e.g., Teddy multi-pattern)
 		start, end, matched := e.pikevm.SearchAt(haystack, at)
 		if !matched {
 			return nil
