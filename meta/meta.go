@@ -37,16 +37,17 @@ import (
 //	    println(match.String()) // "foo123"
 //	}
 type Engine struct {
-	nfa                   *nfa.NFA
-	dfa                   *lazy.DFA
-	pikevm                *nfa.PikeVM
-	boundedBacktracker    *nfa.BoundedBacktracker
-	reverseSearcher       *ReverseAnchoredSearcher
-	reverseSuffixSearcher *ReverseSuffixSearcher
-	reverseInnerSearcher  *ReverseInnerSearcher
-	prefilter             prefilter.Prefilter
-	strategy              Strategy
-	config                Config
+	nfa                      *nfa.NFA
+	dfa                      *lazy.DFA
+	pikevm                   *nfa.PikeVM
+	boundedBacktracker       *nfa.BoundedBacktracker
+	reverseSearcher          *ReverseAnchoredSearcher
+	reverseSuffixSearcher    *ReverseSuffixSearcher
+	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
+	reverseInnerSearcher     *ReverseInnerSearcher
+	prefilter                prefilter.Prefilter
+	strategy                 Strategy
+	config                   Config
 
 	// OnePass DFA for anchored patterns with captures (optional optimization)
 	// This is independent of strategy - used by FindSubmatch when available
@@ -214,9 +215,10 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	var dfaEngine *lazy.DFA
 	var reverseSearcher *ReverseAnchoredSearcher
 	var reverseSuffixSearcher *ReverseSuffixSearcher
+	var reverseSuffixSetSearcher *ReverseSuffixSetSearcher
 	var reverseInnerSearcher *ReverseInnerSearcher
 
-	if strategy == UseDFA || strategy == UseBoth || strategy == UseReverseAnchored || strategy == UseReverseSuffix || strategy == UseReverseInner {
+	if strategy == UseDFA || strategy == UseBoth || strategy == UseReverseAnchored || strategy == UseReverseSuffix || strategy == UseReverseSuffixSet || strategy == UseReverseInner {
 		dfaConfig := lazy.Config{
 			MaxStates:            config.MaxDFAStates,
 			DeterminizationLimit: config.DeterminizationLimit,
@@ -245,6 +247,23 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 			if err != nil {
 				// ReverseSuffix compilation failed: fall back to forward DFA
 				strategy = UseDFA
+			}
+		}
+
+		// For reverse suffix SET search (multiple suffix literals with empty LCS)
+		if strategy == UseReverseSuffixSet {
+			// Extract suffix literals
+			extractor := literal.New(literal.ExtractorConfig{
+				MaxLiterals:   config.MaxLiterals,
+				MaxLiteralLen: 64,
+				MaxClassSize:  10,
+			})
+			suffixLiterals := extractor.ExtractSuffixes(re)
+
+			reverseSuffixSetSearcher, err = NewReverseSuffixSetSearcher(nfaEngine, suffixLiterals, dfaConfig)
+			if err != nil {
+				// ReverseSuffixSet compilation failed: fall back to UseBoth
+				strategy = UseBoth
 			}
 		}
 
@@ -287,19 +306,20 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	}
 
 	return &Engine{
-		nfa:                   nfaEngine,
-		dfa:                   dfaEngine,
-		pikevm:                pikevm,
-		boundedBacktracker:    boundedBT,
-		reverseSearcher:       reverseSearcher,
-		reverseSuffixSearcher: reverseSuffixSearcher,
-		reverseInnerSearcher:  reverseInnerSearcher,
-		prefilter:             pf,
-		strategy:              strategy,
-		config:                config,
-		onepass:               onepassDFA,
-		onepassCache:          onepassCache,
-		stats:                 Stats{},
+		nfa:                      nfaEngine,
+		dfa:                      dfaEngine,
+		pikevm:                   pikevm,
+		boundedBacktracker:       boundedBT,
+		reverseSearcher:          reverseSearcher,
+		reverseSuffixSearcher:    reverseSuffixSearcher,
+		reverseSuffixSetSearcher: reverseSuffixSetSearcher,
+		reverseInnerSearcher:     reverseInnerSearcher,
+		prefilter:                pf,
+		strategy:                 strategy,
+		config:                   config,
+		onepass:                  onepassDFA,
+		onepassCache:             onepassCache,
+		stats:                    Stats{},
 	}, nil
 }
 
@@ -352,6 +372,8 @@ func (e *Engine) FindAt(haystack []byte, at int) *Match {
 			return e.findReverseAnchored(haystack)
 		case UseReverseSuffix:
 			return e.findReverseSuffix(haystack)
+		case UseReverseSuffixSet:
+			return e.findReverseSuffixSet(haystack)
 		case UseReverseInner:
 			return e.findReverseInner(haystack)
 		case UseBoundedBacktracker:
@@ -409,6 +431,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchReverseAnchored(haystack)
 	case UseReverseSuffix:
 		return e.isMatchReverseSuffix(haystack)
+	case UseReverseSuffixSet:
+		return e.isMatchReverseSuffixSet(haystack)
 	case UseReverseInner:
 		return e.isMatchReverseInner(haystack)
 	case UseBoundedBacktracker:
@@ -598,6 +622,8 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesReverseAnchored(haystack)
 	case UseReverseSuffix:
 		return e.findIndicesReverseSuffix(haystack)
+	case UseReverseSuffixSet:
+		return e.findIndicesReverseSuffixSet(haystack)
 	case UseReverseInner:
 		return e.findIndicesReverseInner(haystack)
 	case UseBoundedBacktracker:
@@ -621,6 +647,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesAdaptiveAt(haystack, at)
 	case UseReverseSuffix:
 		return e.findIndicesReverseSuffixAt(haystack, at)
+	case UseReverseSuffixSet:
+		return e.findIndicesReverseSuffixSetAt(haystack, at)
 	case UseBoundedBacktracker:
 		return e.findIndicesBoundedBacktrackerAt(haystack, at)
 	case UseTeddy:
@@ -827,6 +855,28 @@ func (e *Engine) findIndicesReverseSuffixAt(haystack []byte, at int) (int, int, 
 	}
 	e.stats.DFASearches++
 	return e.reverseSuffixSearcher.FindIndicesAt(haystack, at)
+}
+
+// findIndicesReverseSuffixSet searches using reverse suffix SET optimization - zero alloc.
+func (e *Engine) findIndicesReverseSuffixSet(haystack []byte) (int, int, bool) {
+	if e.reverseSuffixSetSearcher == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	e.stats.DFASearches++
+	match := e.reverseSuffixSetSearcher.Find(haystack)
+	if match == nil {
+		return -1, -1, false
+	}
+	return match.Start(), match.End(), true
+}
+
+// findIndicesReverseSuffixSetAt searches using reverse suffix SET optimization from position - zero alloc.
+func (e *Engine) findIndicesReverseSuffixSetAt(haystack []byte, at int) (int, int, bool) {
+	if e.reverseSuffixSetSearcher == nil {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	e.stats.DFASearches++
+	return e.reverseSuffixSetSearcher.FindIndicesAt(haystack, at)
 }
 
 // findIndicesReverseInner searches using reverse inner optimization - zero alloc.
@@ -1257,6 +1307,26 @@ func (e *Engine) isMatchReverseSuffix(haystack []byte) bool {
 
 	e.stats.DFASearches++
 	return e.reverseSuffixSearcher.IsMatch(haystack)
+}
+
+// findReverseSuffixSet searches using Teddy multi-suffix prefilter + reverse DFA.
+func (e *Engine) findReverseSuffixSet(haystack []byte) *Match {
+	if e.reverseSuffixSetSearcher == nil {
+		return e.findNFA(haystack)
+	}
+
+	e.stats.DFASearches++
+	return e.reverseSuffixSetSearcher.Find(haystack)
+}
+
+// isMatchReverseSuffixSet checks for match using Teddy multi-suffix prefilter.
+func (e *Engine) isMatchReverseSuffixSet(haystack []byte) bool {
+	if e.reverseSuffixSetSearcher == nil {
+		return e.isMatchNFA(haystack)
+	}
+
+	e.stats.DFASearches++
+	return e.reverseSuffixSetSearcher.IsMatch(haystack)
 }
 
 // findReverseInner searches using inner literal prefilter + bidirectional DFA.

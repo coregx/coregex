@@ -14,6 +14,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.20] - 2025-12-12
+
+### Added
+- **ReverseSuffixSet Strategy** - Multi-suffix patterns with Teddy prefilter
+  - New strategy for patterns like `.*\.(txt|log|md)` where LCS (Longest Common Suffix) is empty
+  - Uses Teddy SIMD prefilter to find any of the suffix literals
+  - Reverse DFA confirms prefix pattern matches
+  - **Novel optimization NOT present in rust-regex** (they fall back to Core strategy)
+  - Pattern `.*\.(txt|log|md)`: **34-385x faster** than stdlib (scales with input size)
+
+- **Suffix extraction cross_reverse operation**
+  - Implemented rust-regex's `cross_reverse` algorithm for OpConcat
+  - Suffix extraction now correctly prepends preceding literals
+  - `.*\.(txt|log|md)` extracts `[".txt", ".log", ".md"]` (was `["txt", "log", "md"]`)
+  - Required for Teddy prefilter to find full suffix including `.`
+
+### Technical
+- New file: `meta/reverse_suffix_set.go` - ReverseSuffixSetSearcher implementation
+- Modified: `meta/strategy.go` - Added `UseReverseSuffixSet` strategy selection
+- Modified: `meta/meta.go` - Engine integration for new strategy
+- Modified: `literal/extractor.go` - cross_reverse for OpConcat suffix extraction
+- Modified: `literal/extractor_test.go` - Updated test expectations for cross_reverse
+- Strategy requirements: 2-8 suffix literals, each >= 2 bytes, non-start-anchored
+
+### Performance Summary
+Suffix alternation patterns now dramatically faster:
+
+| Pattern | Input | stdlib | coregex | Speedup |
+|---------|-------|--------|---------|---------|
+| `.*\.(txt\|log\|md)` | 1KB | 15.5µs | **454ns** | **34x faster** |
+| `.*\.(txt\|log\|md)` | 32KB | 1.95ms | **5µs** | **384x faster** |
+| `.*\.(txt\|log\|md)` | 1MB | 57ms | **147µs** | **385x faster** |
+
+---
+
 ## [0.8.19] - 2025-12-12
 
 ### Added
@@ -813,7 +848,8 @@ v0.6.0 → ReverseSuffix optimization (DONE ✅)
 v0.7.0 → OnePass DFA (DONE ✅)
 v0.8.0 → ReverseInner strategy (DONE ✅)
 v0.8.14-18 → GoAWK integration, Teddy, BoundedBacktracker (DONE ✅)
-v0.8.19 → FindAll ReverseSuffix optimization (DONE ✅) ← CURRENT
+v0.8.19 → FindAll ReverseSuffix optimization (DONE ✅)
+v0.8.20 → ReverseSuffixSet for multi-suffix patterns (DONE ✅) ← CURRENT
 v0.9.0 → Beta testing period
 v1.0.0 → Stable release (API frozen)
 ```

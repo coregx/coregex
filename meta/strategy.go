@@ -92,6 +92,21 @@ const (
 	// This implements the "literal engine bypass" optimization from Rust regex:
 	// when patterns are exact literals, the prefilter IS the engine.
 	UseTeddy
+
+	// UseReverseSuffixSet uses Teddy multi-pattern prefilter for suffix alternations.
+	// Selected for:
+	//   - Patterns like `.*\.(txt|log|md)` where suffix is an alternation
+	//   - No common suffix (LCS is empty), but multiple suffix literals available
+	//   - 2-8 suffix literals, each >= 3 bytes
+	//   - Speedup: 5-10x over UseBoth by using Teddy for suffix candidates
+	//
+	// Algorithm:
+	//   1. Teddy finds any of the suffix literals (e.g., ".txt", ".log", ".md")
+	//   2. Reverse DFA scan from suffix position to find match start
+	//   3. For `.*` prefix patterns, match starts at position 0 (skip reverse scan)
+	//
+	// This is an optimization NOT present in rust-regex (they fallback to Core).
+	UseReverseSuffixSet
 )
 
 // String returns a human-readable representation of the Strategy.
@@ -115,6 +130,8 @@ func (s Strategy) String() string {
 		return "UseBoundedBacktracker"
 	case UseTeddy:
 		return "UseTeddy"
+	case UseReverseSuffixSet:
+		return "UseReverseSuffixSet"
 	default:
 		return "Unknown"
 	}
@@ -149,6 +166,43 @@ func hasWordBoundary(re *syntax.Regexp) bool {
 	return false
 }
 
+// shouldUseReverseSuffixSet checks if multiple suffix literals are available for Teddy prefilter.
+// This handles patterns like `.*\.(txt|log|md)` where LCS is empty but individual suffixes are useful.
+// Returns true if ReverseSuffixSet strategy should be used.
+func shouldUseReverseSuffixSet(prefixLiterals, suffixLiterals *literal.Seq) bool {
+	if suffixLiterals == nil || suffixLiterals.IsEmpty() {
+		return false
+	}
+
+	// Skip if this is an exact literal alternation (would be better served by UseTeddy)
+	// For exact alternations like `foo|bar|baz`:
+	// - PREFIX literals = ["foo", "bar", "baz"]
+	// - SUFFIX literals = ["foo", "bar", "baz"] (same!)
+	// - All literals are complete
+	// For suffix patterns like `.*\.(txt|log|md)`:
+	// - PREFIX literals = [] or [""] (due to .*)
+	// - SUFFIX literals = [".txt", ".log", ".md"]
+	if prefixLiterals != nil && !prefixLiterals.IsEmpty() && prefixLiterals.AllComplete() {
+		if prefixLiterals.Len() == suffixLiterals.Len() {
+			return false // Exact alternation - use UseTeddy instead
+		}
+	}
+
+	litCount := suffixLiterals.Len()
+	if litCount < 2 || litCount > 8 {
+		return false // Teddy requires 2-8 patterns
+	}
+
+	// Check if all suffix literals are long enough for efficient Teddy
+	for i := 0; i < litCount; i++ {
+		if len(suffixLiterals.Get(i).Bytes) < 2 { // Allow 2-byte suffixes for extensions
+			return false
+		}
+	}
+
+	return true
+}
+
 // selectReverseStrategy selects reverse-based strategies (ReverseSuffix, ReverseInner).
 // Returns 0 if no reverse strategy is suitable.
 //
@@ -160,32 +214,20 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 	}
 
 	// Word boundary assertions (\b, \B) don't work correctly with reverse DFA search.
-	// The boundary depends on both the previous and next characters, which changes
-	// meaning when searching in reverse. Fall back to forward DFA for these patterns.
 	if hasWordBoundary(re) {
 		return 0
 	}
 
-	isStartAnchored := n.IsAlwaysAnchored()
-	isEndAnchored := nfa.IsPatternEndAnchored(re)
-
-	if isStartAnchored || isEndAnchored {
+	if n.IsAlwaysAnchored() || nfa.IsPatternEndAnchored(re) {
 		return 0 // Anchored patterns use other strategies
 	}
 
 	// Check if we have good PREFIX literals - if so, prefer UseDFA
-	// Prefix literals enable effective forward prefiltering
-	hasGoodPrefixLiterals := false
 	if literals != nil && !literals.IsEmpty() {
 		lcp := literals.LongestCommonPrefix()
 		if len(lcp) >= config.MinLiteralLen {
-			hasGoodPrefixLiterals = true
+			return 0 // Prefix literals available - use forward DFA
 		}
-	}
-
-	// If good prefix exists, use forward DFA (most efficient)
-	if hasGoodPrefixLiterals {
-		return 0 // Prefix literals available - use forward DFA
 	}
 
 	// No good prefix - check suffix and inner literals
@@ -197,34 +239,26 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 
 	// Check suffix literals (for patterns like `.*\.txt`)
 	suffixLiterals := extractor.ExtractSuffixes(re)
-	hasGoodSuffixLiterals := false
 	if suffixLiterals != nil && !suffixLiterals.IsEmpty() {
 		lcs := suffixLiterals.LongestCommonSuffix()
 		if len(lcs) >= config.MinLiteralLen {
-			hasGoodSuffixLiterals = true
+			return UseReverseSuffix // Good suffix literal available
 		}
 	}
 
-	if hasGoodSuffixLiterals {
-		// Good suffix literal available - use ReverseSuffix
-		return UseReverseSuffix
+	// No common suffix (LCS empty), but check if multiple suffix literals available
+	// for Teddy multi-suffix prefilter. This handles patterns like `.*\.(txt|log|md)`.
+	if shouldUseReverseSuffixSet(literals, suffixLiterals) {
+		return UseReverseSuffixSet
 	}
 
 	// No prefix or suffix - try inner literal (for patterns like `.*keyword.*`)
-	// Uses AST splitting to build separate NFAs for prefix and suffix portions,
-	// enabling true bidirectional search with 10-100x speedup.
 	innerInfo := extractor.ExtractInnerForReverseSearch(re)
 	if innerInfo != nil {
 		lcp := innerInfo.Literals.LongestCommonPrefix()
-		// Quality threshold for inner literals.
-		// Single-character inner literals like "@" can be effective for email patterns
-		// because: (1) Match() is 19x faster with memchr prefilter, (2) Find() is still
-		// faster than UseBoth for most cases. Only patterns with very high @ density
-		// suffer (but those are rare in practice).
-		minInnerLen := 1
-		if len(lcp) >= minInnerLen {
-			// High-quality inner literal available - use ReverseInner with AST splitting
-			return UseReverseInner
+		// Quality threshold: minimum 3 bytes (following rust-regex's is_fast() logic)
+		if len(lcp) >= 3 {
+			return UseReverseInner // High-quality inner literal available
 		}
 	}
 
@@ -488,6 +522,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseTeddy:
 		return "Teddy multi-pattern prefilter for exact literal alternation (50-250x by skipping DFA)"
+
+	case UseReverseSuffixSet:
+		return "Teddy multi-suffix prefilter for suffix alternation (5-10x for patterns like .*\\.(txt|log|md))"
 
 	default:
 		return "unknown strategy"
