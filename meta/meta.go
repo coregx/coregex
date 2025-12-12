@@ -39,8 +39,10 @@ import (
 type Engine struct {
 	nfa                      *nfa.NFA
 	dfa                      *lazy.DFA
+	reverseDFA               *lazy.DFA // Reverse DFA for bidirectional search (finds START from END)
 	pikevm                   *nfa.PikeVM
 	boundedBacktracker       *nfa.BoundedBacktracker
+	charClassSearcher        *nfa.CharClassSearcher // Specialized searcher for char_class+ patterns
 	reverseSearcher          *ReverseAnchoredSearcher
 	reverseSuffixSearcher    *ReverseSuffixSearcher
 	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
@@ -131,6 +133,40 @@ func CompileWithConfig(pattern string, config Config) (*Engine, error) {
 	}
 
 	return CompileRegexp(re, config)
+}
+
+// buildCharClassSearchers creates specialized searchers for character class patterns.
+// Returns (BoundedBacktracker, CharClassSearcher, updatedStrategy).
+// If CharClassSearcher extraction fails, falls back to BoundedBacktracker.
+func buildCharClassSearchers(
+	strategy Strategy,
+	re *syntax.Regexp,
+	nfaEngine *nfa.NFA,
+) (*nfa.BoundedBacktracker, *nfa.CharClassSearcher, Strategy) {
+	var boundedBT *nfa.BoundedBacktracker
+	var charClassSrch *nfa.CharClassSearcher
+
+	if strategy == UseBoundedBacktracker {
+		boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+	}
+
+	if strategy == UseCharClassSearcher {
+		ranges := nfa.ExtractCharClassRanges(re)
+		if ranges != nil {
+			// Determine minMatch: 1 for +, 0 for *
+			minMatch := 1
+			if re.Op == syntax.OpStar {
+				minMatch = 0
+			}
+			charClassSrch = nfa.NewCharClassSearcher(ranges, minMatch)
+		} else {
+			// Fallback to BoundedBacktracker if extraction fails
+			strategy = UseBoundedBacktracker
+			boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+		}
+	}
+
+	return boundedBT, charClassSrch, strategy
 }
 
 // CompileRegexp compiles a parsed syntax.Regexp with default configuration.
@@ -299,17 +335,23 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		}
 	}
 
-	// Build BoundedBacktracker for character class patterns
-	var boundedBT *nfa.BoundedBacktracker
-	if strategy == UseBoundedBacktracker {
-		boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+	// Build reverse DFA for bidirectional search (forward DFA finds END, reverse finds START)
+	var reverseDFAEngine *lazy.DFA
+	if dfaEngine != nil {
+		dfaCfg := lazy.Config{MaxStates: config.MaxDFAStates, DeterminizationLimit: config.DeterminizationLimit}
+		reverseDFAEngine, _ = lazy.CompileWithConfig(nfa.Reverse(nfaEngine), dfaCfg)
 	}
+
+	// Build specialized searchers for character class patterns
+	boundedBT, charClassSrch, strategy := buildCharClassSearchers(strategy, re, nfaEngine)
 
 	return &Engine{
 		nfa:                      nfaEngine,
 		dfa:                      dfaEngine,
+		reverseDFA:               reverseDFAEngine,
 		pikevm:                   pikevm,
 		boundedBacktracker:       boundedBT,
+		charClassSearcher:        charClassSrch,
 		reverseSearcher:          reverseSearcher,
 		reverseSuffixSearcher:    reverseSuffixSearcher,
 		reverseSuffixSetSearcher: reverseSuffixSetSearcher,
@@ -378,6 +420,8 @@ func (e *Engine) FindAt(haystack []byte, at int) *Match {
 			return e.findReverseInner(haystack)
 		case UseBoundedBacktracker:
 			return e.findBoundedBacktracker(haystack)
+		case UseCharClassSearcher:
+			return e.findCharClassSearcher(haystack)
 		case UseTeddy:
 			return e.findTeddy(haystack)
 		default:
@@ -399,6 +443,8 @@ func (e *Engine) FindAt(haystack []byte, at int) *Match {
 		return e.findNFAAt(haystack, at)
 	case UseBoundedBacktracker:
 		return e.findBoundedBacktrackerAt(haystack, at)
+	case UseCharClassSearcher:
+		return e.findCharClassSearcherAt(haystack, at)
 	case UseTeddy:
 		return e.findTeddyAt(haystack, at)
 	default:
@@ -437,6 +483,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchReverseInner(haystack)
 	case UseBoundedBacktracker:
 		return e.isMatchBoundedBacktracker(haystack)
+	case UseCharClassSearcher:
+		return e.isMatchCharClassSearcher(haystack)
 	case UseTeddy:
 		return e.isMatchTeddy(haystack)
 	default:
@@ -628,6 +676,8 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesReverseInner(haystack)
 	case UseBoundedBacktracker:
 		return e.findIndicesBoundedBacktracker(haystack)
+	case UseCharClassSearcher:
+		return e.findIndicesCharClassSearcher(haystack)
 	case UseTeddy:
 		return e.findIndicesTeddy(haystack)
 	default:
@@ -653,6 +703,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesReverseInnerAt(haystack, at)
 	case UseBoundedBacktracker:
 		return e.findIndicesBoundedBacktrackerAt(haystack, at)
+	case UseCharClassSearcher:
+		return e.findIndicesCharClassSearcherAt(haystack, at)
 	case UseTeddy:
 		return e.findIndicesTeddyAt(haystack, at)
 	default:
@@ -690,13 +742,16 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
 		return e.pikevm.Search(haystack)
 	}
 
-	// Use DFA search
+	// Use DFA search to check if there's a match
 	pos := e.dfa.Find(haystack)
 	if pos == -1 {
 		return -1, -1, false
 	}
 
-	// DFA returns end position, need NFA for start
+	// DFA found a match - use PikeVM for exact bounds (leftmost-first semantics)
+	// NOTE: Bidirectional search (reverse DFA) doesn't work correctly here because
+	// DFA.Find returns the END of LONGEST match, not FIRST match. For patterns like
+	// (?m)abc$ on "abc\nabc", DFA returns 7 but correct first match ends at 3.
 	return e.pikevm.Search(haystack)
 }
 
@@ -718,10 +773,13 @@ func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
 		return e.pikevm.SearchAt(haystack, at)
 	}
 
+	// Use DFA search to check if there's a match
 	pos := e.dfa.FindAt(haystack, at)
 	if pos == -1 {
 		return -1, -1, false
 	}
+
+	// DFA found a match - use PikeVM for exact bounds (leftmost-first semantics)
 	return e.pikevm.SearchAt(haystack, at)
 }
 
@@ -947,6 +1005,60 @@ func (e *Engine) findBoundedBacktracker(haystack []byte) *Match {
 func (e *Engine) findBoundedBacktrackerAt(haystack []byte, at int) *Match {
 	// For now, fall back to NFA for non-zero positions
 	return e.findNFAAt(haystack, at)
+}
+
+// findCharClassSearcher searches using specialized char_class+ searcher.
+// 14-17x faster than BoundedBacktracker for simple char_class+ patterns.
+func (e *Engine) findCharClassSearcher(haystack []byte) *Match {
+	if e.charClassSearcher == nil {
+		return e.findNFA(haystack)
+	}
+	e.stats.NFASearches++ // Count as NFA-family for stats
+	start, end, found := e.charClassSearcher.Search(haystack)
+	if !found {
+		return nil
+	}
+	return NewMatch(start, end, haystack)
+}
+
+// findCharClassSearcherAt searches using specialized char_class+ searcher at position.
+func (e *Engine) findCharClassSearcherAt(haystack []byte, at int) *Match {
+	if e.charClassSearcher == nil {
+		return e.findNFAAt(haystack, at)
+	}
+	e.stats.NFASearches++
+	start, end, found := e.charClassSearcher.SearchAt(haystack, at)
+	if !found {
+		return nil
+	}
+	return NewMatch(start, end, haystack)
+}
+
+// isMatchCharClassSearcher checks for match using specialized char_class+ searcher.
+func (e *Engine) isMatchCharClassSearcher(haystack []byte) bool {
+	if e.charClassSearcher == nil {
+		return e.isMatchNFA(haystack)
+	}
+	e.stats.NFASearches++
+	return e.charClassSearcher.IsMatch(haystack)
+}
+
+// findIndicesCharClassSearcher searches using char_class+ searcher - zero alloc.
+func (e *Engine) findIndicesCharClassSearcher(haystack []byte) (int, int, bool) {
+	if e.charClassSearcher == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	e.stats.NFASearches++
+	return e.charClassSearcher.Search(haystack)
+}
+
+// findIndicesCharClassSearcherAt searches using char_class+ searcher at position - zero alloc.
+func (e *Engine) findIndicesCharClassSearcherAt(haystack []byte, at int) (int, int, bool) {
+	if e.charClassSearcher == nil {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	e.stats.NFASearches++
+	return e.charClassSearcher.SearchAt(haystack, at)
 }
 
 // findTeddy searches using Teddy multi-pattern prefilter directly.
@@ -1412,22 +1524,40 @@ func (e *Engine) Count(haystack []byte, n int) int {
 
 	count := 0
 	pos := 0
+	lastNonEmptyEnd := -1
 
 	for pos <= len(haystack) {
-		// Search from current position
-		match := e.Find(haystack[pos:])
-		if match == nil {
+		// Use zero-allocation FindIndicesAt
+		start, end, found := e.FindIndicesAt(haystack, pos)
+		if !found {
 			break
+		}
+
+		// Skip empty matches at lastNonEmptyEnd (stdlib behavior)
+		//nolint:gocritic // badCond: intentional - checking empty match (start==end) at lastNonEmptyEnd
+		if start == end && start == lastNonEmptyEnd {
+			pos++
+			if pos > len(haystack) {
+				break
+			}
+			continue
 		}
 
 		count++
 
+		// Track non-empty match ends
+		if start != end {
+			lastNonEmptyEnd = end
+		}
+
 		// Move position past this match
-		end := match.End()
-		if end > 0 {
-			pos += end
-		} else {
+		switch {
+		case start == end:
 			// Empty match: advance by 1 to avoid infinite loop
+			pos = end + 1
+		case end > pos:
+			pos = end
+		default:
 			pos++
 		}
 

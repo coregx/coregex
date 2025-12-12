@@ -88,6 +88,9 @@ func (b *Builder) Build() (*DFA, error) {
 		freshStartStates[stateID] = true
 	}
 
+	// Check if the NFA contains word boundary assertions
+	hasWordBoundary := b.checkHasWordBoundary()
+
 	// Create DFA
 	dfa := &DFA{
 		nfa:              b.nfa,
@@ -100,6 +103,7 @@ func (b *Builder) Build() (*DFA, error) {
 		byteClasses:      b.nfa.ByteClasses(),
 		freshStartStates: freshStartStates,
 		unanchoredStart:  b.nfa.StartUnanchored(),
+		hasWordBoundary:  hasWordBoundary,
 	}
 
 	// Register start state in ID lookup map
@@ -700,4 +704,23 @@ func (b *Builder) DetectAcceleration(state *State) []byte {
 	}
 
 	return nil
+}
+
+// checkHasWordBoundary checks if the NFA contains any word boundary assertions (\b or \B).
+// This is used to skip expensive word boundary checks in the search loop when not needed.
+func (b *Builder) checkHasWordBoundary() bool {
+	numStates := b.nfa.States()
+	for i := nfa.StateID(0); int(i) < numStates; i++ {
+		state := b.nfa.State(i)
+		if state == nil {
+			continue
+		}
+		if state.Kind() == nfa.StateLook {
+			look, _ := state.Look()
+			if look == nfa.LookWordBoundary || look == nfa.LookNoWordBoundary {
+				return true
+			}
+		}
+	}
+	return false
 }

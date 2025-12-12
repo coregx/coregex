@@ -65,8 +65,9 @@ fi
 echo ""
 
 # 3. Code formatting check (EXACT CI command)
+# Exclude tmp/ (scratch files), docs/dev/reference/ (external reference code)
 log_info "Checking code formatting (gofmt -l .)..."
-UNFORMATTED=$(gofmt -l .)
+UNFORMATTED=$(find . -name "*.go" -not -path "./tmp/*" -not -path "./docs/dev/reference/*" -not -path "./vendor/*" | xargs gofmt -l 2>/dev/null || true)
 if [ -n "$UNFORMATTED" ]; then
     log_error "The following files need formatting:"
     echo "$UNFORMATTED"
@@ -78,9 +79,11 @@ else
 fi
 echo ""
 
-# 4. Go vet
+# 4. Go vet (exclude tmp/ - scratch files with conflicting packages)
 log_info "Running go vet..."
-if go vet ./... 2>&1; then
+# Explicitly list packages to avoid tmp/ conflict
+PACKAGES=". ./dfa/... ./internal/... ./literal/... ./meta/... ./nfa/... ./prefilter/... ./simd/..."
+if go vet $PACKAGES 2>&1; then
     log_success "go vet passed"
 else
     log_error "go vet failed"
@@ -88,9 +91,9 @@ else
 fi
 echo ""
 
-# 5. Build all packages
+# 5. Build all packages (exclude tmp/)
 log_info "Building all packages..."
-if go build ./... 2>&1; then
+if go build $PACKAGES 2>&1; then
     log_success "Build successful"
 else
     log_error "Build failed"
@@ -194,9 +197,11 @@ else
 fi
 
 log_info "Running tests..."
+# Explicitly list test packages to avoid tmp/ conflict
+TEST_PACKAGES=". ./dfa/... ./internal/... ./literal/... ./meta/... ./nfa/... ./prefilter/... ./simd/..."
 if [ $USE_WSL -eq 1 ]; then
     # WSL2: Use timeout (3 min) and unbuffered output with external linkmode for Gentoo
-    TEST_OUTPUT=$(wsl -d "$WSL_DISTRO" bash -c "cd $WSL_PATH && timeout 180 stdbuf -oL -eL go test -race -ldflags '-linkmode=external' ./... 2>&1" || true)
+    TEST_OUTPUT=$(wsl -d "$WSL_DISTRO" bash -c "cd $WSL_PATH && timeout 180 stdbuf -oL -eL go test -race -ldflags '-linkmode=external' $TEST_PACKAGES 2>&1" || true)
     if [ -z "$TEST_OUTPUT" ]; then
         log_error "WSL2 tests timed out or failed to run"
         ERRORS=$((ERRORS + 1))
@@ -212,9 +217,9 @@ if echo "$TEST_OUTPUT" | grep -q "hole in findfunctab\|build failed.*race"; then
     log_info "Falling back to tests without race detector..."
 
     if [ $USE_WSL -eq 1 ]; then
-        TEST_OUTPUT=$(wsl -d "$WSL_DISTRO" bash -c "cd \"$WSL_PATH\" && go test ./... 2>&1")
+        TEST_OUTPUT=$(wsl -d "$WSL_DISTRO" bash -c "cd \"$WSL_PATH\" && go test $TEST_PACKAGES 2>&1")
     else
-        TEST_OUTPUT=$(go test ./... 2>&1)
+        TEST_OUTPUT=$(go test $TEST_PACKAGES 2>&1)
     fi
 
     RACE_FLAG=""
@@ -253,7 +258,8 @@ echo ""
 # 8. Test coverage check
 log_info "Checking test coverage..."
 # Filter out "[no statements]" packages and get root package coverage
-COVERAGE=$(go test -cover ./... 2>&1 | grep "coverage:" | grep -v "\[no statements\]" | head -1 | awk '{print $5}' | sed 's/%//')
+# Use TEST_PACKAGES to exclude tmp/
+COVERAGE=$(go test -cover $TEST_PACKAGES 2>&1 | grep "coverage:" | grep -v "\[no statements\]" | head -1 | awk '{print $5}' | sed 's/%//')
 if [ -n "$COVERAGE" ]; then
     echo "  • overall coverage: ${COVERAGE}%"
     if awk -v cov="$COVERAGE" 'BEGIN {exit !(cov >= 70.0)}'; then
@@ -278,22 +284,29 @@ else
     WARNINGS=$((WARNINGS + 1))
 fi
 # Check for unexpected dependencies
-DEP_COUNT=$(grep -c "^\s*github.com/" go.mod || echo "0")
+DEP_COUNT=$(grep -c "^[[:space:]]*github.com/" go.mod 2>/dev/null) || DEP_COUNT=0
 if [ "$DEP_COUNT" -gt 0 ]; then
     log_warning "Found $DEP_COUNT external dependencies - coregex should be minimal"
-    grep "^\s*github.com/" go.mod || true
+    grep "^[[:space:]]*github.com/" go.mod || true
     WARNINGS=$((WARNINGS + 1))
 fi
 echo ""
 
-# 10. golangci-lint (same as CI)
+# 10. golangci-lint (same as CI, exclude tmp/)
 log_info "Running golangci-lint..."
 if command -v golangci-lint &> /dev/null; then
-    if golangci-lint run --timeout=5m ./... 2>&1 | tail -5 | grep -q "0 issues"; then
+    # Run only on explicitly listed packages to avoid tmp/ conflicts
+    # Use timeout command to prevent hanging
+    if command -v timeout &> /dev/null; then
+        LINT_OUTPUT=$(timeout 180 golangci-lint run --timeout=2m $PACKAGES 2>&1)
+    else
+        LINT_OUTPUT=$(golangci-lint run --timeout=2m $PACKAGES 2>&1)
+    fi
+    if echo "$LINT_OUTPUT" | grep -q "0 issues"; then
         log_success "golangci-lint passed with 0 issues"
     else
         log_error "Linter found issues"
-        golangci-lint run --timeout=5m ./... 2>&1 | tail -10
+        echo "$LINT_OUTPUT" | grep -v "^level=error.*tmp" | tail -10
         ERRORS=$((ERRORS + 1))
     fi
 else
@@ -303,12 +316,13 @@ else
 fi
 echo ""
 
-# 11. Check for TODO/FIXME comments
+# 11. Check for TODO/FIXME comments (exclude tmp/, docs/dev/reference)
 log_info "Checking for TODO/FIXME comments..."
-TODO_COUNT=$(grep -r "TODO\|FIXME" --include="*.go" --exclude-dir=vendor . 2>/dev/null | wc -l)
+TODO_COUNT=$(grep -r "TODO\|FIXME" --include="*.go" --exclude-dir=vendor --exclude-dir=tmp --exclude-dir=reference . 2>/dev/null | wc -l)
+TODO_COUNT=${TODO_COUNT:-0}
 if [ "$TODO_COUNT" -gt 0 ]; then
     log_warning "Found $TODO_COUNT TODO/FIXME comments"
-    grep -r "TODO\|FIXME" --include="*.go" --exclude-dir=vendor . 2>/dev/null | head -5
+    grep -r "TODO\|FIXME" --include="*.go" --exclude-dir=vendor --exclude-dir=tmp --exclude-dir=reference . 2>/dev/null | head -5
     WARNINGS=$((WARNINGS + 1))
 else
     log_success "No TODO/FIXME comments found"

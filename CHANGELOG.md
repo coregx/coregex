@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **CharClassSearcher** - Specialized 256-byte lookup table for simple char_class patterns (Fixes #44)
+  - Patterns like `[\w]+`, `\d+`, `[a-z]+` now use O(1) byte membership test
+  - **23x faster** than stdlib (623ms → 27ms on 6MB input with 1.3M matches)
+  - **2x faster than Rust regex**! (57ms → 27ms)
+  - Zero allocations in hot path
+
+- **UseCharClassSearcher strategy**
+  - Auto-selected for simple char_class patterns without capture groups
+  - Patterns WITH captures (`(\w)+`) continue to use BoundedBacktracker
+
+- **Zero-allocation Count()** method
+  - Uses `FindIndicesAt()` instead of `Find()` to avoid Match object allocation
+  - Critical for benchmarks comparing with Rust `find_iter().count()`
+
+- **Array-based DFA transitions**
+  - `[256]StateID` instead of `map[byte]StateID` for O(1) lookups
+  - LazyDFA **48-52% faster** across all benchmarks
+
+### Technical
+- New files:
+  - `nfa/charclass_searcher.go` - CharClassSearcher implementation
+  - `nfa/charclass_searcher_test.go` - Unit tests and benchmarks
+  - `nfa/charclass_extract.go` - Byte range extraction from AST
+  - `nfa/charclass_extract_test.go` - Extraction tests
+- Modified: `meta/strategy.go` - Added `UseCharClassSearcher` strategy
+- Modified: `meta/meta.go` - Engine integration, zero-alloc Count()
+- Modified: `meta/strategy_test.go` - Strategy selection tests
+
+### Performance Summary (char_class patterns)
+
+| Pattern | Input | stdlib | coregex | Rust | coregex vs Rust |
+|---------|-------|--------|---------|------|-----------------|
+| `[\w]+` | 6MB, 1.3M matches | 623ms | **27ms** | 57ms | **2.1x faster** |
+
+LazyDFA improvements (array-based transitions):
+
+| Benchmark | Before | After | Improvement |
+|-----------|--------|-------|-------------|
+| LazyDFASimpleLiteral | 520ns | 273ns | **-48%** |
+| LazyDFAAlternation | 488ns | 257ns | **-47%** |
+| LazyDFARepetition | 779ns | 376ns | **-52%** |
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)

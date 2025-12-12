@@ -81,6 +81,10 @@ type DFA struct {
 
 	// unanchoredStart caches the unanchored start state ID for hasInProgressPattern
 	unanchoredStart nfa.StateID
+
+	// hasWordBoundary is true if the pattern contains \b or \B assertions.
+	// When false, we can skip expensive word boundary checks in the search loop.
+	hasWordBoundary bool
 }
 
 // hasInProgressPattern checks if any pattern threads are still active (could extend the match).
@@ -463,7 +467,8 @@ func (d *DFA) findWithPrefilterAt(haystack []byte, startAt int) int {
 		// Check if word boundary would result in a match BEFORE consuming the byte.
 		// This handles patterns like `test\b` where after matching "test",
 		// the next byte '!' creates a word boundary that satisfies \b.
-		if d.checkWordBoundaryMatch(currentState, b) {
+		// Skip this expensive check for patterns without word boundaries.
+		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
 			return pos // Return current position as match end
 		}
 
@@ -620,7 +625,8 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 		// Check if word boundary would result in a match BEFORE consuming the byte.
 		// This handles patterns like `test\b` where after matching "test",
 		// the next byte '!' creates a word boundary that satisfies \b.
-		if d.checkWordBoundaryMatch(currentState, b) {
+		// Skip this expensive check for patterns without word boundaries.
+		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
 			return pos // Return current position as match end
 		}
 

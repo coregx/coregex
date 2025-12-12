@@ -63,22 +63,25 @@ func TestIsSimpleCharClass(t *testing.T) {
 	}
 }
 
-// TestCaptureGroupStrategySelection verifies that patterns with capture groups
-// around character classes correctly select UseBoundedBacktracker.
+// TestCaptureGroupStrategySelection verifies strategy selection for character class patterns.
+// - Patterns WITH capture groups use UseBoundedBacktracker (3-7x faster than PikeVM)
+// - Patterns WITHOUT captures use UseCharClassSearcher (14-17x faster than BoundedBacktracker)
 func TestCaptureGroupStrategySelection(t *testing.T) {
 	tests := []struct {
 		pattern string
 		want    Strategy
 	}{
-		// Should use BoundedBacktracker (3-7x faster than PikeVM)
+		// WITH capture groups: use BoundedBacktracker (3-7x faster than PikeVM)
 		{"(a|b|c)+", UseBoundedBacktracker},
 		{"([0-9])+", UseBoundedBacktracker},
 		{"([a-z])*", UseBoundedBacktracker},
 		{"(\\d)+", UseBoundedBacktracker},
 
-		// Without capture should also use BoundedBacktracker
-		{"[abc]+", UseBoundedBacktracker},
-		{"[0-9]+", UseBoundedBacktracker},
+		// WITHOUT capture groups: use CharClassSearcher (14-17x faster than BoundedBacktracker!)
+		{"[abc]+", UseCharClassSearcher},
+		{"[0-9]+", UseCharClassSearcher},
+		{"[\\w]+", UseCharClassSearcher},
+		{"[a-z]+", UseCharClassSearcher},
 
 		// These should NOT use BoundedBacktracker (multi-char alternations)
 		// Note: actual strategy depends on NFA size, but definitely not BoundedBacktracker
