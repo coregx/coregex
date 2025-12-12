@@ -57,6 +57,9 @@ run_benchmarks() {
     # Prefilter benchmarks
     go test -bench=. -benchmem -count="$BENCH_COUNT" -benchtime=100ms ./prefilter/... 2>/dev/null >> "$output_file" || true
 
+    # Root package benchmarks (regex_test.go - public API)
+    go test -bench=. -benchmem -count="$BENCH_COUNT" -benchtime=100ms . 2>/dev/null >> "$output_file" || true
+
     echo -e "${GREEN}Saved to: ${output_file}${NC}"
     echo ""
 }
