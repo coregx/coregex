@@ -272,6 +272,47 @@ func isSimpleCharClass(re *syntax.Regexp) bool {
 	return false
 }
 
+// literalAnalysis contains the results of analyzing literals for strategy selection.
+type literalAnalysis struct {
+	hasGoodLiterals  bool // Good prefix literal (LCP >= MinLiteralLen)
+	hasTeddyLiterals bool // Suitable for Teddy (2-8 patterns, each >= 3 bytes)
+}
+
+// analyzeLiterals checks if literals are suitable for prefiltering.
+// This is a helper function to reduce cyclomatic complexity in SelectStrategy.
+func analyzeLiterals(literals *literal.Seq, config Config) literalAnalysis {
+	result := literalAnalysis{}
+
+	if literals == nil || literals.IsEmpty() {
+		return result
+	}
+
+	// Check longest common prefix (for single-literal prefilter like Memmem)
+	lcp := literals.LongestCommonPrefix()
+	if len(lcp) >= config.MinLiteralLen {
+		result.hasGoodLiterals = true
+	}
+
+	// Check for Teddy prefilter suitability (2-8 literals, each >= 3 bytes)
+	// Teddy doesn't need common prefix - it can search for multiple distinct literals.
+	// This enables fast alternation pattern matching: (foo|bar|baz|qux)
+	litCount := literals.Len()
+	if litCount >= 2 && litCount <= 8 {
+		allLongEnough := true
+		for i := 0; i < litCount; i++ {
+			if len(literals.Get(i).Bytes) < 3 {
+				allLongEnough = false
+				break
+			}
+		}
+		if allLongEnough {
+			result.hasTeddyLiterals = true
+		}
+	}
+
+	return result
+}
+
 // SelectStrategy analyzes the NFA and literals to choose the best execution strategy.
 //
 // Algorithm:
@@ -322,19 +363,11 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	isEndAnchored := re != nil && nfa.IsPatternEndAnchored(re)
 	hasStartAnchor := re != nil && nfa.IsPatternStartAnchored(re)
 
-	if re != nil && config.EnableDFA {
-		// Only use reverse search if:
-		// 1. Pattern is end-anchored ($)
-		// 2. Pattern is NOT fully start-anchored (not always starting at position 0)
-		// 3. Pattern does NOT contain any start anchor (^ or \A) - this catches
-		//    alternations like `^a?$|^b?$` where IsAlwaysAnchored() returns false
-		//    but the pattern still has start anchors that need proper handling
-		if isEndAnchored && !isStartAnchored && !hasStartAnchor {
-			// Perfect candidate for reverse search
-			// Example: "pattern.*suffix$" on large haystack
-			// Forward: O(n*m) tries, Reverse: O(m) one try
-			return UseReverseAnchored
-		}
+	if re != nil && config.EnableDFA && isEndAnchored && !isStartAnchored && !hasStartAnchor {
+		// Perfect candidate for reverse search
+		// Example: "pattern.*suffix$" on large haystack
+		// Forward: O(n*m) tries, Reverse: O(m) one try
+		return UseReverseAnchored
 	}
 
 	// Check for inner/suffix literal optimizations (second priority)
@@ -348,41 +381,14 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseNFA
 	}
 
-	// Analyze NFA size
+	// Analyze NFA size and literals
 	nfaSize := n.States()
-
-	// Check if we have good literals for prefiltering
-	hasGoodLiterals := false
-	hasTeddyLiterals := false
-	if literals != nil && !literals.IsEmpty() {
-		// Check longest common prefix (for single-literal prefilter like Memmem)
-		lcp := literals.LongestCommonPrefix()
-		if len(lcp) >= config.MinLiteralLen {
-			hasGoodLiterals = true
-		}
-
-		// Check for Teddy prefilter suitability (2-8 literals, each >= 3 bytes)
-		// Teddy doesn't need common prefix - it can search for multiple distinct literals.
-		// This enables fast alternation pattern matching: (foo|bar|baz|qux)
-		litCount := literals.Len()
-		if litCount >= 2 && litCount <= 8 {
-			allLongEnough := true
-			for i := 0; i < litCount; i++ {
-				if len(literals.Get(i).Bytes) < 3 {
-					allLongEnough = false
-					break
-				}
-			}
-			if allLongEnough {
-				hasTeddyLiterals = true
-			}
-		}
-	}
+	litAnalysis := analyzeLiterals(literals, config)
 
 	// Check for simple character class patterns without literals
 	// Patterns like [0-9]+, \d+, \w+ benefit from BoundedBacktracker:
 	// 2-4x faster than PikeVM due to bit-vector visited tracking instead of SparseSet.
-	if !hasGoodLiterals && !hasTeddyLiterals && isSimpleCharClass(re) {
+	if !litAnalysis.hasGoodLiterals && !litAnalysis.hasTeddyLiterals && isSimpleCharClass(re) {
 		return UseBoundedBacktracker
 	}
 
@@ -391,7 +397,7 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	// DFA verification - Teddy.Find() returns exact matches.
 	// This is the "literal engine bypass" optimization from Rust regex.
 	// Speedup: 50-250x by skipping all DFA/NFA construction overhead.
-	if hasTeddyLiterals && literals.AllComplete() {
+	if litAnalysis.hasTeddyLiterals && literals.AllComplete() {
 		return UseTeddy
 	}
 
@@ -402,7 +408,7 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	// This is fast even for tiny NFAs because prefilter does the heavy lifting.
 	// Also covers Teddy multi-pattern prefilter for alternation patterns where
 	// literals are not complete (e.g., "(foo|bar)\d+" needs DFA verification).
-	if hasGoodLiterals || hasTeddyLiterals {
+	if litAnalysis.hasGoodLiterals || litAnalysis.hasTeddyLiterals {
 		return UseDFA
 	}
 
