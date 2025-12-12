@@ -256,9 +256,12 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 	innerInfo := extractor.ExtractInnerForReverseSearch(re)
 	if innerInfo != nil {
 		lcp := innerInfo.Literals.LongestCommonPrefix()
-		// Quality threshold: minimum 3 bytes (following rust-regex's is_fast() logic)
-		if len(lcp) >= 3 {
-			return UseReverseInner // High-quality inner literal available
+		// Single-character inner literals like "@" can be effective for email patterns
+		// because: (1) Match() is fast with memchr prefilter, (2) Find() uses
+		// early return optimization. ReverseInner detects quadratic behavior
+		// and falls back to Core when needed.
+		if len(lcp) >= 1 {
+			return UseReverseInner // Inner literal available - use ReverseInner
 		}
 	}
 

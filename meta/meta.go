@@ -174,7 +174,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		})
 		literals = extractor.ExtractPrefixes(re)
 
-		// Build prefilter from literals
+		// Build prefilter from prefix literals
 		if literals != nil && !literals.IsEmpty() {
 			builder := prefilter.NewBuilder(literals, nil)
 			pf = builder.Build()
@@ -649,6 +649,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesReverseSuffixAt(haystack, at)
 	case UseReverseSuffixSet:
 		return e.findIndicesReverseSuffixSetAt(haystack, at)
+	case UseReverseInner:
+		return e.findIndicesReverseInnerAt(haystack, at)
 	case UseBoundedBacktracker:
 		return e.findIndicesBoundedBacktrackerAt(haystack, at)
 	case UseTeddy:
@@ -890,6 +892,15 @@ func (e *Engine) findIndicesReverseInner(haystack []byte) (int, int, bool) {
 		return -1, -1, false
 	}
 	return match.Start(), match.End(), true
+}
+
+// findIndicesReverseInnerAt searches using reverse inner optimization from position - zero alloc.
+func (e *Engine) findIndicesReverseInnerAt(haystack []byte, at int) (int, int, bool) {
+	if e.reverseInnerSearcher == nil {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	e.stats.DFASearches++
+	return e.reverseInnerSearcher.FindIndicesAt(haystack, at)
 }
 
 // findIndicesBoundedBacktracker searches using bounded backtracker - zero alloc.
