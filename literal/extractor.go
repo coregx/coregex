@@ -119,6 +119,8 @@ func (e *Extractor) ExtractPrefixes(re *syntax.Regexp) *Seq {
 
 // extractPrefixes is the internal recursive implementation.
 // The depth parameter prevents infinite recursion on malformed patterns.
+//
+//nolint:cyclop // Complexity is inherent to handling all regex AST node types in switch
 func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 	// Guard against excessive recursion (malformed or deeply nested patterns)
 	if depth > 100 {
@@ -161,9 +163,20 @@ func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 		// Get prefixes from first non-anchor part
 		firstPrefixes := e.extractPrefixes(re.Sub[startIdx], depth+1)
 
-		// If first part has complete literals, they're not prefixes of the full pattern
-		// Mark them as incomplete since more follows
+		// Special case: Literal + CharClass expansion
+		// When regex parser optimizes "bar|baz" to "ba[rz]", we need to expand it back
+		// to ["bar", "baz"] for Teddy prefilter to work effectively.
 		if firstPrefixes.Len() > 0 && startIdx+1 < len(re.Sub) {
+			nextSub := re.Sub[startIdx+1]
+			if nextSub.Op == syntax.OpCharClass {
+				// Try to expand Literal + CharClass into multiple complete literals
+				expanded := e.expandLiteralCharClass(firstPrefixes, nextSub, startIdx+2 < len(re.Sub))
+				if expanded != nil && !expanded.IsEmpty() {
+					return expanded
+				}
+			}
+
+			// Default: mark as incomplete since more follows
 			lits := make([]Literal, firstPrefixes.Len())
 			for i := 0; i < firstPrefixes.Len(); i++ {
 				lit := firstPrefixes.Get(i)
@@ -431,6 +444,69 @@ func (e *Extractor) extractInner(re *syntax.Regexp, depth int) *Seq {
 // MaxClassSize, returning an empty Seq instead.
 //
 // Algorithm:
+// expandLiteralCharClass expands a combination of prefix literals and a CharClass
+// into multiple complete literals.
+//
+// This handles the case where the regex parser optimizes "bar|baz" to "ba[rz]".
+// We expand it back to ["bar", "baz"] for effective Teddy prefilter matching.
+//
+// Parameters:
+//   - prefixes: the literal prefixes (e.g., ["ba"])
+//   - charClass: the character class regex node (e.g., [rz])
+//   - hasMore: true if there are more elements after the CharClass
+//
+// Returns nil if expansion is not possible or would exceed limits.
+func (e *Extractor) expandLiteralCharClass(prefixes *Seq, charClass *syntax.Regexp, hasMore bool) *Seq {
+	if charClass.Op != syntax.OpCharClass {
+		return nil
+	}
+
+	// Count characters in the class
+	classSize := 0
+	for i := 0; i < len(charClass.Rune); i += 2 {
+		lo, hi := charClass.Rune[i], charClass.Rune[i+1]
+		classSize += int(hi - lo + 1)
+		if classSize > e.config.MaxClassSize {
+			return nil // Class too large
+		}
+	}
+
+	// Calculate total number of expanded literals
+	totalLits := prefixes.Len() * classSize
+	if totalLits > e.config.MaxLiterals {
+		return nil // Would exceed limit
+	}
+
+	// Expand: each prefix combined with each char class character
+	var lits []Literal
+	for i := 0; i < prefixes.Len(); i++ {
+		prefix := prefixes.Get(i)
+		for j := 0; j < len(charClass.Rune); j += 2 {
+			lo, hi := charClass.Rune[j], charClass.Rune[j+1]
+			for r := lo; r <= hi; r++ {
+				// Combine prefix + char
+				combined := make([]byte, len(prefix.Bytes)+len(string(r)))
+				copy(combined, prefix.Bytes)
+				copy(combined[len(prefix.Bytes):], string(r))
+
+				// Truncate if needed
+				if len(combined) > e.config.MaxLiteralLen {
+					combined = combined[:e.config.MaxLiteralLen]
+				}
+
+				// Mark as incomplete if more elements follow
+				lits = append(lits, NewLiteral(combined, !hasMore))
+
+				if len(lits) >= e.config.MaxLiterals {
+					return NewSeq(lits...)
+				}
+			}
+		}
+	}
+
+	return NewSeq(lits...)
+}
+
 //  1. Count total runes in the character class
 //  2. If count > MaxClassSize, return empty (too large)
 //  3. Otherwise, iterate through rune ranges and create a literal for each

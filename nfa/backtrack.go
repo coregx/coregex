@@ -1,8 +1,8 @@
 package nfa
 
 // BoundedBacktracker implements a bounded backtracking regex matcher.
-// It uses a bit vector to track visited (state, position) pairs, providing
-// O(1) lookup with low constant overhead - faster than SparseSet for small inputs.
+// It uses a generation-based visited tracking for (state, position) pairs,
+// providing O(1) reset between search attempts instead of O(n) clearing.
 //
 // This engine is selected when:
 //   - len(haystack) * nfa.States() <= maxVisitedSize (default 256KB)
@@ -13,10 +13,14 @@ package nfa
 type BoundedBacktracker struct {
 	nfa *NFA
 
-	// visited is a bit vector tracking (state, position) pairs.
-	// Layout: bit at index (state * (inputLen+1) + pos) indicates visited.
-	// Using []uint64 for efficient 64-bit operations.
-	visited []uint64
+	// visited stores generation numbers for (state, position) pairs.
+	// Layout: visited[state * (inputLen+1) + pos] = generation when visited.
+	// Using generation counter enables O(1) reset instead of O(n) clearing.
+	visited []uint32
+
+	// generation is incremented for each new search attempt.
+	// A position is considered visited if visited[idx] == generation.
+	generation uint32
 
 	// inputLen is cached for index calculations
 	inputLen int
@@ -24,8 +28,8 @@ type BoundedBacktracker struct {
 	// numStates is cached for bounds checking
 	numStates int
 
-	// maxVisitedSize limits memory usage (in bits)
-	// Default: 256 * 1024 * 8 = 2M bits = 256KB
+	// maxVisitedSize limits memory usage (in entries, not bits)
+	// Default: 256 * 1024 = 256K entries = 1MB
 	maxVisitedSize int
 }
 
@@ -34,35 +38,41 @@ func NewBoundedBacktracker(nfa *NFA) *BoundedBacktracker {
 	return &BoundedBacktracker{
 		nfa:            nfa,
 		numStates:      nfa.States(),
-		maxVisitedSize: 256 * 1024 * 8, // 256KB = 2M bits
+		maxVisitedSize: 256 * 1024, // 256K entries = 1MB (4 bytes per entry)
 	}
 }
 
 // CanHandle returns true if this engine can handle the given input size.
-// Returns false if the visited bit vector would exceed maxVisitedSize.
+// Returns false if the visited array would exceed maxVisitedSize entries.
 func (b *BoundedBacktracker) CanHandle(haystackLen int) bool {
-	// Need (numStates * (haystackLen + 1)) bits
-	bitsNeeded := b.numStates * (haystackLen + 1)
-	return bitsNeeded <= b.maxVisitedSize
+	// Need (numStates * (haystackLen + 1)) entries
+	entriesNeeded := b.numStates * (haystackLen + 1)
+	return entriesNeeded <= b.maxVisitedSize
 }
 
 // reset prepares the backtracker for a new search.
 func (b *BoundedBacktracker) reset(haystackLen int) {
 	b.inputLen = haystackLen
 
-	// Calculate required size in uint64 words
-	bitsNeeded := b.numStates * (haystackLen + 1)
-	wordsNeeded := (bitsNeeded + 63) / 64
+	// Calculate required size in entries
+	entriesNeeded := b.numStates * (haystackLen + 1)
 
 	// Reuse or allocate visited array
-	if cap(b.visited) >= wordsNeeded {
-		b.visited = b.visited[:wordsNeeded]
-		// Clear the bit vector
+	if cap(b.visited) >= entriesNeeded {
+		b.visited = b.visited[:entriesNeeded]
+	} else {
+		b.visited = make([]uint32, entriesNeeded)
+		b.generation = 0 // New array starts fresh
+	}
+
+	// Increment generation for fresh visited state (O(1) instead of O(n) clear)
+	b.generation++
+	// Handle overflow by clearing array (rare, ~4B calls)
+	if b.generation == 0 {
 		for i := range b.visited {
 			b.visited[i] = 0
 		}
-	} else {
-		b.visited = make([]uint64, wordsNeeded)
+		b.generation = 1
 	}
 }
 
@@ -70,18 +80,14 @@ func (b *BoundedBacktracker) reset(haystackLen int) {
 // Returns true if we should visit (not yet visited), false if already visited.
 // This is the hot path - must be as fast as possible.
 func (b *BoundedBacktracker) shouldVisit(state StateID, pos int) bool {
-	// Calculate bit index: state * (inputLen + 1) + pos
+	// Calculate index: state * (inputLen + 1) + pos
 	idx := int(state)*(b.inputLen+1) + pos
 
-	// Word and bit position
-	word := idx / 64
-	bit := uint64(1) << (idx % 64)
-
-	// Check and set atomically (single operation pattern)
-	if b.visited[word]&bit != 0 {
+	// Check if visited in current generation
+	if b.visited[idx] == b.generation {
 		return false // Already visited
 	}
-	b.visited[word] |= bit
+	b.visited[idx] = b.generation
 	return true
 }
 
@@ -127,10 +133,15 @@ func (b *BoundedBacktracker) Search(haystack []byte) (int, int, bool) {
 		if end := b.backtrackFind(haystack, startPos, b.nfa.StartAnchored()); end >= 0 {
 			return startPos, end, true
 		}
-		// Clear visited for next start position attempt
-		// This is necessary because we need fresh visited state for each start
-		for i := range b.visited {
-			b.visited[i] = 0
+		// O(1) reset: increment generation instead of O(n) array clear
+		// This is the key optimization that makes Search fast on large inputs
+		b.generation++
+		// Handle overflow by resetting the array (rare, ~4B searches)
+		if b.generation == 0 {
+			for i := range b.visited {
+				b.visited[i] = 0
+			}
+			b.generation = 1
 		}
 	}
 	return -1, -1, false

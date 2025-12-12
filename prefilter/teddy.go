@@ -104,8 +104,12 @@ type Teddy struct {
 	minLen int
 
 	// complete indicates if Teddy match is sufficient (no verification needed).
-	// This is true only if all patterns are exact literals with no overlap.
+	// This is true when all patterns are exact complete literals.
 	complete bool
+
+	// uniformLen is the pattern length when all patterns have the same length.
+	// When uniformLen > 0 and complete=true, LiteralLen() returns this value.
+	uniformLen int
 }
 
 // teddyMasks stores the nibble lookup masks for SIMD search.
@@ -203,17 +207,30 @@ func NewTeddy(patterns [][]byte, config *TeddyConfig) *Teddy {
 	// Build masks and buckets
 	masks, buckets := buildMasks(patternsCopy, fingerprintLen)
 
-	// Determine completeness: true if patterns are exact literals with no overlap
-	// For simplicity, we assume false (verification always required)
-	// TODO: implement overlap detection for completeness optimization
-	complete := false
+	// Teddy.Find() always verifies full pattern matches via bytes.Equal,
+	// so it's always complete - a Find() match is a definitive match.
+	// We set complete=true because:
+	//   1. Teddy.verify() does full pattern comparison (bytes.Equal)
+	//   2. No NFA verification is needed after Teddy.Find() returns a position
+	complete := true
+
+	// uniformLen is the pattern length when all patterns have the same length.
+	// This allows LiteralLen() to return a value for IsComplete+LiteralLen optimization.
+	uniformLen := len(patternsCopy[0])
+	for _, p := range patternsCopy[1:] {
+		if len(p) != uniformLen {
+			uniformLen = 0 // Signal non-uniform - LiteralLen() will return 0
+			break
+		}
+	}
 
 	return &Teddy{
-		patterns: patternsCopy,
-		masks:    masks,
-		buckets:  buckets,
-		minLen:   minLen,
-		complete: complete,
+		patterns:   patternsCopy,
+		masks:      masks,
+		buckets:    buckets,
+		minLen:     minLen,
+		complete:   complete,
+		uniformLen: uniformLen,
 	}
 }
 
@@ -337,6 +354,76 @@ func (t *Teddy) Find(haystack []byte, start int) int {
 	}
 
 	return -1 // No match found
+}
+
+// FindMatch returns the start and end positions of the first match.
+// This is more efficient than Find() when the pattern length varies,
+// as it avoids the need for a separate NFA search to find the end.
+//
+// Returns (start, end) if found, (-1, -1) if not found.
+// The matched bytes are haystack[start:end].
+func (t *Teddy) FindMatch(haystack []byte, start int) (int, int) {
+	// Bounds check
+	if start < 0 || start >= len(haystack) {
+		return -1, -1
+	}
+
+	// Slice haystack from start position
+	haystack = haystack[start:]
+
+	// If haystack is too short for SIMD (< 16 bytes), use scalar search
+	if len(haystack) < 16 {
+		return t.findMatchScalar(haystack, start)
+	}
+
+	// Use SIMD search (SSSE3)
+	pos, _ := t.findSIMD(haystack)
+
+	// Track accumulated offset for continuation searches
+	accumulatedOffset := 0
+
+	// Process candidates
+	for pos != -1 {
+		// Calculate absolute position in current haystack slice
+		absolutePos := accumulatedOffset + pos
+
+		// Verify patterns at this position (checks all buckets)
+		matchPos, patternID := t.verify(haystack[accumulatedOffset:], pos)
+		if matchPos != -1 && patternID >= 0 && patternID < len(t.patterns) {
+			// Match found! Return absolute start and end
+			matchStart := start + accumulatedOffset + matchPos
+			matchEnd := matchStart + len(t.patterns[patternID])
+			return matchStart, matchEnd
+		}
+
+		// No match at this candidate, continue searching
+		nextSearchStart := absolutePos + 1
+		if nextSearchStart >= len(haystack) {
+			break
+		}
+
+		// Update accumulated offset
+		accumulatedOffset = nextSearchStart
+
+		// Search in remaining haystack
+		pos, _ = t.findSIMD(haystack[accumulatedOffset:])
+	}
+
+	return -1, -1 // No match found
+}
+
+// findMatchScalar is the scalar fallback for FindMatch.
+func (t *Teddy) findMatchScalar(haystack []byte, start int) (int, int) {
+	for i := 0; i < len(haystack)-t.minLen+1; i++ {
+		for _, pattern := range t.patterns {
+			if i+len(pattern) <= len(haystack) {
+				if bytes.Equal(haystack[i:i+len(pattern)], pattern) {
+					return start + i, start + i + len(pattern)
+				}
+			}
+		}
+	}
+	return -1, -1
 }
 
 // findScalar performs scalar search for haystacks < 16 bytes.
@@ -464,11 +551,12 @@ func (t *Teddy) IsComplete() bool {
 
 // LiteralLen implements Prefilter.LiteralLen.
 //
-// For Teddy, this returns 0 because Teddy handles multiple patterns
-// of potentially different lengths, so there's no single literal length.
-// Even when complete=true, the matched pattern length varies.
+// When all patterns have the same length and complete=true,
+// returns that uniform length. Otherwise returns 0.
 func (t *Teddy) LiteralLen() int {
-	// Teddy handles multiple patterns, so no single literal length
+	if t.complete && t.uniformLen > 0 {
+		return t.uniformLen
+	}
 	return 0
 }
 

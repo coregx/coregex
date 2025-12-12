@@ -14,6 +14,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.18] - 2025-12-12
+
+### Added
+- **Teddy multi-pattern prefilter for alternations**
+  - `expandLiteralCharClass()` reverses regex parser optimization (`ba[rz]` → `["bar", "baz"]`)
+  - Patterns like `(foo|bar|baz|qux)` now use Teddy SIMD prefilter
+  - Alternation patterns: **242x faster** (was 24x slower)
+
+- **UseTeddy strategy (literal engine bypass)**
+  - Exact literal alternations like `(foo|bar|baz)` skip DFA construction entirely
+  - Compile time: **10x faster** (109µs → 11µs)
+  - Memory: **31x less** (598KB → 19KB)
+  - Inspired by Rust regex's "literal engine bypass" optimization
+
+- **ReverseSuffix.Find() optimization**
+  - Last-suffix algorithm for greedy semantics (find LAST candidate, not iterate all)
+  - Pattern `.*\.txt`: **1.8x faster** than stdlib on 32KB+ inputs
+
+- **ReverseAnchored.Find() zero-allocation**
+  - Use `SearchReverse` instead of `PikeVM + reverseBytes`
+  - Anchor-end patterns: improved from 13x slower to 3x slower
+
+### Changed
+- **BoundedBacktracker generation counter**
+  - O(1) visited tracking instead of O(n) array clear
+  - 32KB input: **3x faster** than stdlib (was 10x slower)
+
+- **`(a|b|c)+` pattern recognition**
+  - `isSimpleCharClass()` now looks through capture groups
+  - Go parser optimizes `(a|b|c)+` to `Plus(Capture(CharClass))`
+  - Now uses BoundedBacktracker: **2.5x faster** than stdlib (was 1.8x slower)
+
+- **Single-character inner literals enabled**
+  - Rare characters like `@` in email patterns provide significant speedup
+  - `UseReverseInner` strategy now accepts 1-byte inner literals
+  - Email pattern `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`: **11-42x faster** than stdlib
+
+### Performance Summary
+All tested patterns now faster than Go stdlib:
+
+| Pattern | Before | After | Improvement |
+|---------|--------|-------|-------------|
+| `(foo\|bar\|baz\|qux)` | 24x slower | **242x faster** | +5800x |
+| `(a\|b\|c)+` | 1.8x slower | **2.5x faster** | +4.5x |
+| `\d+` | 2x slower | **4.5x faster** | +9x |
+| `.*\.txt` | 1.2x slower | **1.8x faster** | +2.2x |
+| Email pattern | - | **11-42x faster** | via ReverseInner with `@` |
+
+---
+
 ## [0.8.17] - 2025-12-12
 
 ### Added

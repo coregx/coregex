@@ -356,6 +356,8 @@ func (e *Engine) FindAt(haystack []byte, at int) *Match {
 			return e.findReverseInner(haystack)
 		case UseBoundedBacktracker:
 			return e.findBoundedBacktracker(haystack)
+		case UseTeddy:
+			return e.findTeddy(haystack)
 		default:
 			return e.findNFA(haystack)
 		}
@@ -375,6 +377,8 @@ func (e *Engine) FindAt(haystack []byte, at int) *Match {
 		return e.findNFAAt(haystack, at)
 	case UseBoundedBacktracker:
 		return e.findBoundedBacktrackerAt(haystack, at)
+	case UseTeddy:
+		return e.findTeddyAt(haystack, at)
 	default:
 		return e.findNFAAt(haystack, at)
 	}
@@ -409,6 +413,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchReverseInner(haystack)
 	case UseBoundedBacktracker:
 		return e.isMatchBoundedBacktracker(haystack)
+	case UseTeddy:
+		return e.isMatchTeddy(haystack)
 	default:
 		return e.isMatchNFA(haystack)
 	}
@@ -430,8 +436,24 @@ func (e *Engine) isMatchDFA(haystack []byte) bool {
 	return e.dfa.IsMatch(haystack)
 }
 
-// isMatchAdaptive tries DFA first, falls back to NFA.
+// isMatchAdaptive tries prefilter/DFA first, falls back to NFA.
 func (e *Engine) isMatchAdaptive(haystack []byte) bool {
+	// Use prefilter if available for fast boolean matching
+	if e.prefilter != nil {
+		pos := e.prefilter.Find(haystack, 0)
+		if pos == -1 {
+			return false // Prefilter says no match
+		}
+		e.stats.PrefilterHits++
+		// For complete prefilters (Teddy with literals), the find is sufficient
+		if e.prefilter.IsComplete() {
+			return true
+		}
+		// Verify with NFA for incomplete prefilters
+		return e.isMatchNFA(haystack)
+	}
+
+	// Fall back to DFA
 	if e.dfa != nil {
 		e.stats.DFASearches++
 		if e.dfa.IsMatch(haystack) {
@@ -580,6 +602,8 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesReverseInner(haystack)
 	case UseBoundedBacktracker:
 		return e.findIndicesBoundedBacktracker(haystack)
+	case UseTeddy:
+		return e.findIndicesTeddy(haystack)
 	default:
 		return e.findIndicesNFA(haystack)
 	}
@@ -597,6 +621,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesAdaptiveAt(haystack, at)
 	case UseBoundedBacktracker:
 		return e.findIndicesBoundedBacktrackerAt(haystack, at)
+	case UseTeddy:
+		return e.findIndicesTeddyAt(haystack, at)
 	default:
 		return e.findIndicesNFAAt(haystack, at)
 	}
@@ -667,13 +693,53 @@ func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
 	return e.pikevm.SearchAt(haystack, at)
 }
 
-// findIndicesAdaptive tries DFA first, falls back to NFA - zero alloc.
+// findIndicesAdaptive tries prefilter+DFA first, falls back to NFA - zero alloc.
 func (e *Engine) findIndicesAdaptive(haystack []byte) (int, int, bool) {
+	// Use prefilter if available for fast candidate finding
+	if e.prefilter != nil && e.dfa != nil {
+		// Check if prefilter can return match bounds directly (e.g., Teddy)
+		if mf, ok := e.prefilter.(prefilter.MatchFinder); ok {
+			start, end := mf.FindMatch(haystack, 0)
+			if start == -1 {
+				return -1, -1, false
+			}
+			e.stats.PrefilterHits++
+			e.stats.DFASearches++
+			return start, end, true
+		}
+
+		// Standard prefilter path
+		pos := e.prefilter.Find(haystack, 0)
+		if pos == -1 {
+			// No candidate found - definitely no match
+			return -1, -1, false
+		}
+		e.stats.PrefilterHits++
+		e.stats.DFASearches++
+
+		// Literal fast path
+		if e.prefilter.IsComplete() {
+			literalLen := e.prefilter.LiteralLen()
+			if literalLen > 0 {
+				return pos, pos + literalLen, true
+			}
+		}
+
+		// Search from prefilter position - O(m) not O(n)
+		return e.pikevm.SearchAt(haystack, pos)
+	}
+
+	// Try DFA without prefilter
 	if e.dfa != nil {
 		e.stats.DFASearches++
-		pos := e.dfa.Find(haystack)
-		if pos != -1 {
-			return e.pikevm.Search(haystack)
+		endPos := e.dfa.Find(haystack)
+		if endPos != -1 {
+			// Use estimated start position for O(m) search instead of O(n)
+			estimatedStart := 0
+			if endPos > 100 {
+				estimatedStart = endPos - 100
+			}
+			return e.pikevm.SearchAt(haystack, estimatedStart)
 		}
 		size, capacity, _, _, _ := e.dfa.CacheStats()
 		if size >= int(capacity)*9/10 {
@@ -683,13 +749,40 @@ func (e *Engine) findIndicesAdaptive(haystack []byte) (int, int, bool) {
 	return e.findIndicesNFA(haystack)
 }
 
-// findIndicesAdaptiveAt tries DFA first at position, falls back to NFA - zero alloc.
+// findIndicesAdaptiveAt tries prefilter+DFA first at position, falls back to NFA - zero alloc.
 func (e *Engine) findIndicesAdaptiveAt(haystack []byte, at int) (int, int, bool) {
+	// Use prefilter if available for fast candidate finding
+	if e.prefilter != nil && e.dfa != nil {
+		pos := e.prefilter.Find(haystack, at)
+		if pos == -1 {
+			return -1, -1, false
+		}
+		e.stats.PrefilterHits++
+		e.stats.DFASearches++
+
+		// Literal fast path
+		if e.prefilter.IsComplete() {
+			literalLen := e.prefilter.LiteralLen()
+			if literalLen > 0 {
+				return pos, pos + literalLen, true
+			}
+		}
+
+		// Search from prefilter position - O(m) not O(n)
+		return e.pikevm.SearchAt(haystack, pos)
+	}
+
+	// Try DFA without prefilter
 	if e.dfa != nil {
 		e.stats.DFASearches++
-		pos := e.dfa.FindAt(haystack, at)
-		if pos != -1 {
-			return e.pikevm.SearchAt(haystack, at)
+		endPos := e.dfa.FindAt(haystack, at)
+		if endPos != -1 {
+			// Use estimated start for O(m) search
+			estimatedStart := at
+			if endPos > at+100 {
+				estimatedStart = endPos - 100
+			}
+			return e.pikevm.SearchAt(haystack, estimatedStart)
 		}
 		size, capacity, _, _, _ := e.dfa.CacheStats()
 		if size >= int(capacity)*9/10 {
@@ -779,6 +872,130 @@ func (e *Engine) findBoundedBacktrackerAt(haystack []byte, at int) *Match {
 	return e.findNFAAt(haystack, at)
 }
 
+// findTeddy searches using Teddy multi-pattern prefilter directly.
+// This is the "literal engine bypass" - for exact literal alternations like (foo|bar|baz),
+// Teddy.Find() returns complete matches without needing DFA/NFA verification.
+func (e *Engine) findTeddy(haystack []byte) *Match {
+	if e.prefilter == nil {
+		return e.findNFA(haystack)
+	}
+	e.stats.PrefilterHits++
+
+	// Use FindMatch which returns both start and end positions
+	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
+		start, end := matcher.FindMatch(haystack, 0)
+		if start == -1 {
+			return nil
+		}
+		return NewMatch(start, end, haystack)
+	}
+
+	// Fallback: use Find + LiteralLen
+	pos := e.prefilter.Find(haystack, 0)
+	if pos == -1 {
+		return nil
+	}
+	literalLen := e.prefilter.LiteralLen()
+	if literalLen > 0 {
+		return NewMatch(pos, pos+literalLen, haystack)
+	}
+	// If no uniform length, fall back to NFA for verification
+	return e.findNFAAt(haystack, pos)
+}
+
+// findTeddyAt searches using Teddy at a specific position.
+func (e *Engine) findTeddyAt(haystack []byte, at int) *Match {
+	if e.prefilter == nil || at >= len(haystack) {
+		return e.findNFAAt(haystack, at)
+	}
+	e.stats.PrefilterHits++
+
+	// Use FindMatch which returns both start and end positions
+	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
+		start, end := matcher.FindMatch(haystack, at)
+		if start == -1 {
+			return nil
+		}
+		return NewMatch(start, end, haystack)
+	}
+
+	// Fallback: use Find + LiteralLen
+	pos := e.prefilter.Find(haystack, at)
+	if pos == -1 {
+		return nil
+	}
+	literalLen := e.prefilter.LiteralLen()
+	if literalLen > 0 {
+		return NewMatch(pos, pos+literalLen, haystack)
+	}
+	return e.findNFAAt(haystack, pos)
+}
+
+// isMatchTeddy checks for match using Teddy prefilter.
+func (e *Engine) isMatchTeddy(haystack []byte) bool {
+	if e.prefilter == nil {
+		return e.isMatchNFA(haystack)
+	}
+	e.stats.PrefilterHits++
+	return e.prefilter.Find(haystack, 0) != -1
+}
+
+// findIndicesTeddy returns indices using Teddy prefilter - zero alloc.
+func (e *Engine) findIndicesTeddy(haystack []byte) (int, int, bool) {
+	if e.prefilter == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	e.stats.PrefilterHits++
+
+	// Use FindMatch which returns both start and end positions
+	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
+		start, end := matcher.FindMatch(haystack, 0)
+		if start == -1 {
+			return -1, -1, false
+		}
+		return start, end, true
+	}
+
+	// Fallback: use Find + LiteralLen
+	pos := e.prefilter.Find(haystack, 0)
+	if pos == -1 {
+		return -1, -1, false
+	}
+	literalLen := e.prefilter.LiteralLen()
+	if literalLen > 0 {
+		return pos, pos + literalLen, true
+	}
+	return e.findIndicesNFAAt(haystack, pos)
+}
+
+// findIndicesTeddyAt returns indices using Teddy at position - zero alloc.
+func (e *Engine) findIndicesTeddyAt(haystack []byte, at int) (int, int, bool) {
+	if e.prefilter == nil || at >= len(haystack) {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	e.stats.PrefilterHits++
+
+	// Use FindMatch which returns both start and end positions
+	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
+		start, end := matcher.FindMatch(haystack, at)
+		if start == -1 {
+			return -1, -1, false
+		}
+		return start, end, true
+	}
+
+	// Fallback: use Find + LiteralLen
+	pos := e.prefilter.Find(haystack, at)
+	if pos == -1 {
+		return -1, -1, false
+	}
+	literalLen := e.prefilter.LiteralLen()
+	if literalLen > 0 {
+		return pos, pos + literalLen, true
+	}
+	return e.findIndicesNFAAt(haystack, pos)
+}
+
 // findNFA searches using NFA (PikeVM) directly.
 func (e *Engine) findNFA(haystack []byte) *Match {
 	e.stats.NFASearches++
@@ -795,23 +1012,26 @@ func (e *Engine) findNFA(haystack []byte) *Match {
 func (e *Engine) findDFA(haystack []byte) *Match {
 	e.stats.DFASearches++
 
-	// If prefilter available and complete, use literal fast path
-	// This bypasses PikeVM entirely for exact literal matches
-	if e.prefilter != nil && e.prefilter.IsComplete() {
+	// If prefilter available, use it to find candidate positions quickly
+	if e.prefilter != nil {
 		pos := e.prefilter.Find(haystack, 0)
 		if pos == -1 {
 			return nil
 		}
 		e.stats.PrefilterHits++
-		// Literal fast path: prefilter already found exact match
-		// Use LiteralLen() to calculate end position directly
-		literalLen := e.prefilter.LiteralLen()
-		if literalLen > 0 {
-			// Direct return without PikeVM
-			return NewMatch(pos, pos+literalLen, haystack)
+
+		// Literal fast path: if prefilter is complete and we know literal length
+		if e.prefilter.IsComplete() {
+			literalLen := e.prefilter.LiteralLen()
+			if literalLen > 0 {
+				// Direct return without PikeVM - prefilter found exact match
+				return NewMatch(pos, pos+literalLen, haystack)
+			}
 		}
-		// Fallback to NFA if LiteralLen not available (e.g., Teddy multi-pattern)
-		start, end, matched := e.pikevm.Search(haystack)
+
+		// Use anchored search from prefilter position - O(m) not O(n)!
+		// This is much faster than searching the entire haystack
+		start, end, matched := e.pikevm.SearchAt(haystack, pos)
 		if !matched {
 			return nil
 		}
@@ -819,31 +1039,80 @@ func (e *Engine) findDFA(haystack []byte) *Match {
 	}
 
 	// Use DFA search
-	pos := e.dfa.Find(haystack)
-	if pos == -1 {
+	endPos := e.dfa.Find(haystack)
+	if endPos == -1 {
 		return nil
 	}
 
-	// DFA returns end position, but doesn't track start position
-	// Fall back to NFA to get exact match bounds
-	// TODO: optimize by tracking match start in DFA
-	start, end, matched := e.pikevm.Search(haystack)
+	// DFA found match ending at endPos - use reverse search to find start
+	// This is O(m) where m = match length, not O(n)
+	// For patterns without prefilter, estimate start position
+	// and search from there
+	estimatedStart := 0
+	if endPos > 100 {
+		// For long haystacks, start search closer to the match end
+		estimatedStart = endPos - 100
+	}
+	start, end, matched := e.pikevm.SearchAt(haystack, estimatedStart)
 	if !matched {
 		return nil
 	}
 	return NewMatch(start, end, haystack)
 }
 
-// findAdaptive tries DFA first, falls back to NFA on failure.
+// findAdaptive tries prefilter+DFA first, falls back to NFA on failure.
 func (e *Engine) findAdaptive(haystack []byte) *Match {
-	// Try DFA first
+	// Use prefilter if available for fast candidate finding
+	if e.prefilter != nil && e.dfa != nil {
+		// Check if prefilter can return match bounds directly (e.g., Teddy)
+		if mf, ok := e.prefilter.(prefilter.MatchFinder); ok {
+			start, end := mf.FindMatch(haystack, 0)
+			if start == -1 {
+				return nil
+			}
+			e.stats.PrefilterHits++
+			e.stats.DFASearches++
+			return NewMatch(start, end, haystack)
+		}
+
+		// Standard prefilter path
+		pos := e.prefilter.Find(haystack, 0)
+		if pos == -1 {
+			// No candidate found - definitely no match
+			return nil
+		}
+		e.stats.PrefilterHits++
+		e.stats.DFASearches++
+
+		// Literal fast path: if prefilter is complete and we know literal length
+		if e.prefilter.IsComplete() {
+			literalLen := e.prefilter.LiteralLen()
+			if literalLen > 0 {
+				// Direct return without PikeVM - prefilter found exact match
+				return NewMatch(pos, pos+literalLen, haystack)
+			}
+		}
+
+		// Use anchored search from prefilter position - O(m) not O(n)!
+		start, end, matched := e.pikevm.SearchAt(haystack, pos)
+		if !matched {
+			return nil
+		}
+		return NewMatch(start, end, haystack)
+	}
+
+	// Try DFA without prefilter
 	if e.dfa != nil {
 		e.stats.DFASearches++
-		pos := e.dfa.Find(haystack)
-		if pos != -1 {
+		endPos := e.dfa.Find(haystack)
+		if endPos != -1 {
 			// DFA succeeded - get exact match bounds from NFA
-			// DFA only returns end position, not start position
-			start, end, matched := e.pikevm.Search(haystack)
+			// Use estimated start position for O(m) search instead of O(n)
+			estimatedStart := 0
+			if endPos > 100 {
+				estimatedStart = endPos - 100
+			}
+			start, end, matched := e.pikevm.SearchAt(haystack, estimatedStart)
 			if !matched {
 				return nil
 			}

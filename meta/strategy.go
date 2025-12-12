@@ -81,6 +81,17 @@ const (
 	//   - No prefilter benefit (no extractable literals)
 	//   - Speedup: 2-4x over PikeVM for character class patterns
 	UseBoundedBacktracker
+
+	// UseTeddy uses Teddy multi-pattern prefilter directly without DFA.
+	// Selected for:
+	//   - Exact literal alternations like (foo|bar|baz)
+	//   - All literals are complete (no regex engine verification needed)
+	//   - 2-8 patterns, each >= 3 bytes
+	//   - Speedup: 50-250x over PikeVM by skipping all DFA/NFA overhead
+	//
+	// This implements the "literal engine bypass" optimization from Rust regex:
+	// when patterns are exact literals, the prefilter IS the engine.
+	UseTeddy
 )
 
 // String returns a human-readable representation of the Strategy.
@@ -102,6 +113,8 @@ func (s Strategy) String() string {
 		return "UseReverseInner"
 	case UseBoundedBacktracker:
 		return "UseBoundedBacktracker"
+	case UseTeddy:
+		return "UseTeddy"
 	default:
 		return "Unknown"
 	}
@@ -203,8 +216,14 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 	innerInfo := extractor.ExtractInnerForReverseSearch(re)
 	if innerInfo != nil {
 		lcp := innerInfo.Literals.LongestCommonPrefix()
-		if len(lcp) >= config.MinLiteralLen {
-			// Good inner literal available - use ReverseInner with AST splitting
+		// Quality threshold for inner literals.
+		// Single-character inner literals like "@" can be effective for email patterns
+		// because: (1) Match() is 19x faster with memchr prefilter, (2) Find() is still
+		// faster than UseBoth for most cases. Only patterns with very high @ density
+		// suffer (but those are rare in practice).
+		minInnerLen := 1
+		if len(lcp) >= minInnerLen {
+			// High-quality inner literal available - use ReverseInner with AST splitting
 			return UseReverseInner
 		}
 	}
@@ -215,6 +234,11 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 // isSimpleCharClass checks if a regexp is a simple character class pattern
 // like [0-9], \d, \w, etc. that doesn't benefit from DFA overhead.
 // Returns true for patterns that are just repeats of character classes.
+//
+// This also handles patterns with capture groups wrapping character classes,
+// like (a|b|c)+ which Go's parser optimizes to Plus(Capture(CharClass)).
+// BoundedBacktracker can handle capture groups efficiently (they're epsilon
+// transitions in the NFA), and is 3-7x faster than PikeVM for these patterns.
 func isSimpleCharClass(re *syntax.Regexp) bool {
 	if re == nil {
 		return false
@@ -238,8 +262,55 @@ func isSimpleCharClass(re *syntax.Regexp) bool {
 			}
 		}
 		return true
+	case syntax.OpCapture:
+		// Look through capture groups - (a|b|c)+ parses as Plus(Capture(CharClass))
+		// BoundedBacktracker handles captures correctly (epsilon transitions)
+		if len(re.Sub) == 1 {
+			return isSimpleCharClass(re.Sub[0])
+		}
 	}
 	return false
+}
+
+// literalAnalysis contains the results of analyzing literals for strategy selection.
+type literalAnalysis struct {
+	hasGoodLiterals  bool // Good prefix literal (LCP >= MinLiteralLen)
+	hasTeddyLiterals bool // Suitable for Teddy (2-8 patterns, each >= 3 bytes)
+}
+
+// analyzeLiterals checks if literals are suitable for prefiltering.
+// This is a helper function to reduce cyclomatic complexity in SelectStrategy.
+func analyzeLiterals(literals *literal.Seq, config Config) literalAnalysis {
+	result := literalAnalysis{}
+
+	if literals == nil || literals.IsEmpty() {
+		return result
+	}
+
+	// Check longest common prefix (for single-literal prefilter like Memmem)
+	lcp := literals.LongestCommonPrefix()
+	if len(lcp) >= config.MinLiteralLen {
+		result.hasGoodLiterals = true
+	}
+
+	// Check for Teddy prefilter suitability (2-8 literals, each >= 3 bytes)
+	// Teddy doesn't need common prefix - it can search for multiple distinct literals.
+	// This enables fast alternation pattern matching: (foo|bar|baz|qux)
+	litCount := literals.Len()
+	if litCount >= 2 && litCount <= 8 {
+		allLongEnough := true
+		for i := 0; i < litCount; i++ {
+			if len(literals.Get(i).Bytes) < 3 {
+				allLongEnough = false
+				break
+			}
+		}
+		if allLongEnough {
+			result.hasTeddyLiterals = true
+		}
+	}
+
+	return result
 }
 
 // SelectStrategy analyzes the NFA and literals to choose the best execution strategy.
@@ -292,19 +363,11 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	isEndAnchored := re != nil && nfa.IsPatternEndAnchored(re)
 	hasStartAnchor := re != nil && nfa.IsPatternStartAnchored(re)
 
-	if re != nil && config.EnableDFA {
-		// Only use reverse search if:
-		// 1. Pattern is end-anchored ($)
-		// 2. Pattern is NOT fully start-anchored (not always starting at position 0)
-		// 3. Pattern does NOT contain any start anchor (^ or \A) - this catches
-		//    alternations like `^a?$|^b?$` where IsAlwaysAnchored() returns false
-		//    but the pattern still has start anchors that need proper handling
-		if isEndAnchored && !isStartAnchored && !hasStartAnchor {
-			// Perfect candidate for reverse search
-			// Example: "pattern.*suffix$" on large haystack
-			// Forward: O(n*m) tries, Reverse: O(m) one try
-			return UseReverseAnchored
-		}
+	if re != nil && config.EnableDFA && isEndAnchored && !isStartAnchored && !hasStartAnchor {
+		// Perfect candidate for reverse search
+		// Example: "pattern.*suffix$" on large haystack
+		// Forward: O(n*m) tries, Reverse: O(m) one try
+		return UseReverseAnchored
 	}
 
 	// Check for inner/suffix literal optimizations (second priority)
@@ -318,24 +381,24 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseNFA
 	}
 
-	// Analyze NFA size
+	// Analyze NFA size and literals
 	nfaSize := n.States()
-
-	// Check if we have good literals for prefiltering
-	hasGoodLiterals := false
-	if literals != nil && !literals.IsEmpty() {
-		// Check longest common prefix
-		lcp := literals.LongestCommonPrefix()
-		if len(lcp) >= config.MinLiteralLen {
-			hasGoodLiterals = true
-		}
-	}
+	litAnalysis := analyzeLiterals(literals, config)
 
 	// Check for simple character class patterns without literals
 	// Patterns like [0-9]+, \d+, \w+ benefit from BoundedBacktracker:
 	// 2-4x faster than PikeVM due to bit-vector visited tracking instead of SparseSet.
-	if !hasGoodLiterals && isSimpleCharClass(re) {
+	if !litAnalysis.hasGoodLiterals && !litAnalysis.hasTeddyLiterals && isSimpleCharClass(re) {
 		return UseBoundedBacktracker
+	}
+
+	// Exact literal alternations → use Teddy directly (literal engine bypass)
+	// Patterns like "(foo|bar|baz)" where all literals are complete don't need
+	// DFA verification - Teddy.Find() returns exact matches.
+	// This is the "literal engine bypass" optimization from Rust regex.
+	// Speedup: 50-250x by skipping all DFA/NFA construction overhead.
+	if litAnalysis.hasTeddyLiterals && literals.AllComplete() {
+		return UseTeddy
 	}
 
 	// Good literals → use prefilter + DFA (best performance)
@@ -343,7 +406,9 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	//  1. Prefilter finds literal candidates quickly (5-50x speedup)
 	//  2. DFA verifies with O(n) deterministic scan
 	// This is fast even for tiny NFAs because prefilter does the heavy lifting.
-	if hasGoodLiterals {
+	// Also covers Teddy multi-pattern prefilter for alternation patterns where
+	// literals are not complete (e.g., "(foo|bar)\d+" needs DFA verification).
+	if litAnalysis.hasGoodLiterals || litAnalysis.hasTeddyLiterals {
 		return UseDFA
 	}
 
@@ -420,6 +485,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseBoundedBacktracker:
 		return "bounded backtracker for simple character class pattern (2-4x faster than PikeVM)"
+
+	case UseTeddy:
+		return "Teddy multi-pattern prefilter for exact literal alternation (50-250x by skipping DFA)"
 
 	default:
 		return "unknown strategy"
