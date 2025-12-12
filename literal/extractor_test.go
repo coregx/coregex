@@ -92,7 +92,8 @@ func TestExtractPrefixesConcat(t *testing.T) {
 		{"abc", []string{"abc"}},
 		{"hello.*world", []string{"hello"}},
 		{"prefix.*", []string{"prefix"}},
-		{"test[0-9]", []string{"test"}},
+		// test[0-9] expands to all complete literals (better for Teddy prefilter)
+		{"test[0-9]", []string{"test0", "test1", "test2", "test3", "test4", "test5", "test6", "test7", "test8", "test9"}},
 	}
 
 	for _, tt := range tests {

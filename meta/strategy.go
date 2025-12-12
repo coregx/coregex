@@ -203,12 +203,14 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 	innerInfo := extractor.ExtractInnerForReverseSearch(re)
 	if innerInfo != nil {
 		lcp := innerInfo.Literals.LongestCommonPrefix()
-		// For inner literals, we accept single characters (MinLiteralLen=1)
-		// because even a single rare character like '@' can provide significant
-		// speedup when found with SIMD memchr.
+		// Quality threshold for inner literals.
+		// Single-character inner literals like "@" can be effective for email patterns
+		// because: (1) Match() is 19x faster with memchr prefilter, (2) Find() is still
+		// faster than UseBoth for most cases. Only patterns with very high @ density
+		// suffer (but those are rare in practice).
 		minInnerLen := 1
 		if len(lcp) >= minInnerLen {
-			// Good inner literal available - use ReverseInner with AST splitting
+			// High-quality inner literal available - use ReverseInner with AST splitting
 			return UseReverseInner
 		}
 	}
@@ -327,18 +329,36 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 
 	// Check if we have good literals for prefiltering
 	hasGoodLiterals := false
+	hasTeddyLiterals := false
 	if literals != nil && !literals.IsEmpty() {
-		// Check longest common prefix
+		// Check longest common prefix (for single-literal prefilter like Memmem)
 		lcp := literals.LongestCommonPrefix()
 		if len(lcp) >= config.MinLiteralLen {
 			hasGoodLiterals = true
+		}
+
+		// Check for Teddy prefilter suitability (2-8 literals, each >= 3 bytes)
+		// Teddy doesn't need common prefix - it can search for multiple distinct literals.
+		// This enables fast alternation pattern matching: (foo|bar|baz|qux)
+		litCount := literals.Len()
+		if litCount >= 2 && litCount <= 8 {
+			allLongEnough := true
+			for i := 0; i < litCount; i++ {
+				if len(literals.Get(i).Bytes) < 3 {
+					allLongEnough = false
+					break
+				}
+			}
+			if allLongEnough {
+				hasTeddyLiterals = true
+			}
 		}
 	}
 
 	// Check for simple character class patterns without literals
 	// Patterns like [0-9]+, \d+, \w+ benefit from BoundedBacktracker:
 	// 2-4x faster than PikeVM due to bit-vector visited tracking instead of SparseSet.
-	if !hasGoodLiterals && isSimpleCharClass(re) {
+	if !hasGoodLiterals && !hasTeddyLiterals && isSimpleCharClass(re) {
 		return UseBoundedBacktracker
 	}
 
@@ -347,7 +367,8 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	//  1. Prefilter finds literal candidates quickly (5-50x speedup)
 	//  2. DFA verifies with O(n) deterministic scan
 	// This is fast even for tiny NFAs because prefilter does the heavy lifting.
-	if hasGoodLiterals {
+	// Also covers Teddy multi-pattern prefilter for alternation patterns.
+	if hasGoodLiterals || hasTeddyLiterals {
 		return UseDFA
 	}
 
