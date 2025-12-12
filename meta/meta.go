@@ -39,7 +39,6 @@ import (
 type Engine struct {
 	nfa                      *nfa.NFA
 	dfa                      *lazy.DFA
-	reverseDFA               *lazy.DFA // Reverse DFA for bidirectional search (finds START from END)
 	pikevm                   *nfa.PikeVM
 	boundedBacktracker       *nfa.BoundedBacktracker
 	charClassSearcher        *nfa.CharClassSearcher // Specialized searcher for char_class+ patterns
@@ -335,20 +334,12 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		}
 	}
 
-	// Build reverse DFA for bidirectional search (forward DFA finds END, reverse finds START)
-	var reverseDFAEngine *lazy.DFA
-	if dfaEngine != nil {
-		dfaCfg := lazy.Config{MaxStates: config.MaxDFAStates, DeterminizationLimit: config.DeterminizationLimit}
-		reverseDFAEngine, _ = lazy.CompileWithConfig(nfa.Reverse(nfaEngine), dfaCfg)
-	}
-
 	// Build specialized searchers for character class patterns
 	boundedBT, charClassSrch, strategy := buildCharClassSearchers(strategy, re, nfaEngine)
 
 	return &Engine{
 		nfa:                      nfaEngine,
 		dfa:                      dfaEngine,
-		reverseDFA:               reverseDFAEngine,
 		pikevm:                   pikevm,
 		boundedBacktracker:       boundedBT,
 		charClassSearcher:        charClassSrch,

@@ -505,6 +505,9 @@ func updateByteRangeState(builder *Builder, stateID StateID, lo, hi byte, next S
 	if int(stateID) >= builder.States() {
 		return
 	}
+	// Register byte range with ByteClassSet for DFA alphabet compression
+	builder.byteClassSet.SetRange(lo, hi)
+
 	s := &builder.states[stateID]
 	switch s.kind {
 	case StateByteRange:
@@ -525,6 +528,11 @@ func updateSparseState(builder *Builder, stateID StateID, transitions []Transiti
 	if int(stateID) >= builder.States() {
 		return
 	}
+	// Register all byte ranges with ByteClassSet for DFA alphabet compression
+	for _, tr := range transitions {
+		builder.byteClassSet.SetRange(tr.Lo, tr.Hi)
+	}
+
 	s := &builder.states[stateID]
 	switch s.kind {
 	case StateSparse:

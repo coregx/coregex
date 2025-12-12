@@ -24,24 +24,21 @@ const (
 	StartState StateID = 0
 )
 
-// invalidTransitions is a pre-initialized template with all transitions set to InvalidState.
-// Used for O(1) initialization of new states instead of O(256) loop.
-var invalidTransitions [256]StateID
-
-func init() {
-	for i := range invalidTransitions {
-		invalidTransitions[i] = InvalidState
-	}
-}
+// defaultStride is the default alphabet size when ByteClasses compression is not used.
+const defaultStride = 256
 
 // State represents a DFA state with its transitions.
 //
 // A DFA state is deterministic: for each input byte, there is at most one
-// target state. Uses a fixed-size 256-element array for O(1) transition lookup.
+// target state. Uses a dynamically-sized transitions slice based on ByteClasses
+// alphabet reduction for memory efficiency.
 //
-// Memory: 256 * 4 bytes = 1KB per state for transitions.
-// With 10,000 states max, that's ~10MB total. This is acceptable for the
-// 10x speedup over map-based lookups.
+// Memory with ByteClasses compression:
+//   - Pattern "hello": ~7 classes * 4 bytes = 28 bytes/state (vs 1KB without compression)
+//   - Pattern "[a-z]+": ~4 classes * 4 bytes = 16 bytes/state
+//   - Complex patterns: typically 8-64 classes = 32-256 bytes/state
+//
+// The lookup is still O(1): transitions[byteClasses.Get(byte)]
 //
 // Word Boundary Tracking (Rust regex-automata approach):
 // The isFromWord field tracks whether this state was entered via a word byte.
@@ -55,10 +52,11 @@ type State struct {
 	// id uniquely identifies this state in the cache
 	id StateID
 
-	// transitions is a fixed-size 256-element array: transitions[byte] = next state ID.
-	// InvalidState means no transition for that byte.
-	// Using array instead of map gives O(1) lookup without hash computation.
-	transitions [256]StateID
+	// transitions maps equivalence class → next state ID.
+	// The slice length equals the alphabet size (ByteClasses.AlphabetLen()).
+	// InvalidState means no transition for that equivalence class.
+	// Lookup: transitions[byteClasses.Get(byte)]
+	transitions []StateID
 
 	// transitionCount tracks how many valid transitions exist (for statistics/debugging)
 	transitionCount int
@@ -89,23 +87,44 @@ type State struct {
 }
 
 // NewState creates a new DFA state with the given ID and NFA state set.
+// Uses default stride of 256 (no ByteClasses compression).
 // isFromWord indicates if this state was entered via a word byte (for \b/\B handling).
 func NewState(id StateID, nfaStates []nfa.StateID, isMatch bool) *State {
-	return NewStateWithWordContext(id, nfaStates, isMatch, false)
+	return NewStateWithStride(id, nfaStates, isMatch, false, defaultStride)
 }
 
 // NewStateWithWordContext creates a new DFA state with explicit word context.
+// Uses default stride of 256 (no ByteClasses compression).
 // isFromWord indicates if this state was entered via a word byte transition.
 // This is essential for correct word boundary (\b, \B) handling in DFA.
 func NewStateWithWordContext(id StateID, nfaStates []nfa.StateID, isMatch bool, isFromWord bool) *State {
+	return NewStateWithStride(id, nfaStates, isMatch, isFromWord, defaultStride)
+}
+
+// NewStateWithStride creates a new DFA state with explicit stride (alphabet size).
+// The stride determines the transitions slice size. Use ByteClasses.AlphabetLen()
+// for memory-efficient states with alphabet compression.
+//
+// Parameters:
+//   - id: unique state identifier
+//   - nfaStates: set of NFA states this DFA state represents
+//   - isMatch: true if this is an accepting state
+//   - isFromWord: true if entered via a word byte transition (for \b/\B)
+//   - stride: alphabet size (transitions slice length)
+func NewStateWithStride(id StateID, nfaStates []nfa.StateID, isMatch bool, isFromWord bool, stride int) *State {
 	// Copy NFA states to avoid aliasing
 	nfaStatesCopy := make([]nfa.StateID, len(nfaStates))
 	copy(nfaStatesCopy, nfaStates)
 
-	// Create state with transitions initialized from template (O(1) copy instead of O(256) loop)
+	// Create transitions slice initialized to InvalidState
+	transitions := make([]StateID, stride)
+	for i := range transitions {
+		transitions[i] = InvalidState
+	}
+
 	return &State{
 		id:          id,
-		transitions: invalidTransitions, // Copy by value from pre-initialized template
+		transitions: transitions,
 		isMatch:     isMatch,
 		isFromWord:  isFromWord,
 		nfaStates:   nfaStatesCopy,
@@ -128,23 +147,40 @@ func (s *State) IsFromWord() bool {
 	return s.isFromWord
 }
 
-// Transition returns the next state for the given input byte.
+// Transition returns the next state for the given equivalence class index.
 // Returns (InvalidState, false) if no transition exists.
-// This is the hot path - O(1) array lookup instead of map.
-func (s *State) Transition(b byte) (StateID, bool) {
-	next := s.transitions[b]
+// This is the hot path - O(1) slice lookup.
+//
+// IMPORTANT: The caller must convert the input byte to an equivalence class
+// index via byteClasses.Get(byte) before calling this method.
+func (s *State) Transition(classIdx byte) (StateID, bool) {
+	if int(classIdx) >= len(s.transitions) {
+		return InvalidState, false
+	}
+	next := s.transitions[classIdx]
 	return next, next != InvalidState
 }
 
-// AddTransition adds a transition from this state to another on input byte b.
-// Overwrites any existing transition for this byte.
-func (s *State) AddTransition(b byte, next StateID) {
-	if s.transitions[b] == InvalidState && next != InvalidState {
+// AddTransition adds a transition from this state to another on equivalence class classIdx.
+// Overwrites any existing transition for this class.
+//
+// IMPORTANT: The caller must convert the input byte to an equivalence class
+// index via byteClasses.Get(byte) before calling this method.
+func (s *State) AddTransition(classIdx byte, next StateID) {
+	if int(classIdx) >= len(s.transitions) {
+		return // Ignore out-of-bounds (shouldn't happen with correct stride)
+	}
+	if s.transitions[classIdx] == InvalidState && next != InvalidState {
 		s.transitionCount++
-	} else if s.transitions[b] != InvalidState && next == InvalidState {
+	} else if s.transitions[classIdx] != InvalidState && next == InvalidState {
 		s.transitionCount--
 	}
-	s.transitions[b] = next
+	s.transitions[classIdx] = next
+}
+
+// Stride returns the alphabet size (number of equivalence classes).
+func (s *State) Stride() int {
+	return len(s.transitions)
 }
 
 // NFAStates returns the NFA states represented by this DFA state

@@ -45,6 +45,14 @@ func (b *Builder) Build() (*DFA, error) {
 		pf = b.buildPrefilter()
 	}
 
+	// Get alphabet size from ByteClasses for memory-efficient states
+	// Typical patterns have 4-64 equivalence classes (vs 256 without compression)
+	byteClasses := b.nfa.ByteClasses()
+	stride := defaultStride
+	if byteClasses != nil {
+		stride = byteClasses.AlphabetLen()
+	}
+
 	// Create start state from NFA unanchored start (for O(n) unanchored search)
 	// Use StartUnanchored() which includes the implicit (?s:.)*? prefix
 	//
@@ -60,7 +68,7 @@ func (b *Builder) Build() (*DFA, error) {
 	startStateSet := b.epsilonClosure([]nfa.StateID{b.nfa.StartUnanchored()}, startLook)
 	isMatch := b.containsMatchState(startStateSet)
 	isFromWord := false // StartText: no previous byte → not from word
-	startState := NewStateWithWordContext(StartState, startStateSet, isMatch, isFromWord)
+	startState := NewStateWithStride(StartState, startStateSet, isMatch, isFromWord, stride)
 
 	// Insert start state into cache
 	// Key includes word context for proper state identity
@@ -582,40 +590,59 @@ func BuildPrefilterFromLiterals(prefixes, suffixes *literal.Seq) prefilter.Prefi
 // DetectAccelerationFromCached analyzes a state's CACHED transitions only.
 //
 // This is a lazy version that only checks already-computed transitions.
-// It requires most transitions (240+) to be cached for accurate detection.
-// This avoids the performance hit of computing all 256 transitions upfront.
+// It requires most transitions to be cached for accurate detection.
+// This avoids the performance hit of computing all transitions upfront.
+//
+// With ByteClasses compression, the state has fewer transitions (stride < 256),
+// so we need most of the stride's transitions cached, not 240.
 //
 // A state is accelerable if:
-//  1. Most bytes (252+) loop back to self or go to dead state
-//  2. Only 1-3 bytes cause a transition to a different non-dead state
+//  1. Most equivalence classes loop back to self or go to dead state
+//  2. Only 1-3 equivalence classes cause a transition to a different non-dead state
 //
 // Returns the exit bytes (1-3) or nil if not accelerable or insufficient data.
+// Note: Returns representative bytes for exit classes, not class indices.
 func DetectAccelerationFromCached(state *State) []byte {
+	return DetectAccelerationFromCachedWithClasses(state, nil)
+}
+
+// DetectAccelerationFromCachedWithClasses analyzes a state's CACHED transitions
+// with ByteClasses support for alphabet compression.
+//
+// When byteClasses is nil, falls back to identity mapping (no compression).
+func DetectAccelerationFromCachedWithClasses(state *State, byteClasses *nfa.ByteClasses) []byte {
 	if state == nil {
 		return nil
 	}
 
+	stride := state.Stride()
 	// Need most transitions cached to detect accurately
-	// With < 240 transitions cached, we can't know the full picture
+	// For compressed alphabet, we need most of stride, not 240
+	minCachedRequired := stride - stride/16 // At least ~94% cached
+	if minCachedRequired < 1 {
+		minCachedRequired = 1
+	}
 	transitionCount := state.TransitionCount()
-	if transitionCount < 240 {
+	if transitionCount < minCachedRequired {
 		return nil
 	}
 
 	selfID := state.ID()
-	var exitBytes []byte
+	var exitClasses []byte
 	uncachedCount := 0
 
-	// Scan only the CACHED transitions (read-only, no move computation)
-	for i := 0; i < 256; i++ {
-		inputByte := byte(i)
-
-		nextID, ok := state.Transition(inputByte)
+	// Scan only the CACHED transitions by equivalence class
+	for classIdx := 0; classIdx < stride; classIdx++ {
+		nextID, ok := state.Transition(byte(classIdx))
 		if !ok {
 			// Not cached yet - count as unknown
 			uncachedCount++
 			// Too many unknowns means we can't detect reliably
-			if uncachedCount > 16 {
+			maxUncached := stride / 16
+			if maxUncached < 1 {
+				maxUncached = 1
+			}
+			if uncachedCount > maxUncached {
 				return nil
 			}
 			continue
@@ -627,30 +654,51 @@ func DetectAccelerationFromCached(state *State) []byte {
 			continue
 		}
 
-		// Transition to a different state - it's an exit byte
-		exitBytes = append(exitBytes, inputByte)
-		if len(exitBytes) > 3 {
-			// Too many exit bytes - not accelerable
+		// This class causes exit - record it
+		exitClasses = append(exitClasses, byte(classIdx))
+		if len(exitClasses) > 3 {
+			// Too many exit classes - not accelerable
 			return nil
 		}
 	}
 
-	// Accelerable if we have 1-3 exit bytes
-	if len(exitBytes) >= 1 && len(exitBytes) <= 3 {
-		return exitBytes
+	// Accelerable if we have 1-3 exit classes
+	if len(exitClasses) < 1 || len(exitClasses) > 3 {
+		return nil
 	}
 
-	return nil
+	// Convert class indices back to representative bytes for memchr
+	// If no ByteClasses, class index == byte value (identity mapping)
+	if byteClasses == nil {
+		return exitClasses
+	}
+
+	// Find representative bytes for each exit class
+	exitBytes := make([]byte, 0, len(exitClasses))
+	for _, classIdx := range exitClasses {
+		// Find first byte that maps to this class
+		for b := 0; b < 256; b++ {
+			if byteClasses.Get(byte(b)) == classIdx {
+				exitBytes = append(exitBytes, byte(b))
+				break
+			}
+		}
+	}
+
+	return exitBytes
 }
 
-// DetectAcceleration analyzes a state by computing all 256 byte transitions.
+// DetectAcceleration analyzes a state by computing all byte transitions.
 //
 // WARNING: This is expensive! It computes move() for every byte value.
 // Only call this when you're sure the state is worth optimizing (hot state).
 //
+// With ByteClasses compression, we iterate over equivalence classes and
+// find representative bytes for exit classes.
+//
 // A state is accelerable if:
-//  1. Most bytes (252+) loop back to self or go to dead state
-//  2. Only 1-3 bytes cause a transition to a different non-dead state
+//  1. Most equivalence classes loop back to self or go to dead state
+//  2. Only 1-3 classes cause a transition to a different non-dead state
 //
 // Returns the exit bytes (1-3) or nil if not accelerable.
 func (b *Builder) DetectAcceleration(state *State) []byte {
@@ -658,27 +706,41 @@ func (b *Builder) DetectAcceleration(state *State) []byte {
 		return nil
 	}
 
+	byteClasses := b.nfa.ByteClasses()
 	selfID := state.ID()
-	var exitBytes []byte
+	var exitClasses []byte
+	stride := state.Stride()
 
-	// Check all 256 byte values
-	for i := 0; i < 256; i++ {
-		inputByte := byte(i)
-
+	// Check all equivalence classes
+	for classIdx := 0; classIdx < stride; classIdx++ {
 		// Check if transition is already cached
-		nextID, ok := state.Transition(inputByte)
+		nextID, ok := state.Transition(byte(classIdx))
 		if !ok {
 			// Need to compute this transition
-			nextNFAStates := b.move(state.NFAStates(), inputByte)
+			// Find a representative byte for this class to use with move()
+			var repByte byte
+			if byteClasses == nil {
+				repByte = byte(classIdx)
+			} else {
+				repByte = byte(classIdx) // Default to class index
+				for bi := 0; bi < 256; bi++ {
+					if byteClasses.Get(byte(bi)) == byte(classIdx) {
+						repByte = byte(bi)
+						break
+					}
+				}
+			}
+
+			nextNFAStates := b.move(state.NFAStates(), repByte)
 			if len(nextNFAStates) == 0 {
 				// Dead state - counts as "skip"
 				continue
 			}
 
-			// This leads to a non-dead state - it's an exit byte
-			exitBytes = append(exitBytes, inputByte)
-			if len(exitBytes) > 3 {
-				// Too many exit bytes - not accelerable
+			// This leads to a non-dead state - it's an exit class
+			exitClasses = append(exitClasses, byte(classIdx))
+			if len(exitClasses) > 3 {
+				// Too many exit classes - not accelerable
 				return nil
 			}
 			continue
@@ -690,20 +752,35 @@ func (b *Builder) DetectAcceleration(state *State) []byte {
 			continue
 		}
 
-		// Transition to a different state - it's an exit byte
-		exitBytes = append(exitBytes, inputByte)
-		if len(exitBytes) > 3 {
-			// Too many exit bytes - not accelerable
+		// Transition to a different state - it's an exit class
+		exitClasses = append(exitClasses, byte(classIdx))
+		if len(exitClasses) > 3 {
+			// Too many exit classes - not accelerable
 			return nil
 		}
 	}
 
-	// Accelerable if we have 1-3 exit bytes
-	if len(exitBytes) >= 1 && len(exitBytes) <= 3 {
-		return exitBytes
+	// Accelerable if we have 1-3 exit classes
+	if len(exitClasses) < 1 || len(exitClasses) > 3 {
+		return nil
 	}
 
-	return nil
+	// Convert class indices back to representative bytes for memchr
+	if byteClasses == nil {
+		return exitClasses
+	}
+
+	exitBytes := make([]byte, 0, len(exitClasses))
+	for _, classIdx := range exitClasses {
+		for bi := 0; bi < 256; bi++ {
+			if byteClasses.Get(byte(bi)) == classIdx {
+				exitBytes = append(exitBytes, byte(bi))
+				break
+			}
+		}
+	}
+
+	return exitBytes
 }
 
 // checkHasWordBoundary checks if the NFA contains any word boundary assertions (\b or \B).
