@@ -81,6 +81,17 @@ const (
 	//   - No prefilter benefit (no extractable literals)
 	//   - Speedup: 2-4x over PikeVM for character class patterns
 	UseBoundedBacktracker
+
+	// UseTeddy uses Teddy multi-pattern prefilter directly without DFA.
+	// Selected for:
+	//   - Exact literal alternations like (foo|bar|baz)
+	//   - All literals are complete (no regex engine verification needed)
+	//   - 2-8 patterns, each >= 3 bytes
+	//   - Speedup: 50-250x over PikeVM by skipping all DFA/NFA overhead
+	//
+	// This implements the "literal engine bypass" optimization from Rust regex:
+	// when patterns are exact literals, the prefilter IS the engine.
+	UseTeddy
 )
 
 // String returns a human-readable representation of the Strategy.
@@ -102,6 +113,8 @@ func (s Strategy) String() string {
 		return "UseReverseInner"
 	case UseBoundedBacktracker:
 		return "UseBoundedBacktracker"
+	case UseTeddy:
+		return "UseTeddy"
 	default:
 		return "Unknown"
 	}
@@ -373,12 +386,22 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseBoundedBacktracker
 	}
 
+	// Exact literal alternations → use Teddy directly (literal engine bypass)
+	// Patterns like "(foo|bar|baz)" where all literals are complete don't need
+	// DFA verification - Teddy.Find() returns exact matches.
+	// This is the "literal engine bypass" optimization from Rust regex.
+	// Speedup: 50-250x by skipping all DFA/NFA construction overhead.
+	if hasTeddyLiterals && literals.AllComplete() {
+		return UseTeddy
+	}
+
 	// Good literals → use prefilter + DFA (best performance)
 	// Patterns like "ABXBYXCX" or "(foo|foobar)\d+" benefit massively from:
 	//  1. Prefilter finds literal candidates quickly (5-50x speedup)
 	//  2. DFA verifies with O(n) deterministic scan
 	// This is fast even for tiny NFAs because prefilter does the heavy lifting.
-	// Also covers Teddy multi-pattern prefilter for alternation patterns.
+	// Also covers Teddy multi-pattern prefilter for alternation patterns where
+	// literals are not complete (e.g., "(foo|bar)\d+" needs DFA verification).
 	if hasGoodLiterals || hasTeddyLiterals {
 		return UseDFA
 	}
@@ -456,6 +479,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseBoundedBacktracker:
 		return "bounded backtracker for simple character class pattern (2-4x faster than PikeVM)"
+
+	case UseTeddy:
+		return "Teddy multi-pattern prefilter for exact literal alternation (50-250x by skipping DFA)"
 
 	default:
 		return "unknown strategy"

@@ -356,6 +356,8 @@ func (e *Engine) FindAt(haystack []byte, at int) *Match {
 			return e.findReverseInner(haystack)
 		case UseBoundedBacktracker:
 			return e.findBoundedBacktracker(haystack)
+		case UseTeddy:
+			return e.findTeddy(haystack)
 		default:
 			return e.findNFA(haystack)
 		}
@@ -375,6 +377,8 @@ func (e *Engine) FindAt(haystack []byte, at int) *Match {
 		return e.findNFAAt(haystack, at)
 	case UseBoundedBacktracker:
 		return e.findBoundedBacktrackerAt(haystack, at)
+	case UseTeddy:
+		return e.findTeddyAt(haystack, at)
 	default:
 		return e.findNFAAt(haystack, at)
 	}
@@ -409,6 +413,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchReverseInner(haystack)
 	case UseBoundedBacktracker:
 		return e.isMatchBoundedBacktracker(haystack)
+	case UseTeddy:
+		return e.isMatchTeddy(haystack)
 	default:
 		return e.isMatchNFA(haystack)
 	}
@@ -596,6 +602,8 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesReverseInner(haystack)
 	case UseBoundedBacktracker:
 		return e.findIndicesBoundedBacktracker(haystack)
+	case UseTeddy:
+		return e.findIndicesTeddy(haystack)
 	default:
 		return e.findIndicesNFA(haystack)
 	}
@@ -613,6 +621,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesAdaptiveAt(haystack, at)
 	case UseBoundedBacktracker:
 		return e.findIndicesBoundedBacktrackerAt(haystack, at)
+	case UseTeddy:
+		return e.findIndicesTeddyAt(haystack, at)
 	default:
 		return e.findIndicesNFAAt(haystack, at)
 	}
@@ -860,6 +870,130 @@ func (e *Engine) findBoundedBacktracker(haystack []byte) *Match {
 func (e *Engine) findBoundedBacktrackerAt(haystack []byte, at int) *Match {
 	// For now, fall back to NFA for non-zero positions
 	return e.findNFAAt(haystack, at)
+}
+
+// findTeddy searches using Teddy multi-pattern prefilter directly.
+// This is the "literal engine bypass" - for exact literal alternations like (foo|bar|baz),
+// Teddy.Find() returns complete matches without needing DFA/NFA verification.
+func (e *Engine) findTeddy(haystack []byte) *Match {
+	if e.prefilter == nil {
+		return e.findNFA(haystack)
+	}
+	e.stats.PrefilterHits++
+
+	// Use FindMatch which returns both start and end positions
+	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
+		start, end := matcher.FindMatch(haystack, 0)
+		if start == -1 {
+			return nil
+		}
+		return NewMatch(start, end, haystack)
+	}
+
+	// Fallback: use Find + LiteralLen
+	pos := e.prefilter.Find(haystack, 0)
+	if pos == -1 {
+		return nil
+	}
+	literalLen := e.prefilter.LiteralLen()
+	if literalLen > 0 {
+		return NewMatch(pos, pos+literalLen, haystack)
+	}
+	// If no uniform length, fall back to NFA for verification
+	return e.findNFAAt(haystack, pos)
+}
+
+// findTeddyAt searches using Teddy at a specific position.
+func (e *Engine) findTeddyAt(haystack []byte, at int) *Match {
+	if e.prefilter == nil || at >= len(haystack) {
+		return e.findNFAAt(haystack, at)
+	}
+	e.stats.PrefilterHits++
+
+	// Use FindMatch which returns both start and end positions
+	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
+		start, end := matcher.FindMatch(haystack, at)
+		if start == -1 {
+			return nil
+		}
+		return NewMatch(start, end, haystack)
+	}
+
+	// Fallback: use Find + LiteralLen
+	pos := e.prefilter.Find(haystack, at)
+	if pos == -1 {
+		return nil
+	}
+	literalLen := e.prefilter.LiteralLen()
+	if literalLen > 0 {
+		return NewMatch(pos, pos+literalLen, haystack)
+	}
+	return e.findNFAAt(haystack, pos)
+}
+
+// isMatchTeddy checks for match using Teddy prefilter.
+func (e *Engine) isMatchTeddy(haystack []byte) bool {
+	if e.prefilter == nil {
+		return e.isMatchNFA(haystack)
+	}
+	e.stats.PrefilterHits++
+	return e.prefilter.Find(haystack, 0) != -1
+}
+
+// findIndicesTeddy returns indices using Teddy prefilter - zero alloc.
+func (e *Engine) findIndicesTeddy(haystack []byte) (int, int, bool) {
+	if e.prefilter == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	e.stats.PrefilterHits++
+
+	// Use FindMatch which returns both start and end positions
+	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
+		start, end := matcher.FindMatch(haystack, 0)
+		if start == -1 {
+			return -1, -1, false
+		}
+		return start, end, true
+	}
+
+	// Fallback: use Find + LiteralLen
+	pos := e.prefilter.Find(haystack, 0)
+	if pos == -1 {
+		return -1, -1, false
+	}
+	literalLen := e.prefilter.LiteralLen()
+	if literalLen > 0 {
+		return pos, pos + literalLen, true
+	}
+	return e.findIndicesNFAAt(haystack, pos)
+}
+
+// findIndicesTeddyAt returns indices using Teddy at position - zero alloc.
+func (e *Engine) findIndicesTeddyAt(haystack []byte, at int) (int, int, bool) {
+	if e.prefilter == nil || at >= len(haystack) {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	e.stats.PrefilterHits++
+
+	// Use FindMatch which returns both start and end positions
+	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
+		start, end := matcher.FindMatch(haystack, at)
+		if start == -1 {
+			return -1, -1, false
+		}
+		return start, end, true
+	}
+
+	// Fallback: use Find + LiteralLen
+	pos := e.prefilter.Find(haystack, at)
+	if pos == -1 {
+		return -1, -1, false
+	}
+	literalLen := e.prefilter.LiteralLen()
+	if literalLen > 0 {
+		return pos, pos + literalLen, true
+	}
+	return e.findIndicesNFAAt(haystack, pos)
 }
 
 // findNFA searches using NFA (PikeVM) directly.

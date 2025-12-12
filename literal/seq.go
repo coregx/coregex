@@ -175,6 +175,32 @@ func (s *Seq) IsFinite() bool {
 	return !s.IsEmpty()
 }
 
+// AllComplete returns true if all literals in the sequence are complete.
+// Complete literals represent full matches - no regex engine verification needed.
+//
+// This is used to enable the "literal engine bypass" optimization:
+// when all extracted literals are complete, we can skip DFA construction
+// and use just the prefilter (Teddy/Memmem) for searching.
+//
+// Example:
+//
+//	// For pattern "(foo|bar|baz)", literals are complete
+//	literals := extractor.ExtractPrefixes(re)
+//	if literals.AllComplete() {
+//	    // Use prefilter directly, skip DFA
+//	}
+func (s *Seq) AllComplete() bool {
+	if s == nil || s.IsEmpty() {
+		return false
+	}
+	for _, lit := range s.literals {
+		if !lit.Complete {
+			return false
+		}
+	}
+	return true
+}
+
 // Clone returns a deep copy of the sequence.
 // All literals and their byte slices are duplicated.
 //
