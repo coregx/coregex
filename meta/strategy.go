@@ -203,7 +203,11 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 	innerInfo := extractor.ExtractInnerForReverseSearch(re)
 	if innerInfo != nil {
 		lcp := innerInfo.Literals.LongestCommonPrefix()
-		if len(lcp) >= config.MinLiteralLen {
+		// For inner literals, we accept single characters (MinLiteralLen=1)
+		// because even a single rare character like '@' can provide significant
+		// speedup when found with SIMD memchr.
+		minInnerLen := 1
+		if len(lcp) >= minInnerLen {
 			// Good inner literal available - use ReverseInner with AST splitting
 			return UseReverseInner
 		}
