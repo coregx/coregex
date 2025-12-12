@@ -132,7 +132,7 @@ func TestSelectStrategy(t *testing.T) {
 		{"small literal", "abc", 10, UseNFA, true},
 		{"medium with literals", "(foo|bar)", 25, UseDFA, true},
 		{"large without literals", "a*b*c*d*e*", 120, UseDFA, false},
-		{"medium without literals", "(a|b|c)", 50, UseBoth, false},
+		{"medium without literals (char class with capture)", "(a|b|c)", 50, UseBoundedBacktracker, false},
 	}
 
 	for _, tt := range tests {
@@ -156,7 +156,7 @@ func TestSelectStrategy(t *testing.T) {
 			strategy := SelectStrategy(nfaEngine, re, literals, config)
 
 			// Verify it's one of the valid strategies
-			if strategy != UseNFA && strategy != UseDFA && strategy != UseBoth && strategy != UseReverseAnchored && strategy != UseReverseSuffix {
+			if strategy != UseNFA && strategy != UseDFA && strategy != UseBoth && strategy != UseReverseAnchored && strategy != UseReverseSuffix && strategy != UseBoundedBacktracker {
 				t.Errorf("invalid strategy: %v", strategy)
 			}
 

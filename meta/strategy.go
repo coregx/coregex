@@ -221,6 +221,11 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 // isSimpleCharClass checks if a regexp is a simple character class pattern
 // like [0-9], \d, \w, etc. that doesn't benefit from DFA overhead.
 // Returns true for patterns that are just repeats of character classes.
+//
+// This also handles patterns with capture groups wrapping character classes,
+// like (a|b|c)+ which Go's parser optimizes to Plus(Capture(CharClass)).
+// BoundedBacktracker can handle capture groups efficiently (they're epsilon
+// transitions in the NFA), and is 3-7x faster than PikeVM for these patterns.
 func isSimpleCharClass(re *syntax.Regexp) bool {
 	if re == nil {
 		return false
@@ -244,6 +249,12 @@ func isSimpleCharClass(re *syntax.Regexp) bool {
 			}
 		}
 		return true
+	case syntax.OpCapture:
+		// Look through capture groups - (a|b|c)+ parses as Plus(Capture(CharClass))
+		// BoundedBacktracker handles captures correctly (epsilon transitions)
+		if len(re.Sub) == 1 {
+			return isSimpleCharClass(re.Sub[0])
+		}
 	}
 	return false
 }
