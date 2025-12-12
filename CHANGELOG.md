@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Single-character inner literals enabled**
   - Rare characters like `@` in email patterns provide significant speedup
   - `UseReverseInner` strategy now accepts 1-byte inner literals
+  - Email pattern `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`: **11-42x faster** than stdlib
 
 ### Performance Summary
 All tested patterns now faster than Go stdlib:
@@ -53,6 +54,7 @@ All tested patterns now faster than Go stdlib:
 | `(a\|b\|c)+` | 1.8x slower | **2.5x faster** | +4.5x |
 | `\d+` | 2x slower | **4.5x faster** | +9x |
 | `.*\.txt` | 1.2x slower | **1.8x faster** | +2.2x |
+| Email pattern | - | **11-42x faster** | via ReverseInner with `@` |
 
 ---
 
