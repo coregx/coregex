@@ -224,7 +224,7 @@ func TestExtractSuffixes(t *testing.T) {
 	}{
 		{"world", []string{"world"}, "simple literal"},
 		{"(foo|bar)", []string{"foo", "bar"}, "alternation"},
-		{"test[xyz]", []string{"x", "y", "z"}, "literal + char class"},
+		{"test[xyz]", []string{"testx", "testy", "testz"}, "literal + char class"},
 		{"hello.*world", []string{"world"}, "prefix + wildcard + suffix"},
 		{"foo.*", []string{}, "wildcard suffix (no reliable suffix)"},
 	}

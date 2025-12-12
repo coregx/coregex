@@ -25,11 +25,12 @@ A **production-grade regex engine** for Go with dramatic performance improvement
 - 💾 **Zero allocations** in hot paths (`IsMatch`, `FindIndices` - 0 allocs/op)
 
 🏗️ **Architecture**
-- 🧠 **Meta-engine** orchestrates strategy selection (DFA/NFA/ReverseAnchored/ReverseInner)
+- 🧠 **Meta-engine** orchestrates strategy selection (DFA/NFA/ReverseAnchored/ReverseInner/ReverseSuffixSet)
 - ⚡ **Lazy DFA** with configurable caching (on-demand state construction)
 - 🔄 **Pike VM** (Thompson's NFA) for guaranteed O(n×m) performance
 - 🔙 **Reverse Search** for `$` anchor and suffix patterns (1000x+ speedup)
 - 🎯 **ReverseInner** for `.*keyword.*` patterns with bidirectional DFA (3000x+ speedup)
+- 🎯 **ReverseSuffixSet** for `.*\.(txt|log|md)` multi-suffix patterns (34-385x speedup) - **NEW in v0.8.20**
 - ⚡ **OnePass DFA** for simple anchored patterns (10x faster captures, 0 allocs)
 - ⚡ **BoundedBacktracker** for character class patterns (`\d+`, `\w+`, `(a|b|c)+`) - 2.5x faster than stdlib
 - 📌 **Prefilter coordination** (memchr/memmem/teddy)
@@ -174,6 +175,7 @@ func benchmarkSearch(pattern string, text []byte) {
 | **`.*keyword.*` Find** | 250KB | 15.2 ms | **8 µs** | **1,894x faster** |
 | **`.*@example\.com` FindAll** | 6MB | 316 ms | **3.6 ms** | **87x faster** |
 | **`(foo\|bar\|baz\|qux)`** | 1KB | 9.7 µs | **40 ns** | **242x faster** |
+| **`.*\.(txt\|log\|md)`** | 1KB | 15.5 µs | **454 ns** | **34x faster** |
 | **`\d+`** | 1KB | 6.7 µs | **1.5 µs** | **4.5x faster** |
 | **`(a\|b\|c)+`** | 1KB | 7.3 µs | **3.0 µs** | **2.5x faster** |
 | **Email pattern** | 1KB | 22 µs | **2 µs** | **11x faster** |
@@ -182,6 +184,7 @@ func benchmarkSearch(pattern string, text []byte) {
 **Key insights:**
 - **Inner literal patterns** (`.*keyword.*`) see massive speedups (2000-3000x+) through ReverseInner optimization (v0.8.0)
 - **Suffix patterns** (`.*\.txt`) see 1000x+ speedups through ReverseSuffix optimization
+- **Suffix alternations** (`.*\.(txt|log|md)`) now **34-385x faster** via ReverseSuffixSet with Teddy prefilter (v0.8.20) - optimization NOT present in rust-regex!
 - **FindAll with suffix patterns** (`.*@example\.com`) now **87x faster** via ReverseSuffix FindAll optimization (v0.8.19)
 - **Alternation patterns** (`(foo|bar|baz|qux)`) now 242x faster via Teddy SIMD prefilter (v0.8.18)
 - **Email patterns** now 11-42x faster via ReverseInner with `@` inner literal (v0.8.18)
@@ -204,7 +207,7 @@ See [benchmark/](benchmark/) for detailed comparisons.
 | **Lazy DFA**         | ✅     | On-demand state construction |
 | **Pike VM (NFA)**    | ✅     | Thompson's construction |
 | **Zero-alloc API**   | ✅     | **NEW in v0.8.15** - `IsMatch`, `FindIndices` with 0 allocs |
-| **Reverse Search**   | ✅     | ReverseAnchored (v0.4.0), ReverseSuffix (v0.6.0), **ReverseInner (v0.8.0)** |
+| **Reverse Search**   | ✅     | ReverseAnchored (v0.4.0), ReverseSuffix (v0.6.0), ReverseInner (v0.8.0), **ReverseSuffixSet (v0.8.20)** |
 | **OnePass DFA**      | ✅     | **NEW in v0.7.0** - 10x faster captures, 0 allocs |
 | **Unicode support**  | ✅     | Via `regexp/syntax` |
 | **Capture groups**   | ✅     | FindSubmatch, FindSubmatchIndex |
@@ -396,15 +399,15 @@ Contributions are welcome! This is an experimental project and we'd love your he
                         |  memchr | memmem | teddy | aho-corasick  |
                         +--------------------+---------------------+
                                              |
-        +----------+----------+----------+----------+----------+----------+
-        |          |          |          |          |          |          |
-        v          v          v          v          v          v          v
-    +-------+  +-------+  +-------+  +-------+  +-------+  +-------+  +-------+
-    | Lazy  |  | Pike  |  |Reverse|  |Reverse|  |Reverse|  |OnePass|  |Bounded|
-    | DFA   |  | VM    |  |Anchord|  |Suffix |  |Inner  |  | DFA   |  |Backtrk|
-    +-------+  +-------+  +-------+  +-------+  +-------+  +-------+  +-------+
-        |          |          |          |          |          |          |
-        +----------+----------+----------+----------+----------+----------+
+    +--------+--------+--------+--------+--------+--------+--------+--------+
+    |        |        |        |        |        |        |        |        |
+    v        v        v        v        v        v        v        v        v
+ +------+ +------+ +------+ +------+ +------+ +------+ +------+ +------+
+ | Lazy | | Pike | |Revers| |Revers| |Revers| |Revers| |OnePas| |Boundd|
+ | DFA  | | VM   | |Anchor| |Suffix| |Inner | |SufSet| | DFA  | |Bcktrk|
+ +------+ +------+ +------+ +------+ +------+ +------+ +------+ +------+
+    |        |        |        |        |        |        |        |
+    +--------+--------+--------+--------+--------+--------+--------+
                                              |
                         +--------------------+---------------------+
                         |           SIMD Primitives                |
@@ -412,12 +415,14 @@ Contributions are welcome! This is an experimental project and we'd love your he
                         +------------------------------------------+
 
 Strategies:
-  - UseDFA:        Prefilter + Lazy DFA (patterns with literals)
-  - UseNFA:        Pike VM only (tiny patterns, no literals)
-  - UseTeddy:      Teddy prefilter only (exact alternations like foo|bar|baz)
-  - UseReverse*:   Backward search ($-anchored, suffix, inner literals)
-  - UseOnePass:    Zero-alloc captures (simple anchored patterns)
-  - UseBounded:    Bit-vector backtracker (char classes like \d+, \w+)
+  - UseDFA:            Prefilter + Lazy DFA (patterns with literals)
+  - UseNFA:            Pike VM only (tiny patterns, no literals)
+  - UseTeddy:          Teddy prefilter only (exact alternations like foo|bar|baz)
+  - UseReverseSuffix:  Backward search for suffix patterns (.*\.txt)
+  - UseReverseSuffixSet: Teddy multi-suffix for alternations (.*\.(txt|log|md)) - NEW!
+  - UseReverseInner:   Bidirectional search for inner literals (.*keyword.*)
+  - UseOnePass:        Zero-alloc captures (simple anchored patterns)
+  - UseBounded:        Bit-vector backtracker (char classes like \d+, \w+)
 ```
 
 **Key components:**

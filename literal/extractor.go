@@ -284,25 +284,63 @@ func (e *Extractor) extractSuffixes(re *syntax.Regexp, depth int) *Seq {
 		return NewSeq(NewLiteral(bytes, true))
 
 	case syntax.OpConcat:
-		// Concatenation: take suffix from LAST sub-expression
+		// Concatenation: take suffix from LAST sub-expression and extend with preceding literals
+		// This implements the "cross_reverse" operation from rust-regex.
+		//
+		// Example: for `.*\.(txt|log|md)`:
+		//   1. Extract from last part (txt|log|md) → ["txt", "log", "md"]
+		//   2. Cross with preceding "." → [".txt", ".log", ".md"]
+		//   3. Stop at .* (non-literal) → mark as incomplete
 		if len(re.Sub) == 0 {
 			return NewSeq()
 		}
 
 		// Get suffixes from last part
-		lastSuffixes := e.extractSuffixes(re.Sub[len(re.Sub)-1], depth+1)
-
-		// If last part has complete literals, mark as incomplete if more precedes
-		if lastSuffixes.Len() > 0 && len(re.Sub) > 1 {
-			lits := make([]Literal, lastSuffixes.Len())
-			for i := 0; i < lastSuffixes.Len(); i++ {
-				lit := lastSuffixes.Get(i)
-				lits[i] = NewLiteral(lit.Bytes, false) // Mark as incomplete
-			}
-			return NewSeq(lits...)
+		suffixes := e.extractSuffixes(re.Sub[len(re.Sub)-1], depth+1)
+		if suffixes.IsEmpty() {
+			return NewSeq()
 		}
 
-		return lastSuffixes
+		// Walk backwards through concatenation, extending suffixes with preceding literals
+		for i := len(re.Sub) - 2; i >= 0; i-- {
+			sub := re.Sub[i]
+
+			// Can only extend with literal sub-expressions
+			if sub.Op != syntax.OpLiteral {
+				// Non-literal encountered: mark all suffixes as incomplete and stop
+				lits := make([]Literal, suffixes.Len())
+				for j := 0; j < suffixes.Len(); j++ {
+					lit := suffixes.Get(j)
+					lits[j] = NewLiteral(lit.Bytes, false) // Mark as incomplete
+				}
+				return NewSeq(lits...)
+			}
+
+			// Prepend this literal to all suffixes (cross_reverse)
+			prefix := runeSliceToBytes(sub.Rune)
+			lits := make([]Literal, suffixes.Len())
+			for j := 0; j < suffixes.Len(); j++ {
+				lit := suffixes.Get(j)
+				// Create new byte slice: prefix + suffix
+				newBytes := make([]byte, len(prefix)+len(lit.Bytes))
+				copy(newBytes, prefix)
+				copy(newBytes[len(prefix):], lit.Bytes)
+				// Truncate if too long
+				if len(newBytes) > e.config.MaxLiteralLen {
+					// For suffix, keep the last MaxLiteralLen bytes
+					newBytes = newBytes[len(newBytes)-e.config.MaxLiteralLen:]
+				}
+				lits[j] = NewLiteral(newBytes, lit.Complete)
+			}
+			suffixes = NewSeq(lits...)
+
+			// Check size limit
+			if suffixes.Len() > e.config.MaxLiterals {
+				return suffixes
+			}
+		}
+
+		return suffixes
 
 	case syntax.OpAlternate:
 		// Alternation: union of all alternatives

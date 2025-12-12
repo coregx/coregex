@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2025-12-12 | **Current Version**: v0.8.19 | **Target**: v1.0.0 stable
+**Last Updated**: 2025-12-12 | **Current Version**: v0.8.20 | **Target**: v1.0.0 stable
 
 ---
 
@@ -12,12 +12,13 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 
 ### Current State vs Target
 
-| Metric | Current (v0.8.19) | Target (v1.0.0) |
+| Metric | Current (v0.8.20) | Target (v1.0.0) |
 |--------|-------------------|-----------------|
 | Inner literal speedup | **87-3154x** | ✅ Achieved |
 | Case-insensitive speedup | **263x** | ✅ Achieved |
 | Alternation speedup | **242x** | ✅ Achieved |
-| Reverse search | **Yes (3 strategies)** | ✅ Achieved |
+| Suffix alternation speedup | **34-385x** | ✅ Achieved |
+| Reverse search | **Yes (4 strategies)** | ✅ Achieved |
 | OnePass DFA | **Yes** | ✅ Achieved |
 | Teddy SIMD prefilter | **Yes** | ✅ Achieved |
 | BoundedBacktracker | **Yes** | ✅ Achieved |
@@ -29,7 +30,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 ## Release Strategy
 
 ```
-v0.8.19 (Current) ✅ → FindAll ReverseSuffix optimization (87x faster)
+v0.8.20 (Current) ✅ → ReverseSuffixSet for multi-suffix patterns (34-385x faster)
          ↓
 v0.9.x → Beta testing, API stabilization
          ↓
@@ -50,6 +51,7 @@ v1.0.0 STABLE → Production release with API stability guarantee
 - ✅ **v0.8.0**: ReverseInner (3000x+ for `.*keyword.*`)
 - ✅ **v0.8.14-18**: GoAWK integration fixes, Teddy prefilter, BoundedBacktracker
 - ✅ **v0.8.19**: FindAll ReverseSuffix optimization (87x faster)
+- ✅ **v0.8.20**: ReverseSuffixSet for multi-suffix patterns (34-385x faster)
 
 ---
 
@@ -141,14 +143,15 @@ v1.0.0 STABLE → Production release with API stability guarantee
 
 ## Feature Comparison Matrix
 
-| Feature | RE2 | rust-regex | coregex v0.8.19 | coregex v1.0 |
+| Feature | RE2 | rust-regex | coregex v0.8.20 | coregex v1.0 |
 |---------|-----|------------|-----------------|--------------|
 | Lazy DFA | ✅ | ✅ | ✅ | ✅ |
 | Thompson NFA | ✅ | ✅ | ✅ | ✅ |
 | PikeVM | ✅ | ✅ | ✅ | ✅ |
 | Teddy SIMD | ❌ | ✅ | ✅ | ✅ |
 | Start State Cache | 8 | 6 | 6 | ✅ |
-| Reverse Search | ✅ | ✅ (3) | ✅ (3) | ✅ |
+| Reverse Search | ✅ | ✅ (3) | ✅ (4) | ✅ |
+| ReverseSuffixSet | ❌ | ❌ | ✅ | ✅ |
 | OnePass DFA | ✅ | ✅ | ✅ | ✅ |
 | BoundedBacktracker | ✅ | ✅ | ✅ | ✅ |
 | Named Captures | ✅ | ✅ | ✅ | ✅ |
@@ -161,12 +164,14 @@ v1.0.0 STABLE → Production release with API stability guarantee
 
 ## Performance Targets
 
-### Current (v0.8.19) ✅ ACHIEVED
+### Current (v0.8.20) ✅ ACHIEVED
 
 | Pattern Type | stdlib | coregex | Speedup | Status |
 |--------------|--------|---------|---------|--------|
 | Inner literal `.*keyword.*` | 12.6ms | 4µs | **3154x** | ✅ |
 | Suffix `.*\.txt` | 1.3ms | 855ns | **1549x** | ✅ |
+| Suffix alternation `.*\.(txt\|log\|md)` 1KB | 15.5µs | 454ns | **34x** | ✅ |
+| Suffix alternation `.*\.(txt\|log\|md)` 1MB | 57ms | 147µs | **385x** | ✅ |
 | FindAll `.*@suffix` | 316ms | 3.6ms | **87x** | ✅ |
 | Alternation `(foo\|bar\|...)` | 9.7µs | 40ns | **242x** | ✅ |
 | Case-insensitive 32KB | 1.2ms | 4.6µs | **263x** | ✅ |
@@ -214,7 +219,8 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.8.19** | 2025-12-12 | Performance | **FindAll ReverseSuffix (87x faster)** |
+| **v0.8.20** | 2025-12-12 | Performance | **ReverseSuffixSet (34-385x faster) - NOT in rust-regex!** |
+| v0.8.19 | 2025-12-12 | Performance | FindAll ReverseSuffix (87x faster) |
 | v0.8.18 | 2025-12-12 | Performance | Teddy prefilter for alternations (242x faster) |
 | v0.8.17 | 2025-12-12 | Feature | BoundedBacktracker engine |
 | v0.8.14-16 | 2025-12-11 | Fixes | GoAWK integration, literal fast path |
@@ -229,4 +235,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.8.19 | Next: v0.9.x (Beta) | Target: v1.0.0*
+*Current: v0.8.20 | Next: v0.9.x (Beta) | Target: v1.0.0*
