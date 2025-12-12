@@ -132,6 +132,18 @@ type Prefilter interface {
 	HeapBytes() int
 }
 
+// MatchFinder is an optional interface for prefilters that can return
+// the matched range directly, avoiding the need for NFA verification.
+//
+// This is particularly useful for multi-pattern prefilters like Teddy
+// where the matched pattern length varies.
+type MatchFinder interface {
+	// FindMatch returns the start and end positions of the first match.
+	// Returns (start, end) if found, (-1, -1) if not found.
+	// The matched bytes are haystack[start:end].
+	FindMatch(haystack []byte, start int) (start2, end int)
+}
+
 // Builder constructs the optimal prefilter from extracted literals.
 //
 // The builder analyzes the literal sequences (prefixes and suffixes) and

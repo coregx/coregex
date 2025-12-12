@@ -442,9 +442,29 @@ func TestTeddy_IsComplete(t *testing.T) {
 		t.Fatal("NewTeddy() returned nil")
 	}
 
-	// For now, Teddy always requires verification (complete=false)
-	if teddy.IsComplete() {
-		t.Error("IsComplete() = true, want false (verification always required)")
+	// Teddy is always complete because Find() verifies full pattern matches
+	if !teddy.IsComplete() {
+		t.Error("IsComplete() = false, want true (Teddy always verifies)")
+	}
+
+	// LiteralLen returns the uniform length for same-length patterns
+	if teddy.LiteralLen() != 3 {
+		t.Errorf("LiteralLen() = %d, want 3", teddy.LiteralLen())
+	}
+
+	// Test non-uniform length patterns - IsComplete still true, but LiteralLen=0
+	nonUniformPatterns := [][]byte{[]byte("foo"), []byte("bar"), []byte("hello")}
+	nonUniformTeddy := NewTeddy(nonUniformPatterns, nil)
+	if nonUniformTeddy == nil {
+		t.Fatal("NewTeddy(nonUniform) returned nil")
+	}
+	// IsComplete is still true because Teddy.Find() verifies full pattern
+	if !nonUniformTeddy.IsComplete() {
+		t.Error("IsComplete() = false for non-uniform, want true")
+	}
+	// But LiteralLen is 0 for non-uniform lengths
+	if nonUniformTeddy.LiteralLen() != 0 {
+		t.Errorf("LiteralLen() = %d for non-uniform, want 0", nonUniformTeddy.LiteralLen())
 	}
 }
 
