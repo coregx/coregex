@@ -397,6 +397,120 @@ func BenchmarkCompile(b *testing.B) {
 	}
 }
 
+// BenchmarkCharClass benchmarks character class patterns
+// These are critical for Issue #44 - char_class 14x slower than Rust
+func BenchmarkCharClass(b *testing.B) {
+	// Generate test data with letters, digits, and spaces
+	input1KB := make([]byte, 1024)
+	for i := range input1KB {
+		switch i % 10 {
+		case 0, 1, 2:
+			input1KB[i] = 'a' + byte(i%26)
+		case 3, 4:
+			input1KB[i] = '0' + byte(i%10)
+		default:
+			input1KB[i] = ' '
+		}
+	}
+
+	input32KB := make([]byte, 32*1024)
+	for i := range input32KB {
+		switch i % 10 {
+		case 0, 1, 2:
+			input32KB[i] = 'a' + byte(i%26)
+		case 3, 4:
+			input32KB[i] = '0' + byte(i%10)
+		default:
+			input32KB[i] = ' '
+		}
+	}
+
+	tests := []struct {
+		name     string
+		pattern  string
+		haystack []byte
+	}{
+		// Simple char classes - should use CharClassSearcher
+		{"word_class/1KB", `\w+`, input1KB},
+		{"word_class/32KB", `\w+`, input32KB},
+		{"digit_class/1KB", `\d+`, input1KB},
+		{"letter_range/1KB", `[a-z]+`, input1KB},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			engine, err := Compile(tt.pattern)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				match := engine.Find(tt.haystack)
+				if match == nil {
+					b.Fatal("expected match")
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkCharClassFindAll benchmarks FindAll on char_class patterns
+func BenchmarkCharClassFindAll(b *testing.B) {
+	// Generate test data with letters, digits, and spaces
+	input1KB := make([]byte, 1024)
+	for i := range input1KB {
+		switch i % 10 {
+		case 0, 1, 2:
+			input1KB[i] = 'a' + byte(i%26)
+		case 3, 4:
+			input1KB[i] = '0' + byte(i%10)
+		default:
+			input1KB[i] = ' '
+		}
+	}
+
+	tests := []struct {
+		name    string
+		pattern string
+	}{
+		{"word_class", `\w+`},
+		{"digit_class", `\d+`},
+		{"letter_range", `[a-z]+`},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name+"/1KB", func(b *testing.B) {
+			engine, err := Compile(tt.pattern)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				// Use FindIndicesAt to iterate through all matches
+				at := 0
+				count := 0
+				for {
+					_, end, found := engine.FindIndicesAt(input1KB, at)
+					if !found {
+						break
+					}
+					count++
+					at = end
+				}
+				if count == 0 {
+					b.Fatal("expected matches")
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkFind benchmarks search performance
 func BenchmarkFind(b *testing.B) {
 	tests := []struct {

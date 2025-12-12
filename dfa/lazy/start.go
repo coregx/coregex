@@ -184,6 +184,12 @@ type StartConfig struct {
 //
 // This enables correct handling of patterns like "^abc" and "\bword".
 func ComputeStartState(builder *Builder, n *nfa.NFA, config StartConfig) (*State, StateKey) {
+	return ComputeStartStateWithStride(builder, n, config, defaultStride)
+}
+
+// ComputeStartStateWithStride computes the DFA start state with explicit stride.
+// The stride should be ByteClasses.AlphabetLen() for memory efficiency.
+func ComputeStartStateWithStride(builder *Builder, n *nfa.NFA, config StartConfig, stride int) (*State, StateKey) {
 	// Select NFA start state based on anchored flag
 	var nfaStart nfa.StateID
 	if config.Anchored {
@@ -224,8 +230,8 @@ func ComputeStartState(builder *Builder, n *nfa.NFA, config StartConfig) (*State
 	// different isFromWord are DIFFERENT DFA states!
 	key := ComputeStateKeyWithWord(startStateSet, isFromWord)
 
-	// Create DFA state with word context (ID will be assigned by caller)
-	state := NewStateWithWordContext(InvalidState, startStateSet, isMatch, isFromWord)
+	// Create DFA state with word context and stride (ID will be assigned by caller)
+	state := NewStateWithStride(InvalidState, startStateSet, isMatch, isFromWord, stride)
 
 	return state, key
 }

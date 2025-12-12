@@ -32,7 +32,8 @@ A **production-grade regex engine** for Go with dramatic performance improvement
 - 🎯 **ReverseInner** for `.*keyword.*` patterns with bidirectional DFA (3000x+ speedup)
 - 🎯 **ReverseSuffixSet** for `.*\.(txt|log|md)` multi-suffix patterns (34-385x speedup) - **NEW in v0.8.20**
 - ⚡ **OnePass DFA** for simple anchored patterns (10x faster captures, 0 allocs)
-- ⚡ **BoundedBacktracker** for character class patterns (`\d+`, `\w+`, `(a|b|c)+`) - 2.5x faster than stdlib
+- ⚡ **CharClassSearcher** for simple char_class patterns (`\w+`, `\d+`, `[a-z]+`) - **23x faster** than stdlib, **2x faster than Rust**!
+- ⚡ **BoundedBacktracker** for char_class with captures (`(\w)+`, `(a|b|c)+`) - 2.5x faster than stdlib
 - 📌 **Prefilter coordination** (memchr/memmem/teddy)
 
 🎯 **API Design**
@@ -176,6 +177,7 @@ func benchmarkSearch(pattern string, text []byte) {
 | **`.*@example\.com` FindAll** | 6MB | 316 ms | **3.6 ms** | **87x faster** |
 | **`(foo\|bar\|baz\|qux)`** | 1KB | 9.7 µs | **40 ns** | **242x faster** |
 | **`.*\.(txt\|log\|md)`** | 1KB | 15.5 µs | **454 ns** | **34x faster** |
+| **`[\w]+`** | 6MB | 623 ms | **27 ms** | **23x faster** |
 | **`\d+`** | 1KB | 6.7 µs | **1.5 µs** | **4.5x faster** |
 | **`(a\|b\|c)+`** | 1KB | 7.3 µs | **3.0 µs** | **2.5x faster** |
 | **Email pattern** | 1KB | 22 µs | **2 µs** | **11x faster** |
@@ -188,7 +190,8 @@ func benchmarkSearch(pattern string, text []byte) {
 - **FindAll with suffix patterns** (`.*@example\.com`) now **87x faster** via ReverseSuffix FindAll optimization (v0.8.19)
 - **Alternation patterns** (`(foo|bar|baz|qux)`) now 242x faster via Teddy SIMD prefilter (v0.8.18)
 - **Email patterns** now 11-42x faster via ReverseInner with `@` inner literal (v0.8.18)
-- **Character class patterns** (`\d+`, `(a|b|c)+`) 2.5-4.5x faster via BoundedBacktracker (v0.8.17-18)
+- **Simple char_class patterns** (`[\w]+`, `\d+`, `[a-z]+`) now **23x faster** via CharClassSearcher - **2x faster than Rust**! (v0.8.21)
+- **Char_class with captures** (`(\w)+`, `(a|b|c)+`) 2.5-4.5x faster via BoundedBacktracker (v0.8.17-18)
 - **Case-insensitive** patterns (`(?i)...`) are also excellent (100-263x) - stdlib backtracking is slow, our DFA is fast
 - **Simple patterns** see 1-5x improvement depending on literals
 
@@ -254,7 +257,8 @@ coregex uses Go's `regexp/syntax` for pattern parsing, supporting:
 - 🚀 **Zero-allocation** `FindIndices()` - returns `(start, end, found)` tuple (v0.8.15)
 - 🚀 Optimized `FindAll`/`ReplaceAll` with lazy allocation (v0.8.16)
 - ⚡ Alternation patterns (`(foo|bar|baz)`) **242x faster** via Teddy SIMD prefilter (v0.8.18)
-- ⚡ Character class patterns (`\d+`, `\w+`, `(a|b|c)+`) **2.5-4.5x faster** via BoundedBacktracker (v0.8.17-18)
+- ⚡ Simple char_class patterns (`[\w]+`, `\d+`) **23x faster** via CharClassSearcher (v0.8.21) - **2x faster than Rust**!
+- ⚡ Char_class with captures (`(\w)+`, `(a|b|c)+`) **2.5-4.5x faster** via BoundedBacktracker (v0.8.17-18)
 - ⚡ First match slower (compilation cost), repeated matches faster
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
@@ -419,10 +423,11 @@ Strategies:
   - UseNFA:            Pike VM only (tiny patterns, no literals)
   - UseTeddy:          Teddy prefilter only (exact alternations like foo|bar|baz)
   - UseReverseSuffix:  Backward search for suffix patterns (.*\.txt)
-  - UseReverseSuffixSet: Teddy multi-suffix for alternations (.*\.(txt|log|md)) - NEW!
+  - UseReverseSuffixSet: Teddy multi-suffix for alternations (.*\.(txt|log|md))
   - UseReverseInner:   Bidirectional search for inner literals (.*keyword.*)
   - UseOnePass:        Zero-alloc captures (simple anchored patterns)
-  - UseBounded:        Bit-vector backtracker (char classes like \d+, \w+)
+  - UseCharClass:      256-byte lookup table ([\w]+, \d+) - 23x faster, 2x faster than Rust! NEW!
+  - UseBounded:        Bit-vector backtracker (char classes with captures)
 ```
 
 **Key components:**
@@ -433,9 +438,10 @@ Strategies:
 5. **ReverseSuffix** - 1000x+ speedup for `.*\.txt` suffix patterns (v0.6.0)
 6. **OnePass DFA** - 10x faster captures with 0 allocations (v0.7.0)
 7. **ReverseInner** - 3000x+ speedup for `.*keyword.*` patterns (v0.8.0)
-8. **BoundedBacktracker** - 2.5x faster for character class patterns (`\d+`, `\w+`)
-9. **UseTeddy** - 242x faster for exact alternations (`foo|bar|baz`) with literal engine bypass
-10. **SIMD Primitives** - 10-15x faster byte/substring search
+8. **CharClassSearcher** - 23x faster for `[\w]+` patterns, 2x faster than Rust! (v0.8.21)
+9. **BoundedBacktracker** - 2.5x faster for char_class with captures (`(\w)+`)
+10. **UseTeddy** - 242x faster for exact alternations (`foo|bar|baz`) with literal engine bypass
+11. **SIMD Primitives** - 10-15x faster byte/substring search
 
 See package documentation on [pkg.go.dev](https://pkg.go.dev/github.com/coregx/coregex) for API details.
 

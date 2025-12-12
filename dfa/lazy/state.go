@@ -24,14 +24,21 @@ const (
 	StartState StateID = 0
 )
 
+// defaultStride is the default alphabet size when ByteClasses compression is not used.
+const defaultStride = 256
+
 // State represents a DFA state with its transitions.
 //
 // A DFA state is deterministic: for each input byte, there is at most one
-// target state. This is represented as a map from byte → StateID.
+// target state. Uses a dynamically-sized transitions slice based on ByteClasses
+// alphabet reduction for memory efficiency.
 //
-// Memory layout is optimized for cache efficiency:
-//   - Small states (few transitions) use a map
-//   - Dense states (many transitions) could use a 256-element array (future optimization)
+// Memory with ByteClasses compression:
+//   - Pattern "hello": ~7 classes * 4 bytes = 28 bytes/state (vs 1KB without compression)
+//   - Pattern "[a-z]+": ~4 classes * 4 bytes = 16 bytes/state
+//   - Complex patterns: typically 8-64 classes = 32-256 bytes/state
+//
+// The lookup is still O(1): transitions[byteClasses.Get(byte)]
 //
 // Word Boundary Tracking (Rust regex-automata approach):
 // The isFromWord field tracks whether this state was entered via a word byte.
@@ -45,9 +52,14 @@ type State struct {
 	// id uniquely identifies this state in the cache
 	id StateID
 
-	// transitions maps input byte → next state ID
-	// For a fully determinized state, this contains all relevant transitions
-	transitions map[byte]StateID
+	// transitions maps equivalence class → next state ID.
+	// The slice length equals the alphabet size (ByteClasses.AlphabetLen()).
+	// InvalidState means no transition for that equivalence class.
+	// Lookup: transitions[byteClasses.Get(byte)]
+	transitions []StateID
+
+	// transitionCount tracks how many valid transitions exist (for statistics/debugging)
+	transitionCount int
 
 	// isMatch indicates if this is an accepting state
 	isMatch bool
@@ -75,22 +87,40 @@ type State struct {
 }
 
 // NewState creates a new DFA state with the given ID and NFA state set.
+// Uses default stride of 256 (no ByteClasses compression).
 // isFromWord indicates if this state was entered via a word byte (for \b/\B handling).
 func NewState(id StateID, nfaStates []nfa.StateID, isMatch bool) *State {
-	return NewStateWithWordContext(id, nfaStates, isMatch, false)
+	return NewStateWithStride(id, nfaStates, isMatch, false, defaultStride)
 }
 
 // NewStateWithWordContext creates a new DFA state with explicit word context.
+// Uses default stride of 256 (no ByteClasses compression).
 // isFromWord indicates if this state was entered via a word byte transition.
 // This is essential for correct word boundary (\b, \B) handling in DFA.
 func NewStateWithWordContext(id StateID, nfaStates []nfa.StateID, isMatch bool, isFromWord bool) *State {
-	// Pre-allocate transitions map with reasonable capacity
-	// Most states have few transitions (< 16)
-	transitions := make(map[byte]StateID, 16)
+	return NewStateWithStride(id, nfaStates, isMatch, isFromWord, defaultStride)
+}
 
+// NewStateWithStride creates a new DFA state with explicit stride (alphabet size).
+// The stride determines the transitions slice size. Use ByteClasses.AlphabetLen()
+// for memory-efficient states with alphabet compression.
+//
+// Parameters:
+//   - id: unique state identifier
+//   - nfaStates: set of NFA states this DFA state represents
+//   - isMatch: true if this is an accepting state
+//   - isFromWord: true if entered via a word byte transition (for \b/\B)
+//   - stride: alphabet size (transitions slice length)
+func NewStateWithStride(id StateID, nfaStates []nfa.StateID, isMatch bool, isFromWord bool, stride int) *State {
 	// Copy NFA states to avoid aliasing
 	nfaStatesCopy := make([]nfa.StateID, len(nfaStates))
 	copy(nfaStatesCopy, nfaStates)
+
+	// Create transitions slice initialized to InvalidState
+	transitions := make([]StateID, stride)
+	for i := range transitions {
+		transitions[i] = InvalidState
+	}
 
 	return &State{
 		id:          id,
@@ -117,17 +147,40 @@ func (s *State) IsFromWord() bool {
 	return s.isFromWord
 }
 
-// Transition returns the next state for the given input byte.
+// Transition returns the next state for the given equivalence class index.
 // Returns (InvalidState, false) if no transition exists.
-func (s *State) Transition(b byte) (StateID, bool) {
-	next, ok := s.transitions[b]
-	return next, ok
+// This is the hot path - O(1) slice lookup.
+//
+// IMPORTANT: The caller must convert the input byte to an equivalence class
+// index via byteClasses.Get(byte) before calling this method.
+func (s *State) Transition(classIdx byte) (StateID, bool) {
+	if int(classIdx) >= len(s.transitions) {
+		return InvalidState, false
+	}
+	next := s.transitions[classIdx]
+	return next, next != InvalidState
 }
 
-// AddTransition adds a transition from this state to another on input byte b.
-// Overwrites any existing transition for this byte.
-func (s *State) AddTransition(b byte, next StateID) {
-	s.transitions[b] = next
+// AddTransition adds a transition from this state to another on equivalence class classIdx.
+// Overwrites any existing transition for this class.
+//
+// IMPORTANT: The caller must convert the input byte to an equivalence class
+// index via byteClasses.Get(byte) before calling this method.
+func (s *State) AddTransition(classIdx byte, next StateID) {
+	if int(classIdx) >= len(s.transitions) {
+		return // Ignore out-of-bounds (shouldn't happen with correct stride)
+	}
+	if s.transitions[classIdx] == InvalidState && next != InvalidState {
+		s.transitionCount++
+	} else if s.transitions[classIdx] != InvalidState && next == InvalidState {
+		s.transitionCount--
+	}
+	s.transitions[classIdx] = next
+}
+
+// Stride returns the alphabet size (number of equivalence classes).
+func (s *State) Stride() int {
+	return len(s.transitions)
 }
 
 // NFAStates returns the NFA states represented by this DFA state
@@ -135,15 +188,15 @@ func (s *State) NFAStates() []nfa.StateID {
 	return s.nfaStates
 }
 
-// TransitionCount returns the number of transitions from this state
+// TransitionCount returns the number of valid transitions from this state
 func (s *State) TransitionCount() int {
-	return len(s.transitions)
+	return s.transitionCount
 }
 
 // String returns a human-readable representation of the state
 func (s *State) String() string {
 	return fmt.Sprintf("DFAState(id=%d, isMatch=%v, transitions=%d, nfaStates=%v)",
-		s.id, s.isMatch, len(s.transitions), s.nfaStates)
+		s.id, s.isMatch, s.transitionCount, s.nfaStates)
 }
 
 // IsAccelerable returns true if this state can use SIMD acceleration.

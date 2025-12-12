@@ -81,6 +81,10 @@ type DFA struct {
 
 	// unanchoredStart caches the unanchored start state ID for hasInProgressPattern
 	unanchoredStart nfa.StateID
+
+	// hasWordBoundary is true if the pattern contains \b or \B assertions.
+	// When false, we can skip expensive word boundary checks in the search loop.
+	hasWordBoundary bool
 }
 
 // hasInProgressPattern checks if any pattern threads are still active (could extend the match).
@@ -239,7 +243,9 @@ func (d *DFA) SearchAtAnchored(haystack []byte, at int) int {
 			return pos
 		}
 
-		nextID, ok := currentState.Transition(b)
+		// Convert byte to equivalence class for transition lookup
+		classIdx := d.byteToClass(b)
+		nextID, ok := currentState.Transition(classIdx)
 		switch {
 		case !ok:
 			nextState, err := d.determinize(currentState, b)
@@ -381,8 +387,9 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 			return true
 		}
 
-		// Get next state
-		nextID, ok := currentState.Transition(b)
+		// Get next state (convert byte to class for transition lookup)
+		classIdx := d.byteToClass(b)
+		nextID, ok := currentState.Transition(classIdx)
 		switch {
 		case !ok:
 			// Determinize on demand
@@ -463,12 +470,14 @@ func (d *DFA) findWithPrefilterAt(haystack []byte, startAt int) int {
 		// Check if word boundary would result in a match BEFORE consuming the byte.
 		// This handles patterns like `test\b` where after matching "test",
 		// the next byte '!' creates a word boundary that satisfies \b.
-		if d.checkWordBoundaryMatch(currentState, b) {
+		// Skip this expensive check for patterns without word boundaries.
+		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
 			return pos // Return current position as match end
 		}
 
-		// Get next state
-		nextID, ok := currentState.Transition(b)
+		// Get next state (convert byte to class for transition lookup)
+		classIdx := d.byteToClass(b)
+		nextID, ok := currentState.Transition(classIdx)
 		var nextState *State
 		switch {
 		case !ok:
@@ -620,12 +629,15 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 		// Check if word boundary would result in a match BEFORE consuming the byte.
 		// This handles patterns like `test\b` where after matching "test",
 		// the next byte '!' creates a word boundary that satisfies \b.
-		if d.checkWordBoundaryMatch(currentState, b) {
+		// Skip this expensive check for patterns without word boundaries.
+		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
 			return pos // Return current position as match end
 		}
 
 		// Check if current state has a transition for this byte
-		nextID, ok := currentState.Transition(b)
+		// Convert byte to equivalence class for transition lookup
+		classIdx := d.byteToClass(b)
+		nextID, ok := currentState.Transition(classIdx)
 		switch {
 		case !ok:
 			// No cached transition: determinize on-demand
@@ -698,15 +710,21 @@ func (d *DFA) determinize(current *State, b byte) (*State, error) {
 	// Need builder for move operations
 	builder := NewBuilder(d.nfa, d.config)
 
+	// Convert input byte to equivalence class index for transition storage
+	// The actual byte value is still used for NFA move operations
+	classIdx := d.byteToClass(b)
+
 	// Compute next NFA state set via move operation WITH word context
 	// This is essential for correct \b and \B handling in DFA.
 	// The current state's isFromWord tells us if the previous byte was a word char.
+	// Note: use actual byte 'b' (not classIdx) for NFA move - NFA uses raw bytes
 	nextNFAStates := builder.moveWithWordContext(current.NFAStates(), b, current.IsFromWord())
 
 	// No transitions on this byte → dead state
 	if len(nextNFAStates) == 0 {
 		// Cache the dead state transition to avoid re-computation
-		current.AddTransition(b, DeadState)
+		// Use classIdx for transition storage (compressed alphabet)
+		current.AddTransition(classIdx, DeadState)
 		// Return nil state with NO error - dead state is NOT an error condition.
 		// This follows the documented behavior: (nil, nil) for dead state.
 		// Returning an error here would incorrectly trigger NFA fallback.
@@ -734,13 +752,14 @@ func (d *DFA) determinize(current *State, b byte) (*State, error) {
 	// Check if state already exists in cache
 	if existing, ok := d.cache.Get(key); ok {
 		// Cache hit: reuse existing state
-		current.AddTransition(b, existing.ID())
+		// Use classIdx for transition storage (compressed alphabet)
+		current.AddTransition(classIdx, existing.ID())
 		return existing, nil
 	}
 
-	// Create new DFA state with word context
+	// Create new DFA state with word context and compressed alphabet stride
 	isMatch := builder.containsMatchState(nextNFAStates)
-	newState := NewStateWithWordContext(InvalidState, nextNFAStates, isMatch, nextIsFromWord)
+	newState := NewStateWithStride(InvalidState, nextNFAStates, isMatch, nextIsFromWord, d.AlphabetLen())
 
 	// Insert into cache
 	_, err := d.cache.Insert(key, newState)
@@ -753,7 +772,8 @@ func (d *DFA) determinize(current *State, b byte) (*State, error) {
 	d.registerState(newState)
 
 	// Add transition from current state to new state
-	current.AddTransition(b, newState.ID())
+	// Use classIdx for transition storage (compressed alphabet)
+	current.AddTransition(classIdx, newState.ID())
 
 	return newState, nil
 }
@@ -856,10 +876,10 @@ func (d *DFA) getStartState(haystack []byte, pos int, anchored bool) *State {
 		return d.getState(stateID)
 	}
 
-	// Not cached - compute and store
+	// Not cached - compute and store with proper stride for ByteClasses compression
 	builder := NewBuilder(d.nfa, d.config)
 	config := StartConfig{Kind: kind, Anchored: anchored}
-	state, key := ComputeStartState(builder, d.nfa, config)
+	state, key := ComputeStartStateWithStride(builder, d.nfa, config, d.AlphabetLen())
 
 	// Try to insert into cache using GetOrInsert
 	// This handles the case where another goroutine may have inserted it
@@ -922,8 +942,8 @@ func (d *DFA) tryDetectAcceleration(state *State) {
 		return
 	}
 
-	// Try lazy detection from cached transitions
-	if exitBytes := DetectAccelerationFromCached(state); len(exitBytes) > 0 {
+	// Try lazy detection from cached transitions with ByteClasses support
+	if exitBytes := DetectAccelerationFromCachedWithClasses(state, d.byteClasses); len(exitBytes) > 0 {
 		state.SetAccelBytes(exitBytes)
 	} else {
 		state.MarkAccelChecked()
@@ -992,7 +1012,8 @@ func (d *DFA) ResetCache() {
 	startLook := LookSetFromStartKind(StartText)
 	startStateSet := builder.epsilonClosure([]nfa.StateID{d.nfa.StartUnanchored()}, startLook)
 	isMatch := builder.containsMatchState(startStateSet)
-	startState := NewState(StartState, startStateSet, isMatch)
+	// Use proper stride for ByteClasses compression
+	startState := NewStateWithStride(StartState, startStateSet, isMatch, false, d.AlphabetLen())
 	key := ComputeStateKey(startStateSet)
 	_, _ = d.cache.Insert(key, startState) // Ignore error (cache is empty)
 	d.registerState(startState)
@@ -1017,6 +1038,18 @@ func (d *DFA) AlphabetLen() int {
 		return 256
 	}
 	return d.byteClasses.AlphabetLen()
+}
+
+// byteToClass converts a raw input byte to its equivalence class index.
+// This is the key operation for ByteClasses compression - all transition
+// lookups use the class index instead of the raw byte.
+//
+// Returns the byte itself if ByteClasses are not available (no compression).
+func (d *DFA) byteToClass(b byte) byte {
+	if d.byteClasses == nil {
+		return b
+	}
+	return d.byteClasses.Get(b)
 }
 
 // SearchReverse performs backward DFA search from end to start.
@@ -1058,8 +1091,9 @@ func (d *DFA) SearchReverse(haystack []byte, start, end int) int {
 	for at := end - 1; at >= start; at-- {
 		b := haystack[at] // Direct access, no reversal needed!
 
-		// Get next state
-		nextID, ok := currentState.Transition(b)
+		// Get next state (convert byte to class for transition lookup)
+		classIdx := d.byteToClass(b)
+		nextID, ok := currentState.Transition(classIdx)
 		switch {
 		case !ok:
 			// Determinize on demand
@@ -1118,7 +1152,9 @@ func (d *DFA) IsMatchReverse(haystack []byte, start, end int) bool {
 	for at := end - 1; at >= start; at-- {
 		b := haystack[at]
 
-		nextID, ok := currentState.Transition(b)
+		// Convert byte to equivalence class for transition lookup
+		classIdx := d.byteToClass(b)
+		nextID, ok := currentState.Transition(classIdx)
 		switch {
 		case !ok:
 			nextState, err := d.determinize(currentState, b)
@@ -1169,10 +1205,10 @@ func (d *DFA) getStartStateForReverse(haystack []byte, end int) *State {
 		return d.getState(stateID)
 	}
 
-	// Not cached - compute and store
+	// Not cached - compute and store with proper stride for ByteClasses compression
 	builder := NewBuilder(d.nfa, d.config)
 	config := StartConfig{Kind: kind, Anchored: false}
-	state, key := ComputeStartState(builder, d.nfa, config)
+	state, key := ComputeStartStateWithStride(builder, d.nfa, config, d.AlphabetLen())
 
 	insertedState, existed, err := d.cache.GetOrInsert(key, state)
 	if err != nil {

@@ -328,6 +328,8 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 	// Therefore, we can return immediately on first confirmed match!
 
 	searchStart := 0
+	minPreStart := 0   // Track minimum position for quadratic detection
+	minMatchStart := 0 // Track where last reverse scan ended
 	for {
 		// Find next inner literal candidate
 		pos := s.prefilter.Find(haystack, searchStart)
@@ -336,9 +338,23 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 			break
 		}
 
+		// QUADRATIC BEHAVIOR DETECTION (from rust-regex):
+		// If the new candidate starts before the end of last forward scan,
+		// we have overlapping candidates which causes O(n²) behavior.
+		// Fall back to PikeVM which is O(n) in this case.
+		if pos < minPreStart {
+			// Quadratic behavior detected - use PikeVM fallback
+			start, end, found := s.pikevm.Search(haystack)
+			if found {
+				return NewMatch(start, end, haystack)
+			}
+			return nil
+		}
+
 		// Step 1: Reverse search on PREFIX portion
 		// Check if we can reach this inner literal from an earlier position
-		matchStart := s.reverseDFA.SearchReverse(haystack, 0, pos)
+		// Use minMatchStart as lower bound to avoid re-scanning already verified area
+		matchStart := s.reverseDFA.SearchReverse(haystack, minMatchStart, pos)
 		if matchStart < 0 {
 			// Prefix doesn't match - try next candidate
 			searchStart = pos + 1
@@ -353,7 +369,8 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 		suffixHaystack := haystack[pos:]
 		matchEndRel := s.forwardDFA.Find(suffixHaystack)
 		if matchEndRel < 0 {
-			// Suffix doesn't match - try next candidate
+			// Suffix doesn't match - update minPreStart and try next candidate
+			minPreStart = pos + s.innerLen
 			searchStart = pos + 1
 			if searchStart >= len(haystack) {
 				break
@@ -434,4 +451,66 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 			return false
 		}
 	}
+}
+
+// FindIndicesAt returns match indices starting from position 'at' - zero allocation version.
+// This is used by FindAll* operations for efficient iteration.
+func (s *ReverseInnerSearcher) FindIndicesAt(haystack []byte, at int) (start, end int, found bool) {
+	if at >= len(haystack) {
+		return -1, -1, false
+	}
+
+	// UNIVERSAL MATCH OPTIMIZATION:
+	// For patterns like `.*connection.*` where both prefix and suffix are universal (.*)
+	if s.universalPrefix && s.universalSuffix {
+		// Just check if there's an inner literal anywhere from 'at'
+		pos := s.prefilter.Find(haystack, at)
+		if pos >= 0 {
+			// For universal prefix/suffix, match spans from 'at' to end
+			return at, len(haystack), true
+		}
+		return -1, -1, false
+	}
+
+	// Search for inner literal starting from 'at'
+	searchStart := at
+	minMatchStart := at // Can't match before 'at'
+	for {
+		// Find next inner literal candidate
+		pos := s.prefilter.Find(haystack, searchStart)
+		if pos == -1 {
+			break
+		}
+
+		// Step 1: Reverse search on PREFIX portion
+		// Use 'at' as lower bound - we can't find matches starting before 'at'
+		matchStart := s.reverseDFA.SearchReverse(haystack, minMatchStart, pos)
+		if matchStart < 0 || matchStart < at {
+			// Prefix doesn't match or match starts before 'at' - try next candidate
+			searchStart = pos + 1
+			if searchStart >= len(haystack) {
+				break
+			}
+			continue
+		}
+
+		// Step 2: Forward search on SUFFIX portion
+		suffixHaystack := haystack[pos:]
+		matchEndRel := s.forwardDFA.Find(suffixHaystack)
+		if matchEndRel < 0 {
+			// Suffix doesn't match - try next candidate
+			searchStart = pos + 1
+			if searchStart >= len(haystack) {
+				break
+			}
+			continue
+		}
+
+		// Found valid match
+		matchEnd := pos + matchEndRel
+		return matchStart, matchEnd, true
+	}
+
+	// Fallback to PikeVM
+	return s.pikevm.SearchAt(haystack, at)
 }

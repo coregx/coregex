@@ -14,6 +14,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.21] - 2025-12-13
+
+### Added
+- **CharClassSearcher** - Specialized 256-byte lookup table for simple char_class patterns (Fixes #44)
+  - Patterns like `[\w]+`, `\d+`, `[a-z]+` now use O(1) byte membership test
+  - **23x faster** than stdlib (623ms → 27ms on 6MB input with 1.3M matches)
+  - **2x faster than Rust regex**! (57ms → 27ms)
+  - Zero allocations in hot path
+
+- **UseCharClassSearcher strategy**
+  - Auto-selected for simple char_class patterns without capture groups
+  - Patterns WITH captures (`(\w)+`) continue to use BoundedBacktracker
+
+- **Zero-allocation Count()** method
+  - Uses `FindIndicesAt()` instead of `Find()` to avoid Match object allocation
+  - Critical for benchmarks comparing with Rust `find_iter().count()`
+
+### Fixed
+- **DFA ByteClasses compression** (Rust-style optimization)
+  - Dynamic stride based on equivalence classes instead of fixed 256
+  - Memory-efficient: only allocate transitions for actual alphabet size
+  - Compile memory for `hello` pattern: **1195KB → 598KB** (2x reduction)
+
+- **Removed unused reverseDFA field** from Engine
+  - Was creating redundant reverse DFA for ALL patterns (2x memory overhead)
+  - ReverseAnchoredSearcher and other searchers create their own DFA when needed
+
+- **Reverse NFA ByteClasses registration**
+  - Added `SetRange()` calls in `updateByteRangeState` and `updateSparseState`
+  - Fixes incorrect ByteClasses for reverse DFA (all bytes mapped to single class)
+  - Matches Rust's approach in `nfa.rs`
+
+### Technical
+- New files:
+  - `nfa/charclass_searcher.go` - CharClassSearcher implementation
+  - `nfa/charclass_searcher_test.go` - Unit tests and benchmarks
+  - `nfa/charclass_extract.go` - Byte range extraction from AST
+  - `nfa/charclass_extract_test.go` - Extraction tests
+- Modified: `meta/strategy.go` - Added `UseCharClassSearcher` strategy
+- Modified: `meta/meta.go` - Engine integration, zero-alloc Count(), removed unused reverseDFA
+- Modified: `meta/strategy_test.go` - Strategy selection tests
+- Modified: `dfa/lazy/state.go` - Dynamic stride for ByteClasses compression
+- Modified: `dfa/lazy/builder.go` - ByteClasses-aware state construction
+- Modified: `dfa/lazy/lazy.go` - ByteClasses lookup in transitions
+- Modified: `nfa/reverse.go` - SetRange() calls for ByteClasses registration
+
+### Performance Summary (char_class patterns)
+
+| Pattern | Input | stdlib | coregex | Rust | coregex vs Rust |
+|---------|-------|--------|---------|------|-----------------|
+| `[\w]+` | 6MB, 1.3M matches | 623ms | **27ms** | 57ms | **2.1x faster** |
+
+Compile memory improvements (ByteClasses compression):
+
+| Pattern | Before | After | Improvement |
+|---------|--------|-------|-------------|
+| `hello` | 1195KB | 598KB | **-50%** |
+| char_class runtime | 180ms | 109ms | **-39%** |
+
+---
+
 ## [0.8.20] - 2025-12-12
 
 ### Added
