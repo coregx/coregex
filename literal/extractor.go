@@ -119,6 +119,8 @@ func (e *Extractor) ExtractPrefixes(re *syntax.Regexp) *Seq {
 
 // extractPrefixes is the internal recursive implementation.
 // The depth parameter prevents infinite recursion on malformed patterns.
+//
+//nolint:cyclop // Complexity is inherent to handling all regex AST node types in switch
 func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 	// Guard against excessive recursion (malformed or deeply nested patterns)
 	if depth > 100 {
