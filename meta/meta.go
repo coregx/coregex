@@ -917,9 +917,14 @@ func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool)
 
 // findIndicesBoundedBacktrackerAt searches using bounded backtracker at position.
 func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, int, bool) {
-	// For now, fall back to NFA for non-zero positions
-	// BoundedBacktracker doesn't have SearchAt yet
-	return e.findIndicesNFAAt(haystack, at)
+	if e.boundedBacktracker == nil {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	e.stats.NFASearches++
+	if !e.boundedBacktracker.CanHandle(len(haystack)) {
+		return e.pikevm.SearchAt(haystack, at)
+	}
+	return e.boundedBacktracker.SearchAt(haystack, at)
 }
 
 // findBoundedBacktracker searches using bounded backtracker.

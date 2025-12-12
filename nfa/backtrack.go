@@ -122,14 +122,21 @@ func (b *BoundedBacktracker) IsMatchAnchored(haystack []byte) bool {
 // Search finds the first match in the haystack.
 // Returns (start, end, true) if found, (-1, -1, false) otherwise.
 func (b *BoundedBacktracker) Search(haystack []byte) (int, int, bool) {
+	return b.SearchAt(haystack, 0)
+}
+
+// SearchAt finds the first match starting from position 'at'.
+// Returns (start, end, true) if found, (-1, -1, false) otherwise.
+// This is used by FindAll* operations for efficient iteration.
+func (b *BoundedBacktracker) SearchAt(haystack []byte, at int) (int, int, bool) {
 	if !b.CanHandle(len(haystack)) {
 		return -1, -1, false
 	}
 
 	b.reset(len(haystack))
 
-	// Try to match starting at each position
-	for startPos := 0; startPos <= len(haystack); startPos++ {
+	// Try to match starting at each position from 'at'
+	for startPos := at; startPos <= len(haystack); startPos++ {
 		if end := b.backtrackFind(haystack, startPos, b.nfa.StartAnchored()); end >= 0 {
 			return startPos, end, true
 		}
