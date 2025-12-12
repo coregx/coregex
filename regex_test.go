@@ -834,3 +834,182 @@ func TestLongestMatchesStdlib(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// v0.8.18 Performance Benchmarks - Alternation, Email, CharClass patterns
+// =============================================================================
+
+// BenchmarkAlternation benchmarks alternation patterns (UseTeddy strategy)
+func BenchmarkAlternation(b *testing.B) {
+	// Create 1KB input with matches scattered throughout
+	input := make([]byte, 1024)
+	for i := range input {
+		input[i] = byte('a' + (i % 26))
+	}
+	// Insert matches at various positions
+	copy(input[100:], "foo")
+	copy(input[300:], "bar")
+	copy(input[500:], "baz")
+	copy(input[700:], "qux")
+	copy(input[900:], "foo")
+
+	patterns := []struct {
+		name    string
+		pattern string
+	}{
+		{"2_patterns", "foo|bar"},
+		{"4_patterns", "foo|bar|baz|qux"},
+		{"8_patterns", "foo|bar|baz|qux|aaa|bbb|ccc|ddd"},
+	}
+
+	for _, p := range patterns {
+		re := MustCompile(p.pattern)
+		b.Run(p.name+"/Match", func(b *testing.B) {
+			b.SetBytes(int64(len(input)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.Match(input)
+			}
+		})
+		b.Run(p.name+"/Find", func(b *testing.B) {
+			b.SetBytes(int64(len(input)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.Find(input)
+			}
+		})
+		b.Run(p.name+"/FindAll", func(b *testing.B) {
+			b.SetBytes(int64(len(input)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.FindAll(input, -1)
+			}
+		})
+	}
+}
+
+// BenchmarkEmail benchmarks email pattern (ReverseInner with @ literal)
+func BenchmarkEmail(b *testing.B) {
+	// Simple email pattern that uses inner literal @
+	emailPattern := `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`
+
+	sizes := []struct {
+		name string
+		size int
+	}{
+		{"1KB", 1024},
+		{"4KB", 4 * 1024},
+		{"32KB", 32 * 1024},
+	}
+
+	for _, size := range sizes {
+		// Create text with email at the end
+		text := make([]byte, size.size)
+		for i := range text {
+			text[i] = byte('a' + (i % 26))
+		}
+		email := "user@example.com"
+		copy(text[len(text)-len(email)-10:], " "+email+" ")
+
+		re := MustCompile(emailPattern)
+		b.Run(size.name+"/Match", func(b *testing.B) {
+			b.SetBytes(int64(size.size))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.Match(text)
+			}
+		})
+		b.Run(size.name+"/Find", func(b *testing.B) {
+			b.SetBytes(int64(size.size))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.Find(text)
+			}
+		})
+	}
+}
+
+// BenchmarkCharClassLarge benchmarks character class patterns on larger input
+// (BoundedBacktracker strategy)
+func BenchmarkCharClassLarge(b *testing.B) {
+	// Create 1KB input with mixed content
+	input := make([]byte, 1024)
+	for i := range input {
+		if i%10 < 3 {
+			input[i] = byte('0' + (i % 10))
+		} else {
+			input[i] = byte('a' + (i % 26))
+		}
+	}
+
+	patterns := []struct {
+		name    string
+		pattern string
+	}{
+		{"digit", `\d+`},
+		{"word", `\w+`},
+		{"alpha", `[a-z]+`},
+		{"charclass_alt", `(a|b|c)+`},
+	}
+
+	for _, p := range patterns {
+		re := MustCompile(p.pattern)
+		b.Run(p.name+"/Match", func(b *testing.B) {
+			b.SetBytes(int64(len(input)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.Match(input)
+			}
+		})
+		b.Run(p.name+"/Find", func(b *testing.B) {
+			b.SetBytes(int64(len(input)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.Find(input)
+			}
+		})
+		b.Run(p.name+"/FindAll", func(b *testing.B) {
+			b.SetBytes(int64(len(input)))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.FindAll(input, -1)
+			}
+		})
+	}
+}
+
+// BenchmarkSuffix benchmarks suffix patterns (ReverseSuffix strategy)
+func BenchmarkSuffix(b *testing.B) {
+	sizes := []struct {
+		name string
+		size int
+	}{
+		{"1KB", 1024},
+		{"32KB", 32 * 1024},
+	}
+
+	for _, size := range sizes {
+		// Create text ending with .txt
+		text := make([]byte, size.size)
+		for i := range text {
+			text[i] = byte('a' + (i % 26))
+		}
+		copy(text[len(text)-10:], "file.txt  ")
+
+		re := MustCompile(`.*\.txt`)
+		b.Run(size.name+"/Match", func(b *testing.B) {
+			b.SetBytes(int64(size.size))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.Match(text)
+			}
+		})
+		b.Run(size.name+"/Find", func(b *testing.B) {
+			b.SetBytes(int64(size.size))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				re.Find(text)
+			}
+		})
+	}
+}
