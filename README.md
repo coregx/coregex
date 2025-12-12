@@ -384,38 +384,38 @@ Contributions are welcome! This is an experimental project and we'd love your he
 ## Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                             Meta-Engine                                   │
-│  (Strategy: DFA/NFA/ReverseAnchored/ReverseInner/OnePass/Backtracker)    │
-└────────────┬─────────────────────────────────────────────────────────────┘
-             │
-     ┌───────┴───────┐
-     │  Prefilter    │ ──► memchr (single byte)
-     │  Coordinator  │ ──► memmem (substring)
-     └───────┬───────┘ ──► teddy (2-8 patterns, SIMD)
-             │         ──► aho-corasick (many patterns)
-             │
-┌────────────┼────────────────────────────────────────────────────────────┐
-│            │                                                            │
-│  ┌─────────┴─────────┬──────────┬──────────┬──────────┬────────┬──────┐│
-│  │                   │          │          │          │        │      ││
-│  ▼                   ▼          ▼          ▼          ▼        ▼      ││
-│ ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────┐ ┌────┐│
-│ │  Lazy   │  │ Pike VM  │  │ Reverse  │  │ Reverse  │  │OnePass │Bound││
-│ │  DFA    │  │  (NFA)   │  │ Anchored │  │  Inner   │  │ DFA  │ │Back││
-│ │         │  │          │  │ (v0.4.0) │  │ (v0.8.0) │  │(v0.7)│ │trck││
-│ └─────────┘  └──────────┘  └──────────┘  └──────────┘  └──────┘ └────┘│
-│      │            │               │            │            │     │    │
-│      │            │               └────────────┴────────────┘     │    │
-│      │            │                    ReverseSuffix (v0.6.0)     │    │
-│      │            └───────────────────────────────────────────────┘    │
-│      │                         CharClass patterns (\d+, \w+)           │
-└──────┴─────────────────────────────────────────────────────────────────┘
-                       │
-              ┌────────┴────────┐
-              │ SIMD Primitives │
-              │ (AVX2/SSSE3)    │
-              └─────────────────┘
+                        +------------------------------------------+
+                        |              Meta-Engine                 |
+                        | Strategy: DFA/NFA/Reverse/OnePass/Teddy  |
+                        +--------------------+---------------------+
+                                             |
+                        +--------------------+---------------------+
+                        |          Prefilter Coordinator           |
+                        |  memchr | memmem | teddy | aho-corasick  |
+                        +--------------------+---------------------+
+                                             |
+        +----------+----------+----------+----------+----------+----------+
+        |          |          |          |          |          |          |
+        v          v          v          v          v          v          v
+    +-------+  +-------+  +-------+  +-------+  +-------+  +-------+  +-------+
+    | Lazy  |  | Pike  |  |Reverse|  |Reverse|  |Reverse|  |OnePass|  |Bounded|
+    | DFA   |  | VM    |  |Anchord|  |Suffix |  |Inner  |  | DFA   |  |Backtrk|
+    +-------+  +-------+  +-------+  +-------+  +-------+  +-------+  +-------+
+        |          |          |          |          |          |          |
+        +----------+----------+----------+----------+----------+----------+
+                                             |
+                        +--------------------+---------------------+
+                        |           SIMD Primitives                |
+                        |            (AVX2/SSSE3)                  |
+                        +------------------------------------------+
+
+Strategies:
+  - UseDFA:        Prefilter + Lazy DFA (patterns with literals)
+  - UseNFA:        Pike VM only (tiny patterns, no literals)
+  - UseTeddy:      Teddy prefilter only (exact alternations like foo|bar|baz)
+  - UseReverse*:   Backward search ($-anchored, suffix, inner literals)
+  - UseOnePass:    Zero-alloc captures (simple anchored patterns)
+  - UseBounded:    Bit-vector backtracker (char classes like \d+, \w+)
 ```
 
 **Key components:**
@@ -426,8 +426,9 @@ Contributions are welcome! This is an experimental project and we'd love your he
 5. **ReverseSuffix** - 1000x+ speedup for `.*\.txt` suffix patterns (v0.6.0)
 6. **OnePass DFA** - 10x faster captures with 0 allocations (v0.7.0)
 7. **ReverseInner** - 3000x+ speedup for `.*keyword.*` patterns (v0.8.0)
-8. **BoundedBacktracker** - 2.5x faster for character class patterns (`\d+`, `\w+`, `(a|b|c)+`)
-9. **SIMD Primitives** - 10-15x faster byte/substring search
+8. **BoundedBacktracker** - 2.5x faster for character class patterns (`\d+`, `\w+`)
+9. **UseTeddy** - 242x faster for exact alternations (`foo|bar|baz`) with literal engine bypass
+10. **SIMD Primitives** - 10-15x faster byte/substring search
 
 See package documentation on [pkg.go.dev](https://pkg.go.dev/github.com/coregx/coregex) for API details.
 

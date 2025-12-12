@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Patterns like `(foo|bar|baz|qux)` now use Teddy SIMD prefilter
   - Alternation patterns: **242x faster** (was 24x slower)
 
+- **UseTeddy strategy (literal engine bypass)**
+  - Exact literal alternations like `(foo|bar|baz)` skip DFA construction entirely
+  - Compile time: **10x faster** (109µs → 11µs)
+  - Memory: **31x less** (598KB → 19KB)
+  - Inspired by Rust regex's "literal engine bypass" optimization
+
 - **ReverseSuffix.Find() optimization**
   - Last-suffix algorithm for greedy semantics (find LAST candidate, not iterate all)
   - Pattern `.*\.txt`: **1.8x faster** than stdlib on 32KB+ inputs
