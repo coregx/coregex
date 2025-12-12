@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"bytes"
 	"errors"
 
 	"github.com/coregx/coregex/dfa/lazy"
@@ -43,13 +44,15 @@ var ErrNoPrefilter = errors.New("no prefilter available for suffix literals")
 //	// ReverseSuffix: prefilter finds 10 `.txt` positions, reverse DFA verifies (~10 attempts)
 //	// Speedup: ~100,000x
 type ReverseSuffixSearcher struct {
-	forwardNFA *nfa.NFA
-	reverseNFA *nfa.NFA
-	reverseDFA *lazy.DFA
-	forwardDFA *lazy.DFA
-	prefilter  prefilter.Prefilter
-	pikevm     *nfa.PikeVM
-	suffixLen  int // Length of the suffix literal for calculating revEnd
+	forwardNFA     *nfa.NFA
+	reverseNFA     *nfa.NFA
+	reverseDFA     *lazy.DFA
+	forwardDFA     *lazy.DFA
+	prefilter      prefilter.Prefilter
+	pikevm         *nfa.PikeVM
+	suffixLen      int    // Length of the suffix literal for calculating revEnd
+	suffixBytes    []byte // Suffix literal bytes for FindLast optimization
+	matchStartZero bool   // True if pattern starts with .* (match always starts at 0)
 }
 
 // NewReverseSuffixSearcher creates a reverse suffix searcher from forward NFA.
@@ -70,15 +73,15 @@ func NewReverseSuffixSearcher(
 	suffixLiterals *literal.Seq,
 	config lazy.Config,
 ) (*ReverseSuffixSearcher, error) {
-	// Get suffix length from longest common suffix
-	suffixLen := 0
+	// Get suffix bytes from longest common suffix
+	var suffixBytes []byte
 	if suffixLiterals != nil && !suffixLiterals.IsEmpty() {
-		lcs := suffixLiterals.LongestCommonSuffix()
-		suffixLen = len(lcs)
+		suffixBytes = suffixLiterals.LongestCommonSuffix()
 	}
-	if suffixLen == 0 {
+	if len(suffixBytes) == 0 {
 		return nil, ErrNoPrefilter
 	}
+	suffixLen := len(suffixBytes)
 
 	// Build prefilter from suffix literals
 	builder := prefilter.NewBuilder(nil, suffixLiterals)
@@ -108,14 +111,21 @@ func NewReverseSuffixSearcher(
 	// Create PikeVM for fallback
 	pikevm := nfa.NewPikeVM(forwardNFA)
 
+	// Check if pattern is unanchored (starts matching from position 0)
+	// For unanchored patterns with .* prefix, match always starts at 0
+	// This allows us to skip the reverse DFA scan entirely!
+	matchStartZero := !forwardNFA.IsAlwaysAnchored()
+
 	return &ReverseSuffixSearcher{
-		forwardNFA: forwardNFA,
-		reverseNFA: reverseNFA,
-		reverseDFA: reverseDFA,
-		forwardDFA: forwardDFA,
-		prefilter:  pre,
-		pikevm:     pikevm,
-		suffixLen:  suffixLen,
+		forwardNFA:     forwardNFA,
+		reverseNFA:     reverseNFA,
+		reverseDFA:     reverseDFA,
+		forwardDFA:     forwardDFA,
+		prefilter:      pre,
+		pikevm:         pikevm,
+		suffixLen:      suffixLen,
+		suffixBytes:    suffixBytes,
+		matchStartZero: matchStartZero,
 	}, nil
 }
 
@@ -152,32 +162,28 @@ func (s *ReverseSuffixSearcher) Find(haystack []byte) *Match {
 	}
 
 	// Find the LAST suffix candidate for greedy matching
-	lastPos := -1
-	start := 0
-	for {
-		pos := s.prefilter.Find(haystack, start)
-		if pos == -1 {
-			break
-		}
-		lastPos = pos
-		start = pos + 1
-		if start >= len(haystack) {
-			break
-		}
-	}
-
+	// OPTIMIZATION: Use bytes.LastIndex for O(n) single-pass search
+	// instead of iterating through all matches (was O(k*n) where k=match count)
+	lastPos := bytes.LastIndex(haystack, s.suffixBytes)
 	if lastPos == -1 {
 		// No suffix candidates found
 		return nil
 	}
 
-	// Reverse search from haystack start to last suffix end
+	// Calculate match end
 	revEnd := lastPos + s.suffixLen
 	if revEnd > len(haystack) {
 		revEnd = len(haystack)
 	}
 
-	// Use reverse DFA to find match START position
+	// OPTIMIZATION: For unanchored patterns (like .*@suffix), match always starts at 0
+	// because the unanchored search starts from position 0 and .* matches everything.
+	// Skip the expensive reverse DFA scan entirely!
+	if s.matchStartZero {
+		return NewMatch(0, revEnd, haystack)
+	}
+
+	// Use reverse DFA to find match START position (for anchored patterns)
 	matchStart := s.reverseDFA.SearchReverse(haystack, 0, revEnd)
 	if matchStart >= 0 {
 		// Found valid match - return immediately
@@ -186,6 +192,86 @@ func (s *ReverseSuffixSearcher) Find(haystack []byte) *Match {
 
 	// No valid match found
 	return nil
+}
+
+// FindAt searches for a match starting from position 'at' using suffix prefilter + reverse DFA.
+//
+// Unlike Find() which returns the greedy (last suffix) match, FindAt returns the first
+// match starting at or after position 'at'. This is essential for FindAll iteration.
+//
+// Algorithm:
+//  1. Use prefilter to find FIRST suffix candidate >= at
+//  2. Use reverse DFA to find match START (from 'at' position)
+//  3. Return match [start, suffixEnd]
+//
+// Performance:
+//   - Prefilter scan: O(n) from 'at' position
+//   - Reverse DFA verification: O(m) where m is match length
+//   - Total: O(n) per call
+func (s *ReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match {
+	if at >= len(haystack) {
+		return nil
+	}
+
+	// Find FIRST suffix candidate starting from 'at'
+	pos := s.prefilter.Find(haystack, at)
+	if pos == -1 {
+		return nil
+	}
+
+	// Calculate suffix end position
+	suffixEnd := pos + s.suffixLen
+	if suffixEnd > len(haystack) {
+		suffixEnd = len(haystack)
+	}
+
+	// For unanchored patterns (like .*@suffix), match can start from 'at'
+	// because .* matches any prefix from the starting position
+	if s.matchStartZero {
+		// Match starts at 'at' position (the search start)
+		return NewMatch(at, suffixEnd, haystack)
+	}
+
+	// Use reverse DFA to find match START position (for anchored patterns)
+	matchStart := s.reverseDFA.SearchReverse(haystack, at, suffixEnd)
+	if matchStart >= 0 {
+		return NewMatch(matchStart, suffixEnd, haystack)
+	}
+
+	// No valid match found
+	return nil
+}
+
+// FindIndicesAt returns match indices starting from position 'at' - zero allocation version.
+func (s *ReverseSuffixSearcher) FindIndicesAt(haystack []byte, at int) (start, end int, found bool) {
+	if at >= len(haystack) {
+		return -1, -1, false
+	}
+
+	// Find FIRST suffix candidate starting from 'at'
+	pos := s.prefilter.Find(haystack, at)
+	if pos == -1 {
+		return -1, -1, false
+	}
+
+	// Calculate suffix end position
+	suffixEnd := pos + s.suffixLen
+	if suffixEnd > len(haystack) {
+		suffixEnd = len(haystack)
+	}
+
+	// For unanchored patterns (like .*@suffix), match starts at 'at'
+	if s.matchStartZero {
+		return at, suffixEnd, true
+	}
+
+	// Use reverse DFA to find match START position
+	matchStart := s.reverseDFA.SearchReverse(haystack, at, suffixEnd)
+	if matchStart >= 0 {
+		return matchStart, suffixEnd, true
+	}
+
+	return -1, -1, false
 }
 
 // IsMatch checks if the pattern matches using suffix prefilter + reverse DFA.

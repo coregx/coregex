@@ -50,3 +50,13 @@ INDEX.md
 
 # Development comparison benchmarks (separate module with external deps)
 benchmark/comparison/
+
+# Local benchmark baselines (generated per-machine)
+benchmark/baselines/
+
+# Debug/profile test files (local development only)
+*_profile_test.go
+*_debug_test.go
+
+# Local assets (screenshots, diagrams for docs)
+assets/

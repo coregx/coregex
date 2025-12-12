@@ -14,6 +14,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.19] - 2025-12-12
+
+### Added
+- **FindAll ReverseSuffix optimization** (Fixes #41)
+  - `FindIndicesAt()` now supports `UseReverseSuffix` strategy
+  - Added `ReverseSuffixSearcher.FindAt()` and `FindIndicesAt()` methods
+  - Pattern `.*@example\.com` with `FindAll`: **87x faster** than stdlib (316ms → 3.6ms on 6MB input)
+
+### Changed
+- **ReverseSuffix Find() optimization**
+  - Use `bytes.LastIndex` for O(n) single-pass suffix search (was O(k*n) loop)
+  - Added `matchStartZero` flag for unanchored patterns (`.*@suffix`)
+  - For `.*` prefix patterns, match always starts at position 0 - skip reverse DFA entirely
+  - Pattern `.*@example\.com` with `Find`: **0ms** (was 362ms)
+
+### Performance Summary
+Inner literal patterns (`.*keyword` or `.*@suffix`) now dramatically faster:
+
+| Pattern | Operation | stdlib | coregex | Speedup |
+|---------|-----------|--------|---------|---------|
+| `.*@example\.com` | FindAll (6MB) | 316ms | **3.6ms** | **87x faster** |
+| `.*@example\.com` | Find (6MB) | ~300ms | **<1ms** | **300x+ faster** |
+| `error\|warning\|...` | FindAll (6MB) | 759ms | **51ms** | **15x faster** |
+
+---
+
 ## [0.8.18] - 2025-12-12
 
 ### Added
@@ -783,9 +809,11 @@ v0.2.0 → Capture groups support (DONE ✅)
 v0.3.0 → Replace/Split functions (DONE ✅)
 v0.4.0 → Reverse Search + Core Optimizations (DONE ✅)
 v0.5.0 → Named captures (DONE ✅)
-v0.6.0 → ReverseSuffix optimization (DONE ✅) ← YOU ARE HERE
-v0.7.0 → OnePass DFA, ReverseInner strategy
-v0.8.0 → ARM NEON SIMD, Aho-Corasick
+v0.6.0 → ReverseSuffix optimization (DONE ✅)
+v0.7.0 → OnePass DFA (DONE ✅)
+v0.8.0 → ReverseInner strategy (DONE ✅)
+v0.8.14-18 → GoAWK integration, Teddy, BoundedBacktracker (DONE ✅)
+v0.8.19 → FindAll ReverseSuffix optimization (DONE ✅) ← CURRENT
 v0.9.0 → Beta testing period
 v1.0.0 → Stable release (API frozen)
 ```

@@ -619,6 +619,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesDFAAt(haystack, at)
 	case UseBoth:
 		return e.findIndicesAdaptiveAt(haystack, at)
+	case UseReverseSuffix:
+		return e.findIndicesReverseSuffixAt(haystack, at)
 	case UseBoundedBacktracker:
 		return e.findIndicesBoundedBacktrackerAt(haystack, at)
 	case UseTeddy:
@@ -816,6 +818,15 @@ func (e *Engine) findIndicesReverseSuffix(haystack []byte) (int, int, bool) {
 		return -1, -1, false
 	}
 	return match.Start(), match.End(), true
+}
+
+// findIndicesReverseSuffixAt searches using reverse suffix optimization from position - zero alloc.
+func (e *Engine) findIndicesReverseSuffixAt(haystack []byte, at int) (int, int, bool) {
+	if e.reverseSuffixSearcher == nil {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	e.stats.DFASearches++
+	return e.reverseSuffixSearcher.FindIndicesAt(haystack, at)
 }
 
 // findIndicesReverseInner searches using reverse inner optimization - zero alloc.

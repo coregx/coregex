@@ -172,6 +172,7 @@ func benchmarkSearch(pattern string, text []byte) {
 | **`.*\.txt` IsMatch** | 1MB | 27 ms | **21 µs** | **1,314x faster** |
 | **`.*keyword.*` IsMatch** | 250KB | 12.6 ms | **4 µs** | **3,154x faster** |
 | **`.*keyword.*` Find** | 250KB | 15.2 ms | **8 µs** | **1,894x faster** |
+| **`.*@example\.com` FindAll** | 6MB | 316 ms | **3.6 ms** | **87x faster** |
 | **`(foo\|bar\|baz\|qux)`** | 1KB | 9.7 µs | **40 ns** | **242x faster** |
 | **`\d+`** | 1KB | 6.7 µs | **1.5 µs** | **4.5x faster** |
 | **`(a\|b\|c)+`** | 1KB | 7.3 µs | **3.0 µs** | **2.5x faster** |
@@ -181,6 +182,7 @@ func benchmarkSearch(pattern string, text []byte) {
 **Key insights:**
 - **Inner literal patterns** (`.*keyword.*`) see massive speedups (2000-3000x+) through ReverseInner optimization (v0.8.0)
 - **Suffix patterns** (`.*\.txt`) see 1000x+ speedups through ReverseSuffix optimization
+- **FindAll with suffix patterns** (`.*@example\.com`) now **87x faster** via ReverseSuffix FindAll optimization (v0.8.19)
 - **Alternation patterns** (`(foo|bar|baz|qux)`) now 242x faster via Teddy SIMD prefilter (v0.8.18)
 - **Email patterns** now 11-42x faster via ReverseInner with `@` inner literal (v0.8.18)
 - **Character class patterns** (`\d+`, `(a|b|c)+`) 2.5-4.5x faster via BoundedBacktracker (v0.8.17-18)
