@@ -19,9 +19,9 @@ A **production-grade regex engine** for Go with dramatic performance improvement
 ## Features
 
 ⚡ **Performance**
-- 🚀 **Up to 263x faster** than Go's `regexp` package (case-insensitive patterns)
+- 🚀 **Up to 3000x+ faster** than Go's `regexp` package (inner literal patterns)
 - 🎯 **SIMD-accelerated** search with AVX2/SSSE3 assembly (10-15x faster substring search)
-- 📊 **Multi-pattern search** (Teddy SIMD algorithm for 2-8 literals)
+- 📊 **Multi-pattern search** (Teddy SIMD algorithm for 2-8 literals) - **242x faster** for alternations
 - 💾 **Zero allocations** in hot paths (`IsMatch`, `FindIndices` - 0 allocs/op)
 
 🏗️ **Architecture**
@@ -31,7 +31,7 @@ A **production-grade regex engine** for Go with dramatic performance improvement
 - 🔙 **Reverse Search** for `$` anchor and suffix patterns (1000x+ speedup)
 - 🎯 **ReverseInner** for `.*keyword.*` patterns with bidirectional DFA (3000x+ speedup)
 - ⚡ **OnePass DFA** for simple anchored patterns (10x faster captures, 0 allocs)
-- ⚡ **BoundedBacktracker** for character class patterns (`\d+`, `\w+`) - 2.5x faster than stdlib
+- ⚡ **BoundedBacktracker** for character class patterns (`\d+`, `\w+`, `(a|b|c)+`) - 2.5x faster than stdlib
 - 📌 **Prefilter coordination** (memchr/memmem/teddy)
 
 🎯 **API Design**
@@ -172,10 +172,15 @@ func benchmarkSearch(pattern string, text []byte) {
 | **`.*\.txt` IsMatch** | 1MB | 27 ms | **21 µs** | **1,314x faster** |
 | **`.*keyword.*` IsMatch** | 250KB | 12.6 ms | **4 µs** | **3,154x faster** |
 | **`.*keyword.*` Find** | 250KB | 15.2 ms | **8 µs** | **1,894x faster** |
+| **`(foo\|bar\|baz\|qux)`** | 1KB | 9.7 µs | **40 ns** | **242x faster** |
+| **`\d+`** | 1KB | 6.7 µs | **1.5 µs** | **4.5x faster** |
+| **`(a\|b\|c)+`** | 1KB | 7.3 µs | **3.0 µs** | **2.5x faster** |
 
 **Key insights:**
 - **Inner literal patterns** (`.*keyword.*`) see massive speedups (2000-3000x+) through ReverseInner optimization (v0.8.0)
 - **Suffix patterns** (`.*\.txt`) see 1000x+ speedups through ReverseSuffix optimization
+- **Alternation patterns** (`(foo|bar|baz|qux)`) now 242x faster via Teddy SIMD prefilter (v0.8.18)
+- **Character class patterns** (`\d+`, `(a|b|c)+`) 2.5-4.5x faster via BoundedBacktracker (v0.8.17-18)
 - **Case-insensitive** patterns (`(?i)...`) are also excellent (100-263x) - stdlib backtracking is slow, our DFA is fast
 - **Simple patterns** see 1-5x improvement depending on literals
 
@@ -240,7 +245,8 @@ coregex uses Go's `regexp/syntax` for pattern parsing, supporting:
 - 🚀 **Zero-allocation** `IsMatch()` - returns immediately on first match (v0.8.15)
 - 🚀 **Zero-allocation** `FindIndices()` - returns `(start, end, found)` tuple (v0.8.15)
 - 🚀 Optimized `FindAll`/`ReplaceAll` with lazy allocation (v0.8.16)
-- ⚡ Character class patterns (`\d+`, `\w+`, `[a-z]+`) now **2.5x faster than stdlib** via BoundedBacktracker
+- ⚡ Alternation patterns (`(foo|bar|baz)`) **242x faster** via Teddy SIMD prefilter (v0.8.18)
+- ⚡ Character class patterns (`\d+`, `\w+`, `(a|b|c)+`) **2.5-4.5x faster** via BoundedBacktracker (v0.8.17-18)
 - ⚡ First match slower (compilation cost), repeated matches faster
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
@@ -417,7 +423,7 @@ Contributions are welcome! This is an experimental project and we'd love your he
 5. **ReverseSuffix** - 1000x+ speedup for `.*\.txt` suffix patterns (v0.6.0)
 6. **OnePass DFA** - 10x faster captures with 0 allocations (v0.7.0)
 7. **ReverseInner** - 3000x+ speedup for `.*keyword.*` patterns (v0.8.0)
-8. **BoundedBacktracker** - 2.5x faster for character class patterns (`\d+`, `\w+`)
+8. **BoundedBacktracker** - 2.5x faster for character class patterns (`\d+`, `\w+`, `(a|b|c)+`)
 9. **SIMD Primitives** - 10-15x faster byte/substring search
 
 See package documentation on [pkg.go.dev](https://pkg.go.dev/github.com/coregx/coregex) for API details.
