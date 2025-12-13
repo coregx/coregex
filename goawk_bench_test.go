@@ -311,3 +311,48 @@ func BenchmarkGoAWK_SimpleChar(b *testing.B) {
 		}
 	})
 }
+
+// =============================================================================
+// Longest() Mode Benchmarks - Critical for GoAWK
+// =============================================================================
+
+// BenchmarkGoAWK_Longest tests performance with Longest() mode enabled
+// GoAWK calls re.Longest() on every compiled regex
+func BenchmarkGoAWK_Longest(b *testing.B) {
+	pattern := `j[a-z]+p`
+	input := goawkMatchInput
+
+	b.Run("coregex_default", func(b *testing.B) {
+		re := coregex.MustCompile(pattern)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = re.FindStringIndex(input)
+		}
+	})
+
+	b.Run("coregex_Longest", func(b *testing.B) {
+		re := coregex.MustCompile(pattern)
+		re.Longest()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = re.FindStringIndex(input)
+		}
+	})
+
+	b.Run("stdlib_default", func(b *testing.B) {
+		re := regexp.MustCompile(pattern)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = re.FindStringIndex(input)
+		}
+	})
+
+	b.Run("stdlib_Longest", func(b *testing.B) {
+		re := regexp.MustCompile(pattern)
+		re.Longest()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = re.FindStringIndex(input)
+		}
+	})
+}
