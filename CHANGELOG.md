@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Unicode char class bug** - CharClassSearcher incorrectly handled runes 128-255
+  - `[föd]+` on "fööd" returned "f" instead of "fööd"
+  - Root cause: check was `> 255` but runes like ö (code point 246) are multi-byte in UTF-8 (0xC3 0xB6)
+  - Fix: changed to `> 127` to only allow true ASCII (0-127) for byte lookup table
+  - Found by: Ben Hoyt (GoAWK integration testing)
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)

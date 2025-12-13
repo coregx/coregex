@@ -50,9 +50,11 @@ func ExtractCharClassRanges(re *syntax.Regexp) [][2]byte {
 	for i := 0; i < len(sub.Rune); i += 2 {
 		lo, hi := sub.Rune[i], sub.Rune[i+1]
 
-		// Only support ASCII byte ranges
-		if lo > 255 || hi > 255 {
-			return nil // Unicode - not supported
+		// Only support ASCII byte ranges (0-127)
+		// Runes > 127 require multi-byte UTF-8 encoding which CharClassSearcher can't handle
+		// For example: ö = code point 246, but UTF-8 = 0xC3 0xB6 (2 bytes)
+		if lo > 127 || hi > 127 {
+			return nil // Non-ASCII - not supported by byte lookup table
 		}
 
 		ranges = append(ranges, [2]byte{byte(lo), byte(hi)})
