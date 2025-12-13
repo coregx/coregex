@@ -14,6 +14,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.22] - 2025-12-13
+
+### Added
+- **Small string optimization** - BoundedBacktracker for NFA patterns (Issue #29)
+  - Patterns like `j[a-z]+p` now **1.4x faster than stdlib** (was 2-4x slower)
+  - `\w+`, `[a-z]+` patterns: **15-20x faster** via CharClassSearcher
+  - Zero allocations for all `*String` methods (MatchString, FindString, etc.)
+
+- **GoAWK benchmarks** - Added Ben Hoyt patterns for regression testing
+  - `j[a-z]+p`, `\w+`, `[a-z]+` in BenchmarkMatchString and BenchmarkIsMatch
+
+### Changed
+- **BoundedBacktracker** now auto-enabled for UseNFA strategy with small patterns (<50 states)
+  - Uses O(1) generation-based visited reset vs PikeVM's thread queues
+  - Only for patterns that cannot match empty (avoids greedy semantics bugs)
+
+### Technical
+- `regex.go`: Added `stringToBytes()` using `unsafe.Slice` (like Rust's `as_bytes()`)
+- `meta/meta.go`: Added `canMatchEmpty` detection, prefilter in NFA path
+- `meta/meta_test.go`: Added BenchmarkIsMatch with GoAWK patterns
+- `regex_test.go`: Added GoAWK patterns to BenchmarkMatchString, BenchmarkFindIndex
+
+### Performance (small strings ~44 bytes vs stdlib)
+
+| Operation | Pattern | Result |
+|-----------|---------|--------|
+| MatchString | `j[a-z]+p` | **1.4x faster** |
+| MatchString | `\w+` | **18x faster** |
+| MatchString | `[a-z]+` | **15x faster** |
+| FindStringIndex | `j[a-z]+p` | **1.45x faster** |
+| Split | `f[a-z]x` | **1.75x faster** |
+
+---
+
 ## [0.8.21] - 2025-12-13
 
 ### Added

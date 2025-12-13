@@ -83,7 +83,7 @@ func DefaultConfig() Config {
 		EnablePrefilter:      true,
 		MaxDFAStates:         10000,
 		DeterminizationLimit: 1000,
-		MinLiteralLen:        2,
+		MinLiteralLen:        1, // Allow single-byte prefilters (memchr) like Rust
 		MaxLiterals:          64,
 		MaxRecursionDepth:    100,
 	}

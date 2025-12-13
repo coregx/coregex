@@ -459,15 +459,12 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseTeddy
 	}
 
-	// Good literals → use prefilter + DFA (best performance)
-	// Patterns like "ABXBYXCX" or "(foo|foobar)\d+" benefit massively from:
-	//  1. Prefilter finds literal candidates quickly (5-50x speedup)
-	//  2. DFA verifies with O(n) deterministic scan
-	// This is fast even for tiny NFAs because prefilter does the heavy lifting.
-	// Also covers Teddy multi-pattern prefilter for alternation patterns where
-	// literals are not complete (e.g., "(foo|bar)\d+" needs DFA verification).
-	if litAnalysis.hasGoodLiterals || litAnalysis.hasTeddyLiterals {
-		return UseDFA
+	// Tiny NFA with literals: use prefilter + NFA (like Rust)
+	// For patterns like "j[a-z]+p", DFA construction overhead is not worth it
+	// on small inputs. NFA with prefilter skip-ahead is faster.
+	// The prefilter (memchr) jumps to candidates, NFA verifies in O(pattern) time.
+	if nfaSize < 20 && litAnalysis.hasGoodLiterals {
+		return UseNFA // findIndicesNFA now uses prefilter for skip-ahead
 	}
 
 	// Tiny NFA without literals: use PikeVM directly (DFA overhead not worth it)
@@ -475,6 +472,16 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	// determinization overhead exceeds the benefit.
 	if nfaSize < 20 {
 		return UseNFA
+	}
+
+	// Good literals on larger NFA → use prefilter + DFA (best performance)
+	// Patterns like "ABXBYXCX" or "(foo|foobar)\d+" benefit massively from:
+	//  1. Prefilter finds literal candidates quickly (5-50x speedup)
+	//  2. DFA verifies with O(n) deterministic scan
+	// Also covers Teddy multi-pattern prefilter for alternation patterns where
+	// literals are not complete (e.g., "(foo|bar)\d+" needs DFA verification).
+	if litAnalysis.hasGoodLiterals || litAnalysis.hasTeddyLiterals {
+		return UseDFA
 	}
 
 	// Large NFA without literals → still use DFA

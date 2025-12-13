@@ -34,6 +34,7 @@ A **production-grade regex engine** for Go with dramatic performance improvement
 - ⚡ **OnePass DFA** for simple anchored patterns (10x faster captures, 0 allocs)
 - ⚡ **CharClassSearcher** for simple char_class patterns (`\w+`, `\d+`, `[a-z]+`) - **23x faster** than stdlib, **2x faster than Rust**!
 - ⚡ **BoundedBacktracker** for char_class with captures (`(\w)+`, `(a|b|c)+`) - 2.5x faster than stdlib
+- ⚡ **Small string optimization** (v0.8.22) - **1.4-20x faster** than stdlib on small inputs (~44 bytes)
 - 📌 **Prefilter coordination** (memchr/memmem/teddy)
 
 🎯 **API Design**
@@ -180,6 +181,7 @@ func benchmarkSearch(pattern string, text []byte) {
 | **`[\w]+`** | 6MB | 623 ms | **27 ms** | **23x faster** |
 | **`\d+`** | 1KB | 6.7 µs | **1.5 µs** | **4.5x faster** |
 | **`(a\|b\|c)+`** | 1KB | 7.3 µs | **3.0 µs** | **2.5x faster** |
+| **`j[a-z]+p` (small)** | 44B | 162 ns | **110 ns** | **1.4x faster** |
 | **Email pattern** | 1KB | 22 µs | **2 µs** | **11x faster** |
 | **Email pattern** | 32KB | 640 µs | **15 µs** | **42x faster** |
 
@@ -192,6 +194,7 @@ func benchmarkSearch(pattern string, text []byte) {
 - **Email patterns** now 11-42x faster via ReverseInner with `@` inner literal (v0.8.18)
 - **Simple char_class patterns** (`[\w]+`, `\d+`, `[a-z]+`) now **23x faster** via CharClassSearcher - **2x faster than Rust**! (v0.8.21)
 - **Char_class with captures** (`(\w)+`, `(a|b|c)+`) 2.5-4.5x faster via BoundedBacktracker (v0.8.17-18)
+- **Small strings** (~44 bytes) now **1.4-20x faster** via BoundedBacktracker + zero-alloc String methods (v0.8.22)
 - **Case-insensitive** patterns (`(?i)...`) are also excellent (100-263x) - stdlib backtracking is slow, our DFA is fast
 - **Simple patterns** see 1-5x improvement depending on literals
 

@@ -512,6 +512,7 @@ func BenchmarkCharClassFindAll(b *testing.B) {
 }
 
 // BenchmarkFind benchmarks search performance
+// Includes GoAWK patterns (Ben Hoyt) for small string regression testing.
 func BenchmarkFind(b *testing.B) {
 	tests := []struct {
 		pattern  string
@@ -520,6 +521,10 @@ func BenchmarkFind(b *testing.B) {
 		{"hello", "this is a test hello world string"},
 		{`\d+`, "the year is 2024 and the month is January"},
 		{"foo|bar|baz", "prefix foo middle bar suffix baz end"},
+		// GoAWK patterns (Ben Hoyt) - critical for small string performance
+		{`j[a-z]+p`, "The quick brown fox jumps over the lazy dog"},
+		{`\w+`, "hello world 123"},
+		{`[a-z]+`, "Hello World Test"},
 	}
 
 	for _, tt := range tests {
@@ -537,6 +542,42 @@ func BenchmarkFind(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				match := engine.Find(haystack)
 				if match == nil {
+					b.Fatal("expected match")
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkIsMatch benchmarks IsMatch (boolean match check) performance.
+// GoAWK patterns are critical for small string performance regression testing.
+func BenchmarkIsMatch(b *testing.B) {
+	tests := []struct {
+		name     string
+		pattern  string
+		haystack string
+	}{
+		{"literal", "hello", "this is a test hello world string"},
+		{"digit", `\d+`, "the year is 2024"},
+		// GoAWK patterns (Ben Hoyt) - critical for small string performance
+		{"goawk_char_range", `j[a-z]+p`, "The quick brown fox jumps over the lazy dog"},
+		{"goawk_word", `\w+`, "hello world 123"},
+		{"goawk_lowercase", `[a-z]+`, "Hello World Test"},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			engine, err := Compile(tt.pattern)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			haystack := []byte(tt.haystack)
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				if !engine.IsMatch(haystack) {
 					b.Fatal("expected match")
 				}
 			}
