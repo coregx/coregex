@@ -200,6 +200,22 @@ func benchmarkSearch(pattern string, text []byte) {
 
 See [benchmark/](benchmark/) for detailed comparisons.
 
+### Cross-Language Benchmarks
+
+For fair comparison with other engines (Go stdlib, Rust regex), see our CI-powered benchmark repo:
+
+**[kolkov/regex-bench](https://github.com/kolkov/regex-bench)** - All engines run on identical Linux environment
+
+| Pattern | Go stdlib | Go coregex | Rust regex |
+|---------|-----------|------------|------------|
+| literal_alt | 473 ms | 31 ms | **0.7 ms** |
+| inner_literal | 232 ms | 1.6 ms | **0.6 ms** |
+| suffix | 233 ms | 1.4 ms | **1.3 ms** |
+| char_class | 521 ms | **26 ms** | 51 ms |
+| email | 260 ms | **0.8 ms** | 1.4 ms |
+
+coregex beats Rust on `char_class` (2x) and `email` (1.75x). Rust wins on `literal_alt` (Aho-Corasick).
+
 ## Supported Features
 
 ### Current Features
