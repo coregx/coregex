@@ -59,6 +59,11 @@ type Engine struct {
 	// By default (false), uses leftmost-first (Perl) semantics
 	longest bool
 
+	// canMatchEmpty is true if the pattern can match an empty string.
+	// When true, BoundedBacktracker cannot be used for Find operations
+	// because its greedy semantics give wrong results for patterns like (?:|a)*
+	canMatchEmpty bool
+
 	// Statistics (useful for debugging and tuning)
 	stats Stats
 }
@@ -163,6 +168,14 @@ func buildCharClassSearchers(
 			strategy = UseBoundedBacktracker
 			boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
 		}
+	}
+
+	// For UseNFA with small NFAs, also create BoundedBacktracker as fallback.
+	// BoundedBacktracker is 2-3x faster than PikeVM on small inputs due to
+	// generation-based visited tracking (O(1) reset) vs PikeVM's thread queues.
+	// This is similar to how stdlib uses backtracking for simple patterns.
+	if strategy == UseNFA && boundedBT == nil && nfaEngine.States() < 50 {
+		boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
 	}
 
 	return boundedBT, charClassSrch, strategy
@@ -337,6 +350,11 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Build specialized searchers for character class patterns
 	boundedBT, charClassSrch, strategy := buildCharClassSearchers(strategy, re, nfaEngine)
 
+	// Check if pattern can match empty string.
+	// If true, BoundedBacktracker cannot be used for Find operations
+	// because its greedy semantics give wrong results for patterns like (?:|a)*
+	canMatchEmpty := pikevm.IsMatch(nil)
+
 	return &Engine{
 		nfa:                      nfaEngine,
 		dfa:                      dfaEngine,
@@ -352,6 +370,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		config:                   config,
 		onepass:                  onepassDFA,
 		onepassCache:             onepassCache,
+		canMatchEmpty:            canMatchEmpty,
 		stats:                    Stats{},
 	}, nil
 }
@@ -389,6 +408,11 @@ func (e *Engine) Find(haystack []byte) *Match {
 //	match := engine.FindAt([]byte("hello test"), 6)  // no match (^ won't match at pos 6)
 func (e *Engine) FindAt(haystack []byte, at int) *Match {
 	if at > len(haystack) {
+		return nil
+	}
+
+	// Early impossibility check: anchored pattern can only match at position 0
+	if at > 0 && e.nfa.IsAlwaysAnchored() {
 		return nil
 	}
 
@@ -483,9 +507,50 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 	}
 }
 
-// isMatchNFA checks for match using NFA (PikeVM) with early termination.
+// isMatchNFA checks for match using NFA (PikeVM or BoundedBacktracker) with early termination.
+// Uses prefilter for skip-ahead when available (like Rust regex).
+// For small NFAs, prefers BoundedBacktracker (2-3x faster than PikeVM on small inputs).
 func (e *Engine) isMatchNFA(haystack []byte) bool {
 	e.stats.NFASearches++
+
+	// BoundedBacktracker doesn't support Longest mode - must use PikeVM
+	useBT := e.boundedBacktracker != nil && !e.longest
+
+	// Use prefilter for skip-ahead if available
+	if e.prefilter != nil {
+		at := 0
+		for at < len(haystack) {
+			// Find next candidate position via prefilter
+			pos := e.prefilter.Find(haystack, at)
+			if pos == -1 {
+				return false // No more candidates
+			}
+			e.stats.PrefilterHits++
+
+			// Try to match at candidate position
+			// Prefer BoundedBacktracker for small inputs (2-3x faster)
+			var found bool
+			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
+				_, _, found = e.boundedBacktracker.SearchAt(haystack, pos)
+			} else {
+				_, _, found = e.pikevm.SearchAt(haystack, pos)
+			}
+			if found {
+				return true
+			}
+
+			// Move past this position
+			e.stats.PrefilterMisses++
+			at = pos + 1
+		}
+		return false
+	}
+
+	// No prefilter: use BoundedBacktracker if available, else PikeVM
+	if useBT && e.boundedBacktracker.CanHandle(len(haystack)) {
+		return e.boundedBacktracker.IsMatch(haystack)
+	}
+
 	// Use optimized IsMatch that returns immediately on first match
 	// without computing exact match positions
 	return e.pikevm.IsMatch(haystack)
@@ -679,6 +744,11 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 // FindIndicesAt returns the start and end indices of the first match starting at position 'at'.
 // Returns (-1, -1, false) if no match is found.
 func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found bool) {
+	// Early impossibility check: anchored pattern can only match at position 0
+	if at > 0 && e.nfa.IsAlwaysAnchored() {
+		return -1, -1, false
+	}
+
 	switch e.strategy {
 	case UseNFA:
 		return e.findIndicesNFAAt(haystack, at)
@@ -704,14 +774,101 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 }
 
 // findIndicesNFA searches using NFA (PikeVM) directly - zero alloc.
+// Uses prefilter for skip-ahead when available (like Rust regex).
+//
+// BoundedBacktracker can be used for patterns that cannot match empty.
+// For patterns like (?:|a)*, its greedy semantics give wrong results,
+// so we must use PikeVM which correctly implements leftmost-first semantics.
 func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 	e.stats.NFASearches++
+
+	// BoundedBacktracker can be used for Find operations only when:
+	// 1. It's available
+	// 2. Not in Longest mode (BT doesn't support it)
+	// 3. Pattern cannot match empty (BT has greedy semantics that break empty match handling)
+	useBT := e.boundedBacktracker != nil && !e.longest && !e.canMatchEmpty
+
+	// Use prefilter for skip-ahead if available
+	if e.prefilter != nil {
+		at := 0
+		for at < len(haystack) {
+			// Find next candidate position via prefilter
+			pos := e.prefilter.Find(haystack, at)
+			if pos == -1 {
+				return -1, -1, false // No more candidates
+			}
+			e.stats.PrefilterHits++
+
+			// Try to match at candidate position
+			var start, end int
+			var found bool
+			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
+				start, end, found = e.boundedBacktracker.SearchAt(haystack, pos)
+			} else {
+				start, end, found = e.pikevm.SearchAt(haystack, pos)
+			}
+			if found {
+				return start, end, true
+			}
+
+			// Move past this position
+			e.stats.PrefilterMisses++
+			at = pos + 1
+		}
+		return -1, -1, false
+	}
+
+	// No prefilter: use BoundedBacktracker if available and safe
+	if useBT && e.boundedBacktracker.CanHandle(len(haystack)) {
+		return e.boundedBacktracker.Search(haystack)
+	}
+
 	return e.pikevm.Search(haystack)
 }
 
 // findIndicesNFAAt searches using NFA starting at position - zero alloc.
+// Uses prefilter for skip-ahead when available (like Rust regex).
+// Same BoundedBacktracker rules as findIndicesNFA.
 func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 	e.stats.NFASearches++
+
+	// BoundedBacktracker can be used for Find operations only when safe
+	useBT := e.boundedBacktracker != nil && !e.longest && !e.canMatchEmpty
+
+	// Use prefilter for skip-ahead if available
+	if e.prefilter != nil {
+		for at < len(haystack) {
+			// Find next candidate position via prefilter
+			pos := e.prefilter.Find(haystack, at)
+			if pos == -1 {
+				return -1, -1, false // No more candidates
+			}
+			e.stats.PrefilterHits++
+
+			// Try to match at candidate position
+			var start, end int
+			var found bool
+			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
+				start, end, found = e.boundedBacktracker.SearchAt(haystack, pos)
+			} else {
+				start, end, found = e.pikevm.SearchAt(haystack, pos)
+			}
+			if found {
+				return start, end, true
+			}
+
+			// Move past this position
+			e.stats.PrefilterMisses++
+			at = pos + 1
+		}
+		return -1, -1, false
+	}
+
+	// No prefilter: use BoundedBacktracker if available and safe
+	if useBT && e.boundedBacktracker.CanHandle(len(haystack)-at) {
+		return e.boundedBacktracker.SearchAt(haystack, at)
+	}
+
 	return e.pikevm.SearchAt(haystack, at)
 }
 

@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2025-12-12 | **Current Version**: v0.8.20 | **Target**: v1.0.0 stable
+**Last Updated**: 2025-12-13 | **Current Version**: v0.8.22 | **Target**: v1.0.0 stable
 
 ---
 
@@ -12,16 +12,18 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 
 ### Current State vs Target
 
-| Metric | Current (v0.8.20) | Target (v1.0.0) |
+| Metric | Current (v0.8.22) | Target (v1.0.0) |
 |--------|-------------------|-----------------|
 | Inner literal speedup | **87-3154x** | ✅ Achieved |
 | Case-insensitive speedup | **263x** | ✅ Achieved |
 | Alternation speedup | **242x** | ✅ Achieved |
 | Suffix alternation speedup | **34-385x** | ✅ Achieved |
+| Small string perf | **1.4-20x faster** | ✅ Achieved |
 | Reverse search | **Yes (4 strategies)** | ✅ Achieved |
 | OnePass DFA | **Yes** | ✅ Achieved |
 | Teddy SIMD prefilter | **Yes** | ✅ Achieved |
 | BoundedBacktracker | **Yes** | ✅ Achieved |
+| CharClassSearcher | **Yes (23x, 2x vs Rust)** | ✅ Achieved |
 | ARM NEON SIMD | No | Planned |
 | Look-around | No | Planned |
 
@@ -30,7 +32,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 ## Release Strategy
 
 ```
-v0.8.20 (Current) ✅ → ReverseSuffixSet for multi-suffix patterns (34-385x faster)
+v0.8.22 (Current) ✅ → Small string optimization (1.4-20x faster)
          ↓
 v0.9.x → Beta testing, API stabilization
          ↓
@@ -52,6 +54,8 @@ v1.0.0 STABLE → Production release with API stability guarantee
 - ✅ **v0.8.14-18**: GoAWK integration fixes, Teddy prefilter, BoundedBacktracker
 - ✅ **v0.8.19**: FindAll ReverseSuffix optimization (87x faster)
 - ✅ **v0.8.20**: ReverseSuffixSet for multi-suffix patterns (34-385x faster)
+- ✅ **v0.8.21**: CharClassSearcher (23x faster, 2x faster than Rust!)
+- ✅ **v0.8.22**: Small string optimization (1.4-20x faster on ~44B inputs)
 
 ---
 

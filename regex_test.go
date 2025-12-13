@@ -438,6 +438,8 @@ func BenchmarkFindIndex(b *testing.B) {
 		{"literal", "fox", []byte("the quick brown fox jumps")},
 		{"digit", `\d+`, []byte("abc123def456")},
 		{"word", `\w+`, []byte("hello, world!")},
+		// GoAWK pattern (Ben Hoyt) - critical for small string performance
+		{"goawk_char_range", `j[a-z]+p`, []byte("The quick brown fox jumps over the lazy dog")},
 	}
 
 	for _, tt := range tests {
@@ -559,6 +561,7 @@ func BenchmarkReplaceAllFunc(b *testing.B) {
 }
 
 // BenchmarkMatchString benchmarks MatchString (string input)
+// Includes patterns from GoAWK benchmarks (Ben Hoyt) for regression testing.
 func BenchmarkMatchString(b *testing.B) {
 	tests := []struct {
 		name    string
@@ -569,6 +572,10 @@ func BenchmarkMatchString(b *testing.B) {
 		{"digit", `\d+`, "abc123def"},
 		{"anchored", `^hello`, "hello world"},
 		{"suffix", `\.txt$`, "document.txt"},
+		// GoAWK patterns (Ben Hoyt) - critical for small string performance
+		{"goawk_char_range", `j[a-z]+p`, "The quick brown fox jumps over the lazy dog"},
+		{"goawk_word", `\w+`, "hello world 123"},
+		{"goawk_lowercase", `[a-z]+`, "Hello World Test"},
 	}
 
 	for _, tt := range tests {

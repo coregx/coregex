@@ -46,8 +46,23 @@
 package coregex
 
 import (
+	"unsafe"
+
 	"github.com/coregx/coregex/meta"
 )
+
+// stringToBytes converts string to []byte without allocation.
+// This is the Go equivalent of Rust's str.as_bytes() - a zero-cost reinterpret cast.
+// The returned slice MUST NOT be modified (same as Rust's immutable &[u8]).
+//
+//go:inline
+func stringToBytes(s string) []byte {
+	if s == "" {
+		return nil
+	}
+	// G103: Safe - read-only view of immutable string data (like Rust's as_bytes)
+	return unsafe.Slice(unsafe.StringData(s), len(s)) //nolint:gosec
+}
 
 // Regex represents a compiled regular expression.
 //
@@ -213,6 +228,7 @@ func (r *Regex) Match(b []byte) bool {
 }
 
 // MatchString reports whether the string s contains any match of the pattern.
+// This is a zero-allocation operation (like Rust's is_match).
 //
 // Example:
 //
@@ -221,7 +237,7 @@ func (r *Regex) Match(b []byte) bool {
 //	    println("matched!")
 //	}
 func (r *Regex) MatchString(s string) bool {
-	return r.Match([]byte(s))
+	return r.engine.IsMatch(stringToBytes(s))
 }
 
 // Find returns a slice holding the text of the leftmost match in b.
@@ -250,11 +266,12 @@ func (r *Regex) Find(b []byte) []byte {
 //	match := re.FindString("age: 42")
 //	println(match) // "42"
 func (r *Regex) FindString(s string) string {
-	match := r.Find([]byte(s))
-	if match == nil {
+	b := stringToBytes(s)
+	start, end, found := r.engine.FindIndices(b)
+	if !found {
 		return ""
 	}
-	return string(match)
+	return s[start:end] // Return substring of original string - no allocation for input
 }
 
 // FindIndex returns a two-element slice of integers defining the location of
@@ -285,7 +302,11 @@ func (r *Regex) FindIndex(b []byte) []int {
 //	loc := re.FindStringIndex("age: 42")
 //	println(loc[0], loc[1]) // 5, 7
 func (r *Regex) FindStringIndex(s string) []int {
-	return r.FindIndex([]byte(s))
+	start, end, found := r.engine.FindIndices(stringToBytes(s))
+	if !found {
+		return nil
+	}
+	return []int{start, end}
 }
 
 // FindAll returns a slice of all successive matches of the pattern in b.
@@ -378,14 +399,21 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 //	matches := re.FindAllString("1 2 3", -1)
 //	// matches = ["1", "2", "3"]
 func (r *Regex) FindAllString(s string, n int) []string {
-	matches := r.FindAll([]byte(s), n)
+	b := stringToBytes(s)
+	matches := r.FindAll(b, n)
 	if matches == nil {
 		return nil
 	}
 
 	result := make([]string, len(matches))
 	for i, m := range matches {
-		result[i] = string(m)
+		if len(m) == 0 {
+			result[i] = ""
+		} else {
+			// G103: Safe pointer arithmetic to compute substring offset within same backing array
+			start := int(uintptr(unsafe.Pointer(&m[0])) - uintptr(unsafe.Pointer(&b[0]))) //nolint:gosec
+			result[i] = s[start : start+len(m)]
+		}
 	}
 	return result
 }
@@ -483,7 +511,7 @@ func (r *Regex) FindSubmatch(b []byte) [][]byte {
 //	// match[0] = "user@example.com"
 //	// match[1] = "user"
 func (r *Regex) FindStringSubmatch(s string) []string {
-	match := r.engine.FindSubmatch([]byte(s))
+	match := r.engine.FindSubmatch(stringToBytes(s))
 	if match == nil {
 		return nil
 	}
@@ -527,7 +555,7 @@ func (r *Regex) FindSubmatchIndex(b []byte) []int {
 // FindStringSubmatchIndex returns the index pairs for the leftmost match
 // and capture groups. Same as FindSubmatchIndex but for strings.
 func (r *Regex) FindStringSubmatchIndex(s string) []int {
-	return r.FindSubmatchIndex([]byte(s))
+	return r.FindSubmatchIndex(stringToBytes(s))
 }
 
 // FindAllIndex returns a slice of all successive matches of the pattern in b,
@@ -626,7 +654,7 @@ func (r *Regex) FindAllIndex(b []byte, n int) [][]int {
 //	indices := re.FindAllStringIndex("1 2 3", -1)
 //	// indices = [[0,1], [2,3], [4,5]]
 func (r *Regex) FindAllStringIndex(s string, n int) [][]int {
-	return r.FindAllIndex([]byte(s), n)
+	return r.FindAllIndex(stringToBytes(s), n)
 }
 
 // ReplaceAllLiteral returns a copy of src, replacing matches of the pattern
@@ -1022,7 +1050,7 @@ func (r *Regex) Count(b []byte, n int) int {
 //	count := re.CountString("1 2 3 4 5", -1)
 //	// count == 5
 func (r *Regex) CountString(s string, n int) int {
-	return r.Count([]byte(s), n)
+	return r.engine.Count(stringToBytes(s), n)
 }
 
 // FindAllSubmatch returns a slice of all successive matches of the pattern in b,
@@ -1061,7 +1089,7 @@ func (r *Regex) FindAllSubmatch(b []byte, n int) [][][]byte {
 //	// matches[0][0] = "a@b.c"
 //	// matches[0][1] = "a"
 func (r *Regex) FindAllStringSubmatch(s string, n int) [][]string {
-	matches := r.engine.FindAllSubmatch([]byte(s), n)
+	matches := r.engine.FindAllSubmatch(stringToBytes(s), n)
 	if matches == nil {
 		return nil
 	}
@@ -1117,5 +1145,5 @@ func (r *Regex) FindAllSubmatchIndex(b []byte, n int) [][]int {
 //	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
 //	indices := re.FindAllStringSubmatchIndex("a@b.c x@y.z", -1)
 func (r *Regex) FindAllStringSubmatchIndex(s string, n int) [][]int {
-	return r.FindAllSubmatchIndex([]byte(s), n)
+	return r.FindAllSubmatchIndex(stringToBytes(s), n)
 }
