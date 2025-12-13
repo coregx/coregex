@@ -1,47 +1,26 @@
-# coregex - Production-Grade Regex Engine for Go
+# coregex
 
-> **3-3000x+ faster than stdlib through multi-engine architecture and SIMD optimizations**
-
-[![GitHub Release](https://img.shields.io/github/v/release/coregx/coregex?include_prereleases&style=flat-square&logo=github&color=blue)](https://github.com/coregx/coregex/releases/latest)
+[![GitHub Release](https://img.shields.io/github/v/release/coregx/coregex?style=flat-square&logo=github&color=blue)](https://github.com/coregx/coregex/releases/latest)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/coregx/coregex?style=flat-square&logo=go)](https://go.dev/dl/)
 [![Go Reference](https://pkg.go.dev/badge/github.com/coregx/coregex.svg)](https://pkg.go.dev/github.com/coregx/coregex)
-[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/coregx/coregex/test.yml?branch=main&style=flat-square&logo=github-actions&label=CI)](https://github.com/coregx/coregex/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/coregx/coregex/test.yml?branch=main&style=flat-square&logo=github-actions&label=CI)](https://github.com/coregx/coregex/actions)
 [![Go Report Card](https://goreportcard.com/badge/github.com/coregx/coregex?style=flat-square)](https://goreportcard.com/report/github.com/coregx/coregex)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/stargazers)
 [![GitHub Issues](https://img.shields.io/github/issues/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/issues)
-[![GitHub discussions](https://img.shields.io/github/discussions/coregx/coregex)](https://github.com/coregx/coregex/discussions)
+[![GitHub Discussions](https://img.shields.io/github/discussions/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/discussions)
 
----
+High-performance regex engine for Go. Drop-in replacement for `regexp` with **3-3000x speedup**.
 
-A **production-grade regex engine** for Go with dramatic performance improvements over the standard library. Inspired by Rust's regex crate, coregex uses a multi-engine architecture with SIMD-accelerated prefilters to achieve **3-3000x+ speedup** depending on pattern type (especially suffix patterns like `.*\.txt` and inner literal patterns like `.*keyword.*`).
+## Why coregex?
 
-## Features
+Go's stdlib `regexp` is intentionally simple — single NFA engine, no optimizations. This guarantees O(n) time but leaves performance on the table.
 
-⚡ **Performance**
-- 🚀 **Up to 3000x+ faster** than Go's `regexp` package (inner literal patterns)
-- 🎯 **SIMD-accelerated** search with AVX2/SSSE3 assembly (10-15x faster substring search)
-- 📊 **Multi-pattern search** (Teddy SIMD algorithm for 2-8 literals) - **242x faster** for alternations
-- 💾 **Zero allocations** in hot paths (`IsMatch`, `FindIndices` - 0 allocs/op)
-
-🏗️ **Architecture**
-- 🧠 **Meta-engine** orchestrates strategy selection (DFA/NFA/ReverseAnchored/ReverseInner/ReverseSuffixSet)
-- ⚡ **Lazy DFA** with configurable caching (on-demand state construction)
-- 🔄 **Pike VM** (Thompson's NFA) for guaranteed O(n×m) performance
-- 🔙 **Reverse Search** for `$` anchor and suffix patterns (1000x+ speedup)
-- 🎯 **ReverseInner** for `.*keyword.*` patterns with bidirectional DFA (3000x+ speedup)
-- 🎯 **ReverseSuffixSet** for `.*\.(txt|log|md)` multi-suffix patterns (34-385x speedup) - **NEW in v0.8.20**
-- ⚡ **OnePass DFA** for simple anchored patterns (10x faster captures, 0 allocs)
-- ⚡ **CharClassSearcher** for simple char_class patterns (`\w+`, `\d+`, `[a-z]+`) - **23x faster** than stdlib, **2x faster than Rust**!
-- ⚡ **BoundedBacktracker** for char_class with captures (`(\w)+`, `(a|b|c)+`) - 2.5x faster than stdlib
-- ⚡ **Small string optimization** (v0.8.22) - **1.4-20x faster** than stdlib on small inputs (~44 bytes)
-- 📌 **Prefilter coordination** (memchr/memmem/teddy)
-
-🎯 **API Design**
-- Simple, drop-in replacement for `regexp` package
-- Configuration system for performance tuning
-- Thread-safe with concurrent compilation support
-- Comprehensive error handling
+coregex brings Rust regex-crate architecture to Go:
+- **Multi-engine**: Lazy DFA, PikeVM, OnePass, BoundedBacktracker
+- **SIMD prefilters**: AVX2/SSSE3 for fast candidate rejection
+- **Reverse search**: Suffix/inner literal patterns run 1000x+ faster
+- **O(n) guarantee**: No backtracking, no ReDoS vulnerabilities
 
 ## Installation
 
@@ -49,468 +28,194 @@ A **production-grade regex engine** for Go with dramatic performance improvement
 go get github.com/coregx/coregex
 ```
 
-**Requirements:**
-- Go 1.25 or later
-- Zero external dependencies (except `golang.org/x/sys` for CPU feature detection)
+Requires Go 1.25+. Zero external dependencies.
 
 ## Quick Start
 
-### Basic Usage
-
 ```go
 package main
 
 import (
-	"fmt"
-	"log"
-
-	"github.com/coregx/coregex"
+    "fmt"
+    "github.com/coregx/coregex"
 )
 
 func main() {
-	// Compile a regex pattern
-	re, err := coregex.Compile(`\b\w+@\w+\.\w+\b`)
-	if err != nil {
-		log.Fatal(err)
-	}
+    re := coregex.MustCompile(`\w+@\w+\.\w+`)
 
-	// Find first match
-	text := []byte("Contact us at support@example.com for help")
-	if match := re.Find(text); match != nil {
-		fmt.Printf("Found email: %s\n", match)
-	}
+    text := []byte("Contact support@example.com for help")
 
-	// Find all matches
-	matches := re.FindAll(text, -1)
-	for _, m := range matches {
-		fmt.Printf("Match: %s\n", m)
-	}
+    // Find first match
+    fmt.Printf("Found: %s\n", re.Find(text))
+
+    // Check if matches (zero allocation)
+    if re.MatchString("test@email.com") {
+        fmt.Println("Valid email format")
+    }
 }
 ```
 
-### Advanced Configuration
+## Performance
+
+Cross-language benchmarks on 6MB input ([source](https://github.com/kolkov/regex-bench)):
+
+| Pattern | Go stdlib | coregex | Rust regex | vs stdlib |
+|---------|-----------|---------|------------|-----------|
+| Email validation | 259 ms | 1.5 ms | 1.5 ms | **172x** |
+| URL extraction | 257 ms | 1.3 ms | 0.8 ms | **192x** |
+| Suffix `.*\.txt` | 240 ms | 1.5 ms | 1.3 ms | **166x** |
+| Inner `.*keyword.*` | 232 ms | 1.5 ms | 0.6 ms | **153x** |
+| Char class `[\w]+` | 550 ms | 26 ms | 52 ms | **21x** |
+| Alternation `a\|b\|c` | 473 ms | 31 ms | 0.8 ms | **15x** |
+
+**Where coregex excels:**
+- Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search optimization
+- Inner literals (`.*error.*`, `.*@example\.com`) — bidirectional DFA
+- Character classes (`[\w]+`, `\d+`) — 256-byte lookup table
+- Multi-pattern (`foo|bar|baz`) — Teddy SIMD algorithm
+
+**Known gaps vs Rust:**
+- `literal_alt` — Rust uses Aho-Corasick (planned for coregex)
+- Complex alternations — architectural differences
+
+## Features
+
+### Engine Selection
+
+coregex automatically selects the optimal engine:
+
+| Strategy | Pattern Type | Speedup |
+|----------|--------------|---------|
+| ReverseInner | `.*keyword.*` | 1000-3000x |
+| ReverseSuffix | `.*\.txt` | 100-400x |
+| CharClassSearcher | `[\w]+`, `\d+` | 20-25x |
+| Teddy | `foo\|bar\|baz` | 15-240x |
+| LazyDFA | Complex with literals | 10-50x |
+| OnePass | Anchored captures | 10x |
+| BoundedBacktracker | Small patterns | 2-5x |
+
+### API Compatibility
+
+Drop-in replacement for `regexp.Regexp`:
 
 ```go
-package main
+// stdlib
+re := regexp.MustCompile(pattern)
 
-import (
-	"log"
-
-	"github.com/coregx/coregex"
-)
-
-func main() {
-	// Create custom configuration for performance tuning
-	config := coregex.DefaultConfig()
-	config.DFAMaxStates = 10000        // Limit DFA cache size
-	config.EnablePrefilter = true       // Use SIMD prefilters (default)
-	config.UseObjectPools = true        // Zero-allocation mode (default)
-
-	// Compile with custom config
-	re, err := coregex.CompileWithConfig(`pattern`, config)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Use regex...
-	text := []byte("search this text")
-	match := re.Find(text)
-	if match != nil {
-		log.Printf("Found: %s", match)
-	}
-}
+// coregex — same API
+re := coregex.MustCompile(pattern)
 ```
 
-### Performance Example
+Supported methods:
+- `Match`, `MatchString`, `MatchReader`
+- `Find`, `FindString`, `FindAll`, `FindAllString`
+- `FindIndex`, `FindStringIndex`, `FindAllIndex`
+- `FindSubmatch`, `FindStringSubmatch`, `FindAllSubmatch`
+- `ReplaceAll`, `ReplaceAllString`, `ReplaceAllFunc`
+- `Split`, `SubexpNames`, `NumSubexp`
+- `Longest`, `Copy`, `String`
+
+### Zero-Allocation APIs
 
 ```go
-package main
+// Zero allocations — returns bool
+matched := re.IsMatch(text)
 
-import (
-	"fmt"
-	"regexp"
-	"time"
-
-	"github.com/coregx/coregex"
-)
-
-func benchmarkSearch(pattern string, text []byte) {
-	// stdlib regexp
-	start := time.Now()
-	reStdlib := regexp.MustCompile(pattern)
-	for i := 0; i < 10000; i++ {
-		reStdlib.Find(text)
-	}
-	stdlibTime := time.Since(start)
-
-	// coregex
-	start = time.Now()
-	reGoregex := coregex.MustCompile(pattern)
-	for i := 0; i < 10000; i++ {
-		reGoregex.Find(text)
-	}
-	coregexTime := time.Since(start)
-
-	speedup := float64(stdlibTime) / float64(coregexTime)
-	fmt.Printf("Speedup: %.1fx faster\n", speedup)
-}
+// Zero allocations — returns (start, end, found)
+start, end, found := re.FindIndices(text)
 ```
 
-## Performance Benchmarks
+### Configuration
 
-**SIMD Primitives** (vs stdlib):
-- `memchr` (single byte): **12.3x faster** (64KB input)
-- `memmem` (substring): **14.2x faster** (64KB input, short needle)
-- `teddy` (multi-pattern): **8.5x faster** (2-8 patterns)
+```go
+config := coregex.DefaultConfig()
+config.DFAMaxStates = 10000      // Limit DFA cache
+config.EnablePrefilter = true    // SIMD acceleration
 
-**Regex Search** (vs `regexp`):
+re, err := coregex.CompileWithConfig(pattern, config)
+```
 
-| Pattern Type | Input Size | stdlib | coregex | Speedup |
-|--------------|------------|--------|---------|---------|
-| Case-sensitive | 1KB | 688 ns | 196 ns | **3.5x faster** |
-| Case-sensitive | 32KB | 9,715 ns | 8,367 ns | **1.2x faster** |
-| **Case-insensitive** | 1KB | 24,110 ns | **262 ns** | **92x faster** |
-| **Case-insensitive** | 32KB | 1,229,521 ns | **4,669 ns** | **263x faster** |
-| **`.*\.txt` IsMatch** | 32KB | 1.3 ms | **855 ns** | **1,549x faster** |
-| **`.*\.txt` IsMatch** | 1MB | 27 ms | **21 µs** | **1,314x faster** |
-| **`.*keyword.*` IsMatch** | 250KB | 12.6 ms | **4 µs** | **3,154x faster** |
-| **`.*keyword.*` Find** | 250KB | 15.2 ms | **8 µs** | **1,894x faster** |
-| **`.*@example\.com` FindAll** | 6MB | 316 ms | **3.6 ms** | **87x faster** |
-| **`(foo\|bar\|baz\|qux)`** | 1KB | 9.7 µs | **40 ns** | **242x faster** |
-| **`.*\.(txt\|log\|md)`** | 1KB | 15.5 µs | **454 ns** | **34x faster** |
-| **`[\w]+`** | 6MB | 623 ms | **27 ms** | **23x faster** |
-| **`\d+`** | 1KB | 6.7 µs | **1.5 µs** | **4.5x faster** |
-| **`(a\|b\|c)+`** | 1KB | 7.3 µs | **3.0 µs** | **2.5x faster** |
-| **`j[a-z]+p` (small)** | 44B | 162 ns | **110 ns** | **1.4x faster** |
-| **Email pattern** | 1KB | 22 µs | **2 µs** | **11x faster** |
-| **Email pattern** | 32KB | 640 µs | **15 µs** | **42x faster** |
+## Syntax Support
 
-**Key insights:**
-- **Inner literal patterns** (`.*keyword.*`) see massive speedups (2000-3000x+) through ReverseInner optimization (v0.8.0)
-- **Suffix patterns** (`.*\.txt`) see 1000x+ speedups through ReverseSuffix optimization
-- **Suffix alternations** (`.*\.(txt|log|md)`) now **34-385x faster** via ReverseSuffixSet with Teddy prefilter (v0.8.20) - optimization NOT present in rust-regex!
-- **FindAll with suffix patterns** (`.*@example\.com`) now **87x faster** via ReverseSuffix FindAll optimization (v0.8.19)
-- **Alternation patterns** (`(foo|bar|baz|qux)`) now 242x faster via Teddy SIMD prefilter (v0.8.18)
-- **Email patterns** now 11-42x faster via ReverseInner with `@` inner literal (v0.8.18)
-- **Simple char_class patterns** (`[\w]+`, `\d+`, `[a-z]+`) now **23x faster** via CharClassSearcher - **2x faster than Rust**! (v0.8.21)
-- **Char_class with captures** (`(\w)+`, `(a|b|c)+`) 2.5-4.5x faster via BoundedBacktracker (v0.8.17-18)
-- **Small strings** (~44 bytes) now **1.4-20x faster** via BoundedBacktracker + zero-alloc String methods (v0.8.22)
-- **Case-insensitive** patterns (`(?i)...`) are also excellent (100-263x) - stdlib backtracking is slow, our DFA is fast
-- **Simple patterns** see 1-5x improvement depending on literals
+Uses Go's `regexp/syntax` parser:
 
-See [benchmark/](benchmark/) for detailed comparisons.
+| Feature | Support |
+|---------|---------|
+| Character classes | `[a-z]`, `\d`, `\w`, `\s` |
+| Quantifiers | `*`, `+`, `?`, `{n,m}` |
+| Anchors | `^`, `$`, `\b`, `\B` |
+| Groups | `(...)`, `(?:...)`, `(?P<name>...)` |
+| Unicode | `\p{L}`, `\P{N}` |
+| Flags | `(?i)`, `(?m)`, `(?s)` |
+| Backreferences | Not supported (O(n) guarantee) |
 
-### Cross-Language Benchmarks
+## Architecture
 
-For fair comparison with other engines (Go stdlib, Rust regex), see our CI-powered benchmark repo:
+```
+Pattern → Parse → NFA → Literal Extract → Strategy Select
+                                               ↓
+                         ┌─────────────────────────────────┐
+                         │ Engines:                        │
+                         │  LazyDFA, PikeVM, OnePass,      │
+                         │  BoundedBacktracker,            │
+                         │  ReverseInner, ReverseSuffix,   │
+                         │  CharClassSearcher, Teddy       │
+                         └─────────────────────────────────┘
+                                               ↓
+Input → Prefilter (SIMD) → Engine → Match Result
+```
 
-**[kolkov/regex-bench](https://github.com/kolkov/regex-bench)** - All engines run on identical Linux environment
+**SIMD Primitives** (AMD64):
+- `memchr` — single byte search (AVX2)
+- `memmem` — substring search (SSSE3)
+- `teddy` — multi-pattern search (SSSE3)
 
-| Pattern | Go stdlib | Go coregex | Rust regex |
-|---------|-----------|------------|------------|
-| literal_alt | 473 ms | 31 ms | **0.7 ms** |
-| inner_literal | 232 ms | 1.6 ms | **0.6 ms** |
-| suffix | 233 ms | 1.4 ms | **1.3 ms** |
-| char_class | 521 ms | **26 ms** | 51 ms |
-| email | 260 ms | **0.8 ms** | 1.4 ms |
+Pure Go fallback on other architectures.
 
-coregex beats Rust on `char_class` (2x) and `email` (1.75x). Rust wins on `literal_alt` (Aho-Corasick).
+## Battle-Tested
 
-## Supported Features
+coregex is integrated in [GoAWK](https://github.com/benhoyt/goawk) by Ben Hoyt. This real-world testing uncovered 15+ edge cases that synthetic benchmarks missed.
 
-### Current Features
-
-| Feature              | Status | Notes |
-|----------------------|--------|-------|
-| **SIMD Primitives**  | ✅     | memchr, memchr2/3, memmem, teddy |
-| **Literal Extraction** | ✅   | Prefix/suffix/inner literals |
-| **Prefilter System** | ✅     | Automatic strategy selection |
-| **Meta-Engine**      | ✅     | DFA/NFA/ReverseAnchored orchestration |
-| **Lazy DFA**         | ✅     | On-demand state construction |
-| **Pike VM (NFA)**    | ✅     | Thompson's construction |
-| **Zero-alloc API**   | ✅     | **NEW in v0.8.15** - `IsMatch`, `FindIndices` with 0 allocs |
-| **Reverse Search**   | ✅     | ReverseAnchored (v0.4.0), ReverseSuffix (v0.6.0), ReverseInner (v0.8.0), **ReverseSuffixSet (v0.8.20)** |
-| **OnePass DFA**      | ✅     | **NEW in v0.7.0** - 10x faster captures, 0 allocs |
-| **Unicode support**  | ✅     | Via `regexp/syntax` |
-| **Capture groups**   | ✅     | FindSubmatch, FindSubmatchIndex |
-| **Replace/Split**    | ✅     | ReplaceAll, ReplaceAllFunc, Split |
-| **Named captures**   | ✅     | **NEW in v0.5.0** - SubexpNames() API |
-| **Look-around**      | 📅     | Planned |
-| **Backreferences**   | ❌     | Incompatible with O(n) guarantee |
-
-### Regex Syntax
-
-coregex uses Go's `regexp/syntax` for pattern parsing, supporting:
-- ✅ Character classes `[a-z]`, `\d`, `\w`, `\s`
-- ✅ Quantifiers `*`, `+`, `?`, `{n,m}`
-- ✅ Anchors `^`, `$`, `\b`, `\B`
-- ✅ Groups `(...)` and alternation `|`
-- ✅ Unicode categories `\p{L}`, `\P{N}`
-- ✅ Case-insensitive matching `(?i)`
-- ✅ Non-capturing groups `(?:...)`
-- ❌ Backreferences (not supported - O(n) performance guarantee)
-
-## Known Limitations
-
-**What Works:**
-- ✅ All standard regex syntax (except backreferences)
-- ✅ Unicode support via `regexp/syntax`
-- ✅ SIMD acceleration on AMD64 (AVX2/SSSE3)
-- ✅ Cross-platform (fallback to pure Go on other architectures)
-- ✅ Thread-safe compilation and execution
-- ✅ Zero external dependencies
-- ✅ Capture groups with FindSubmatch API
-- ✅ Named capture groups with SubexpNames() API
-- ✅ Replace/Split with $0-$9 template expansion
-
-**Current Limitations:**
-- ⚠️ **Experimental API** - May change before v1.0
-- ⚠️ No look-around assertions yet (planned)
-- ⚠️ SIMD only on AMD64 (ARM NEON planned)
-
-**Performance Notes:**
-- 🚀 Best speedup on patterns with literal prefixes/suffixes
-- 🚀 Excellent for log parsing, email/URL extraction
-- 🚀 Simple literal patterns (`hello`, `foo`) are **~7x faster** than stdlib (v0.8.16)
-- 🚀 **Zero-allocation** `IsMatch()` - returns immediately on first match (v0.8.15)
-- 🚀 **Zero-allocation** `FindIndices()` - returns `(start, end, found)` tuple (v0.8.15)
-- 🚀 Optimized `FindAll`/`ReplaceAll` with lazy allocation (v0.8.16)
-- ⚡ Alternation patterns (`(foo|bar|baz)`) **242x faster** via Teddy SIMD prefilter (v0.8.18)
-- ⚡ Simple char_class patterns (`[\w]+`, `\d+`) **23x faster** via CharClassSearcher (v0.8.21) - **2x faster than Rust**!
-- ⚡ Char_class with captures (`(\w)+`, `(a|b|c)+`) **2.5-4.5x faster** via BoundedBacktracker (v0.8.17-18)
-- ⚡ First match slower (compilation cost), repeated matches faster
-
-See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
+**We need more testers!** If you have a project using `regexp`, try coregex and [report issues](https://github.com/coregx/coregex/issues).
 
 ## Documentation
 
-- **[Getting Started](docs/)** - Usage examples and tutorials
-- **[API Reference](https://pkg.go.dev/github.com/coregx/coregex)** - Full API documentation
-- **[CHANGELOG.md](CHANGELOG.md)** - Version history
-- **[ROADMAP.md](ROADMAP.md)** - Future plans and development timeline
-- **[SECURITY.md](SECURITY.md)** - Security policy and ReDoS prevention
+- [API Reference](https://pkg.go.dev/github.com/coregx/coregex)
+- [CHANGELOG](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
 
-## Development
+## Comparison
 
-### Building
+| | coregex | stdlib | regexp2 |
+|---|---------|--------|---------|
+| Performance | 3-3000x faster | Baseline | Slower |
+| SIMD | AVX2/SSSE3 | No | No |
+| O(n) guarantee | Yes | Yes | No |
+| Backreferences | No | No | Yes |
+| API | Drop-in | — | Different |
 
-```bash
-# Clone repository
-git clone https://github.com/coregx/coregex.git
-cd coregex
+**Use coregex** for performance-critical code with O(n) guarantee.
+**Use stdlib** for simple cases where performance doesn't matter.
+**Use regexp2** if you need backreferences (accept exponential worst-case).
 
-# Build all packages
-go build ./...
+## Related
 
-# Run tests
-go test ./...
-
-# Run tests with race detector
-go test -race ./...
-
-# Run benchmarks
-go test -bench=. -benchmem ./simd/
-go test -bench=. -benchmem ./prefilter/
-```
-
-### Testing
-
-```bash
-# Run all tests
-go test ./...
-
-# Run specific package tests
-go test ./simd/ -v
-go test ./meta/ -v
-
-# Run with coverage
-go test -cover ./...
-
-# Run linter (golangci-lint required)
-golangci-lint run
-```
-
-### Pre-release Check
-
-Before creating a release, run the comprehensive validation script:
-
-```bash
-bash scripts/pre-release-check.sh
-```
-
-This checks:
-- ✅ Go version (1.25+)
-- ✅ Code formatting (`gofmt`)
-- ✅ `go vet` passes
-- ✅ All tests pass (with race detector)
-- ✅ Test coverage >70%
-- ✅ `golangci-lint` passes
-- ✅ Documentation present
-
----
-
-## Contributing
-
-Contributions are welcome! This is an experimental project and we'd love your help.
-
-**Before contributing:**
-1. Read [CONTRIBUTING.md](CONTRIBUTING.md) - Git Flow workflow and guidelines
-2. Check [open issues](https://github.com/coregx/coregex/issues)
-3. Join [GitHub Discussions](https://github.com/coregx/coregex/discussions)
-
-**Ways to contribute:**
-- 🐛 Report bugs and edge cases
-- 💡 Suggest features
-- 📝 Improve documentation
-- 🔧 Submit pull requests
-- ⭐ Star the project
-- 🧪 Benchmark against stdlib and report results
-
-**Priority areas:**
-- Look-around assertions
-- ARM NEON SIMD implementation
-- More comprehensive benchmarks
-- Performance profiling and optimization
-
----
-
-## Comparison with Other Libraries
-
-| Feature | coregex | stdlib `regexp` | regexp2 |
-|---------|---------|----------------|---------|
-| **Performance** | 🚀 3-3000x faster | Baseline | Slower (backtracking) |
-| **SIMD acceleration** | ✅ AVX2/SSSE3 | ❌ No | ❌ No |
-| **Prefilters** | ✅ Automatic | ❌ No | ❌ No |
-| **Multi-engine** | ✅ DFA/NFA/PikeVM | ❌ Single | ❌ Backtracking only |
-| **O(n) guarantee** | ✅ Yes | ✅ Yes | ❌ No (exponential worst-case) |
-| **Backreferences** | ❌ Not supported | ❌ Not supported | ✅ Supported |
-| **Capture groups** | ✅ Supported | ✅ Supported | ✅ Supported |
-| **Named captures** | ✅ Supported | ✅ Supported | ✅ Supported |
-| **Look-around** | 📅 Planned | ❌ Limited | ✅ Supported |
-| **API compatibility** | ✅ Drop-in replacement | - | Different |
-| **Maintained** | ✅ Active | ✅ Stdlib | ✅ Active |
-
-> **Note on Backreferences**: Both `coregex` and stdlib `regexp` do NOT support backreferences (like `\1`, `\2`) because they are fundamentally incompatible with guaranteed O(n) linear time complexity. Backreferences require backtracking which can lead to exponential worst-case performance (ReDoS vulnerability). If you absolutely need backreferences, use `regexp2`, but be aware of the performance trade-offs.
-
-**When to use coregex:**
-- ✅ Performance-critical applications (log parsing, text processing)
-- ✅ Patterns with literal prefixes/suffixes
-- ✅ Multi-pattern search (email/URL extraction)
-- ✅ When you need O(n) performance guarantee
-
-**When to use stdlib `regexp`:**
-- ✅ Simple patterns where performance doesn't matter
-- ✅ Maximum stability and API compatibility
-
-**When to use `regexp2`:**
-- ✅ You need backreferences (not supported by coregex)
-- ✅ Complex look-around assertions (v0.4.0 for coregex)
-- ⚠️ Accept exponential worst-case performance
-
----
-
-## Architecture Overview
-
-```
-                        +------------------------------------------+
-                        |              Meta-Engine                 |
-                        | Strategy: DFA/NFA/Reverse/OnePass/Teddy  |
-                        +--------------------+---------------------+
-                                             |
-                        +--------------------+---------------------+
-                        |          Prefilter Coordinator           |
-                        |  memchr | memmem | teddy | aho-corasick  |
-                        +--------------------+---------------------+
-                                             |
-    +--------+--------+--------+--------+--------+--------+--------+--------+
-    |        |        |        |        |        |        |        |        |
-    v        v        v        v        v        v        v        v        v
- +------+ +------+ +------+ +------+ +------+ +------+ +------+ +------+
- | Lazy | | Pike | |Revers| |Revers| |Revers| |Revers| |OnePas| |Boundd|
- | DFA  | | VM   | |Anchor| |Suffix| |Inner | |SufSet| | DFA  | |Bcktrk|
- +------+ +------+ +------+ +------+ +------+ +------+ +------+ +------+
-    |        |        |        |        |        |        |        |
-    +--------+--------+--------+--------+--------+--------+--------+
-                                             |
-                        +--------------------+---------------------+
-                        |           SIMD Primitives                |
-                        |            (AVX2/SSSE3)                  |
-                        +------------------------------------------+
-
-Strategies:
-  - UseDFA:            Prefilter + Lazy DFA (patterns with literals)
-  - UseNFA:            Pike VM only (tiny patterns, no literals)
-  - UseTeddy:          Teddy prefilter only (exact alternations like foo|bar|baz)
-  - UseReverseSuffix:  Backward search for suffix patterns (.*\.txt)
-  - UseReverseSuffixSet: Teddy multi-suffix for alternations (.*\.(txt|log|md))
-  - UseReverseInner:   Bidirectional search for inner literals (.*keyword.*)
-  - UseOnePass:        Zero-alloc captures (simple anchored patterns)
-  - UseCharClass:      256-byte lookup table ([\w]+, \d+) - 23x faster, 2x faster than Rust! NEW!
-  - UseBounded:        Bit-vector backtracker (char classes with captures)
-```
-
-**Key components:**
-1. **Meta-Engine** - Intelligent strategy selection based on pattern analysis
-2. **Prefilter System** - Fast rejection of non-matching candidates
-3. **Multi-Engine Execution** - DFA for speed, NFA for correctness
-4. **ReverseAnchored** - For `$` anchor patterns (v0.4.0)
-5. **ReverseSuffix** - 1000x+ speedup for `.*\.txt` suffix patterns (v0.6.0)
-6. **OnePass DFA** - 10x faster captures with 0 allocations (v0.7.0)
-7. **ReverseInner** - 3000x+ speedup for `.*keyword.*` patterns (v0.8.0)
-8. **CharClassSearcher** - 23x faster for `[\w]+` patterns, 2x faster than Rust! (v0.8.21)
-9. **BoundedBacktracker** - 2.5x faster for char_class with captures (`(\w)+`)
-10. **UseTeddy** - 242x faster for exact alternations (`foo|bar|baz`) with literal engine bypass
-11. **SIMD Primitives** - 10-15x faster byte/substring search
-
-See package documentation on [pkg.go.dev](https://pkg.go.dev/github.com/coregx/coregex) for API details.
-
----
-
-## Related Projects
-
-Part of the [CoreGX](https://github.com/coregx) (Core Go eXtensions) ecosystem:
-- More projects coming soon!
-
-**Community:**
-- [golang/go#26623](https://github.com/golang/go/issues/26623) - Go stdlib regexp performance discussion (we posted there!)
+- [golang/go#26623](https://github.com/golang/go/issues/26623) — Go regexp performance discussion
+- [golang/go#76818](https://github.com/golang/go/issues/76818) — Upstream path proposal
+- [kolkov/regex-bench](https://github.com/kolkov/regex-bench) — Cross-language benchmarks
 
 **Inspired by:**
-- [Rust regex crate](https://github.com/rust-lang/regex) - Architecture and design
-- [RE2](https://github.com/google/re2) - O(n) performance guarantees
-- [Hyperscan](https://github.com/intel/hyperscan) - SIMD multi-pattern matching
-
----
+- [Rust regex](https://github.com/rust-lang/regex) — Architecture
+- [RE2](https://github.com/google/re2) — O(n) guarantees
+- [Hyperscan](https://github.com/intel/hyperscan) — SIMD algorithms
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
 
 ---
 
-## Acknowledgments
+**Status:** Pre-1.0 (API may change). Ready for testing and feedback.
 
-- Rust regex crate team for architectural inspiration
-- Russ Cox for Thompson's NFA articles and RE2
-- Intel for Hyperscan and Teddy algorithm
-- Go team for `regexp/syntax` parser
-- All contributors to this project
-
----
-
-## Support
-
-- 📖 [API Reference](https://pkg.go.dev/github.com/coregx/coregex) - Full documentation
-- 🐛 [Issue Tracker](https://github.com/coregx/coregex/issues) - Report bugs
-- 💬 [Discussions](https://github.com/coregx/coregex/discussions) - Ask questions
-
----
-
-**Status**: ⚠️ **Pre-1.0** - API may change before v1.0.0
-
-**Ready for:** Testing, benchmarking, feedback, and experimental use
-
-See [Releases](https://github.com/coregx/coregex/releases) for the latest version and [Discussions](https://github.com/coregx/coregex/discussions/3) for roadmap.
-
----
-
-*Built with performance and correctness in mind by the coregex community*
+[Releases](https://github.com/coregx/coregex/releases) · [Issues](https://github.com/coregx/coregex/issues) · [Discussions](https://github.com/coregx/coregex/discussions)
