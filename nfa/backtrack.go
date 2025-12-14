@@ -31,6 +31,11 @@ type BoundedBacktracker struct {
 	// maxVisitedSize limits memory usage (in entries, not bits)
 	// Default: 256 * 1024 = 256K entries = 1MB
 	maxVisitedSize int
+
+	// longest enables leftmost-longest match semantics (POSIX/AWK compatibility).
+	// When true, explores all branches to find the longest match instead of
+	// returning on the first match found.
+	longest bool
 }
 
 // NewBoundedBacktracker creates a new bounded backtracker for the given NFA.
@@ -40,6 +45,13 @@ func NewBoundedBacktracker(nfa *NFA) *BoundedBacktracker {
 		numStates:      nfa.States(),
 		maxVisitedSize: 256 * 1024, // 256K entries = 1MB (4 bytes per entry)
 	}
+}
+
+// SetLongest enables or disables leftmost-longest match semantics.
+// When enabled, the backtracker finds the longest match at each position
+// instead of returning on the first match found.
+func (b *BoundedBacktracker) SetLongest(longest bool) {
+	b.longest = longest
 }
 
 // CanHandle returns true if this engine can handle the given input size.
@@ -128,6 +140,7 @@ func (b *BoundedBacktracker) Search(haystack []byte) (int, int, bool) {
 // SearchAt finds the first match starting from position 'at'.
 // Returns (start, end, true) if found, (-1, -1, false) otherwise.
 // This is used by FindAll* operations for efficient iteration.
+// In longest mode, finds the longest match at the leftmost position.
 func (b *BoundedBacktracker) SearchAt(haystack []byte, at int) (int, int, bool) {
 	if !b.CanHandle(len(haystack)) {
 		return -1, -1, false
@@ -135,9 +148,15 @@ func (b *BoundedBacktracker) SearchAt(haystack []byte, at int) (int, int, bool) 
 
 	b.reset(len(haystack))
 
+	// Choose the appropriate backtracking function based on longest mode
+	backtrackFunc := b.backtrackFind
+	if b.longest {
+		backtrackFunc = b.backtrackFindLongest
+	}
+
 	// Try to match starting at each position from 'at'
 	for startPos := at; startPos <= len(haystack); startPos++ {
-		if end := b.backtrackFind(haystack, startPos, b.nfa.StartAnchored()); end >= 0 {
+		if end := backtrackFunc(haystack, startPos, b.nfa.StartAnchored()); end >= 0 {
 			return startPos, end, true
 		}
 		// O(1) reset: increment generation instead of O(n) array clear
@@ -328,6 +347,104 @@ func (b *BoundedBacktracker) backtrackFind(haystack []byte, pos int, state State
 			width := runeWidth(haystack[pos:])
 			if width > 0 {
 				return b.backtrackFind(haystack, pos+width, s.RuneAnyNotNL())
+			}
+		}
+		return -1
+
+	case StateFail:
+		return -1
+	}
+
+	return -1
+}
+
+// backtrackFindLongest performs backtracking to find the longest match end position.
+// Unlike backtrackFind, this explores ALL branches at splits to find the longest match.
+// Returns end position if match found, -1 otherwise.
+//
+//nolint:gocyclo,cyclop // complexity is inherent to state machine dispatch
+func (b *BoundedBacktracker) backtrackFindLongest(haystack []byte, pos int, state StateID) int {
+	// Check bounds
+	if state == InvalidState || int(state) >= b.numStates {
+		return -1
+	}
+
+	// Check and mark visited
+	if !b.shouldVisit(state, pos) {
+		return -1
+	}
+
+	s := b.nfa.State(state)
+	if s == nil {
+		return -1
+	}
+
+	switch s.Kind() {
+	case StateMatch:
+		return pos
+
+	case StateByteRange:
+		lo, hi, next := s.ByteRange()
+		if pos < len(haystack) {
+			c := haystack[pos]
+			if c >= lo && c <= hi {
+				return b.backtrackFindLongest(haystack, pos+1, next)
+			}
+		}
+		return -1
+
+	case StateSparse:
+		if pos >= len(haystack) {
+			return -1
+		}
+		c := haystack[pos]
+		for _, tr := range s.Transitions() {
+			if c >= tr.Lo && c <= tr.Hi {
+				return b.backtrackFindLongest(haystack, pos+1, tr.Next)
+			}
+		}
+		return -1
+
+	case StateSplit:
+		left, right := s.Split()
+		// For longest match: try BOTH branches and return the longer one
+		leftEnd := b.backtrackFindLongest(haystack, pos, left)
+		rightEnd := b.backtrackFindLongest(haystack, pos, right)
+
+		// Return the longer match (or the one that matched if only one did)
+		if leftEnd >= rightEnd {
+			return leftEnd
+		}
+		return rightEnd
+
+	case StateEpsilon:
+		return b.backtrackFindLongest(haystack, pos, s.Epsilon())
+
+	case StateCapture:
+		_, _, next := s.Capture()
+		return b.backtrackFindLongest(haystack, pos, next)
+
+	case StateLook:
+		look, next := s.Look()
+		if checkLookAssertion(look, haystack, pos) {
+			return b.backtrackFindLongest(haystack, pos, next)
+		}
+		return -1
+
+	case StateRuneAny:
+		if pos < len(haystack) {
+			width := runeWidth(haystack[pos:])
+			if width > 0 {
+				return b.backtrackFindLongest(haystack, pos+width, s.RuneAny())
+			}
+		}
+		return -1
+
+	case StateRuneAnyNotNL:
+		if pos < len(haystack) && haystack[pos] != '\n' {
+			width := runeWidth(haystack[pos:])
+			if width > 0 {
+				return b.backtrackFindLongest(haystack, pos+width, s.RuneAnyNotNL())
 			}
 		}
 		return -1

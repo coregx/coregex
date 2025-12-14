@@ -14,6 +14,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.24] - 2025-12-14
+
+### Fixed
+- **Longest() mode performance** - BoundedBacktracker now supports leftmost-longest matching (Fixes #52)
+  - Root cause: BoundedBacktracker was disabled entirely in Longest() mode, forcing PikeVM fallback
+  - Solution: Implemented `backtrackFindLongest()` that explores all branches at splits
+  - Found by: Ben Hoyt (GoAWK integration testing with `re.Longest()`)
+
+### Performance (Longest() mode)
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| coregex Longest() | 450 ns | 133 ns | **3.4x faster** |
+| Longest() overhead | +270% | +8% | Target was +10% |
+| vs stdlib Longest() | 2.4x slower | **1.37x faster** | — |
+
+### Technical
+- `nfa/backtrack.go`: Added `longest` field, `SetLongest()`, `backtrackFindLongest()`
+- `meta/meta.go`: Enabled BoundedBacktracker for Longest() mode, call `SetLongest()` on backtracker
+
+---
+
 ## [0.8.23] - 2025-12-13
 
 ### Fixed

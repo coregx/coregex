@@ -513,8 +513,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 func (e *Engine) isMatchNFA(haystack []byte) bool {
 	e.stats.NFASearches++
 
-	// BoundedBacktracker doesn't support Longest mode - must use PikeVM
-	useBT := e.boundedBacktracker != nil && !e.longest
+	// BoundedBacktracker is preferred when available (supports both default and Longest modes)
+	useBT := e.boundedBacktracker != nil
 
 	// Use prefilter for skip-ahead if available
 	if e.prefilter != nil {
@@ -707,6 +707,9 @@ func (e *Engine) SubexpNames() []string {
 func (e *Engine) SetLongest(longest bool) {
 	e.longest = longest
 	e.pikevm.SetLongest(longest)
+	if e.boundedBacktracker != nil {
+		e.boundedBacktracker.SetLongest(longest)
+	}
 }
 
 // FindIndices returns the start and end indices of the first match.
@@ -784,9 +787,8 @@ func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 
 	// BoundedBacktracker can be used for Find operations only when:
 	// 1. It's available
-	// 2. Not in Longest mode (BT doesn't support it)
-	// 3. Pattern cannot match empty (BT has greedy semantics that break empty match handling)
-	useBT := e.boundedBacktracker != nil && !e.longest && !e.canMatchEmpty
+	// 2. Pattern cannot match empty (BT has greedy semantics that break empty match handling)
+	useBT := e.boundedBacktracker != nil && !e.canMatchEmpty
 
 	// Use prefilter for skip-ahead if available
 	if e.prefilter != nil {
@@ -833,7 +835,7 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 	e.stats.NFASearches++
 
 	// BoundedBacktracker can be used for Find operations only when safe
-	useBT := e.boundedBacktracker != nil && !e.longest && !e.canMatchEmpty
+	useBT := e.boundedBacktracker != nil && !e.canMatchEmpty
 
 	// Use prefilter for skip-ahead if available
 	if e.prefilter != nil {
