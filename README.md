@@ -174,7 +174,7 @@ Pure Go fallback on other architectures.
 
 ## Battle-Tested
 
-coregex is integrated in [GoAWK](https://github.com/benhoyt/goawk) by Ben Hoyt. This real-world testing uncovered 15+ edge cases that synthetic benchmarks missed.
+coregex was [tested in GoAWK](https://github.com/benhoyt/goawk/pull/264) by Ben Hoyt. This real-world testing uncovered 15+ edge cases that synthetic benchmarks missed.
 
 **We need more testers!** If you have a project using `regexp`, try coregex and [report issues](https://github.com/coregx/coregex/issues).
 
