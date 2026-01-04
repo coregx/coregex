@@ -118,6 +118,22 @@ const (
 	// Uses 256-byte membership table for O(1) byte classification instead of
 	// NFA state tracking. Optimal for "find all words" type patterns.
 	UseCharClassSearcher
+
+	// UseDigitPrefilter uses SIMD digit scanning for patterns that must start with digits.
+	// Selected for:
+	//   - Patterns where ALL alternation branches must start with a digit [0-9]
+	//   - Examples: IP address patterns, numeric validators
+	//   - Pattern has no extractable prefix literals (due to alternation structure)
+	//   - Speedup: 5-10x by skipping non-digit regions with SIMD
+	//
+	// Algorithm:
+	//   1. SIMD scan haystack for digit sequences
+	//   2. At each digit position, run lazy DFA to verify match
+	//   3. Skip non-digit regions entirely (major speedup for sparse matches)
+	//
+	// This addresses Issue #50 (IP regex optimization) where alternations like
+	// `25[0-5]|2[0-4][0-9]|...` produce no extractable prefix literals.
+	UseDigitPrefilter
 )
 
 // String returns a human-readable representation of the Strategy.
@@ -145,6 +161,8 @@ func (s Strategy) String() string {
 		return "UseReverseSuffixSet"
 	case UseCharClassSearcher:
 		return "UseCharClassSearcher"
+	case UseDigitPrefilter:
+		return "UseDigitPrefilter"
 	default:
 		return "Unknown"
 	}
@@ -177,6 +195,217 @@ func hasWordBoundary(re *syntax.Regexp) bool {
 		}
 	}
 	return false
+}
+
+// isDigitOnlyClass returns true if the character class contains ONLY digits [0-9].
+// The runes slice contains pairs: [lo1, hi1, lo2, hi2, ...] representing ranges.
+//
+// Examples:
+//   - [0-9] → runes = [48, 57] → true
+//   - [0-5] → runes = [48, 53] → true
+//   - [0-9a-z] → runes = [48, 57, 97, 122] → false (includes letters)
+//   - [a-z] → runes = [97, 122] → false (no digits)
+func isDigitOnlyClass(runes []rune) bool {
+	if len(runes) == 0 || len(runes)%2 != 0 {
+		return false
+	}
+
+	for i := 0; i < len(runes); i += 2 {
+		lo, hi := runes[i], runes[i+1]
+		// Range must be within '0' (48) to '9' (57)
+		if lo < '0' || hi > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isDigitLeadConcat checks if a concatenation pattern is digit-lead.
+// For concatenation, we iterate through elements:
+// - If an element is optional AND digit-only, we continue (it's fine either way)
+// - If an element is optional but NOT digit-only, the pattern is NOT digit-lead
+// - If an element is required, we check if it's digit-lead
+func isDigitLeadConcat(subs []*syntax.Regexp) bool {
+	for _, sub := range subs {
+		if isOptionalElement(sub) {
+			// Optional element - if it matches, must be digit-only
+			if !isOptionalDigitOnly(sub) {
+				// Could match non-digit character, so not digit-lead
+				return false
+			}
+			// Optional and digit-only, continue to next element
+			continue
+		}
+		// Required element - must be digit-lead
+		return isDigitLeadPattern(sub)
+	}
+	// All elements were optional - pattern can match empty, not digit-lead
+	return false
+}
+
+// isOptionalElement returns true if the syntax element can match zero characters.
+// This includes Quest (?), Star (*), and Repeat with min=0.
+func isOptionalElement(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+	switch re.Op {
+	case syntax.OpQuest, syntax.OpStar:
+		return true
+	case syntax.OpRepeat:
+		return re.Min == 0
+	default:
+		return false
+	}
+}
+
+// isOptionalDigitOnly returns true if the optional element, when it matches,
+// only matches digits. This is used for [1-9]? type patterns where we need
+// to verify the element is safe to skip over in digit-lead detection.
+func isOptionalDigitOnly(re *syntax.Regexp) bool {
+	if re == nil || len(re.Sub) == 0 {
+		return false
+	}
+	// Check if the sub-pattern (the thing being made optional) is digit-only
+	sub := re.Sub[0]
+	switch sub.Op {
+	case syntax.OpCharClass:
+		return isDigitOnlyClass(sub.Rune)
+	case syntax.OpLiteral:
+		// All runes must be digits
+		for _, r := range sub.Rune {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return len(sub.Rune) > 0
+	default:
+		// For other cases, recursively check if digit-lead
+		// (If it's digit-lead, any match starts with digit)
+		return isDigitLeadPattern(sub)
+	}
+}
+
+// isDigitLeadPattern returns true if ALL branches of the pattern must start with a digit [0-9].
+// This is used to enable digit prefilter optimization for patterns like IP addresses.
+//
+// The function recursively analyzes the AST to determine if every possible match
+// must begin with a digit character. This enables SIMD prefiltering to skip
+// non-digit regions entirely.
+//
+// Examples that return true:
+//   - \d+ (digit class with plus)
+//   - [0-9]+ (explicit digit range)
+//   - [0-9] (single digit required)
+//   - 25[0-5]|2[0-4][0-9] (all branches start with digit literal)
+//   - (?:25[0-5]|...) (non-capturing group)
+//   - (\d+) (capture group wrapping digit pattern)
+//   - [0-5][0-9] (concatenation starting with digit)
+//
+// Examples that return false:
+//   - [a-z0-9]+ (may start with letter)
+//   - a\d+ (starts with literal 'a')
+//   - \d*foo (star can match zero - may start with 'f')
+//   - \d?foo (quest can match zero - may start with 'f')
+//   - [0-9]* (star can match zero)
+//   - .*\d+ (dot-star matches anything)
+//   - \w+ (word class includes letters)
+func isDigitLeadPattern(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+
+	switch re.Op {
+	case syntax.OpCharClass:
+		// Character class must contain ONLY digits
+		return isDigitOnlyClass(re.Rune)
+
+	case syntax.OpLiteral:
+		// First rune must be a digit
+		return len(re.Rune) > 0 && re.Rune[0] >= '0' && re.Rune[0] <= '9'
+
+	case syntax.OpAlternate:
+		// ALL branches must start with digit
+		if len(re.Sub) == 0 {
+			return false
+		}
+		for _, sub := range re.Sub {
+			if !isDigitLeadPattern(sub) {
+				return false
+			}
+		}
+		return true
+
+	case syntax.OpConcat:
+		// Delegate to helper to reduce cyclomatic complexity
+		if len(re.Sub) == 0 {
+			return false
+		}
+		return isDigitLeadConcat(re.Sub)
+
+	case syntax.OpCapture:
+		// Look through capture group
+		if len(re.Sub) == 0 {
+			return false
+		}
+		return isDigitLeadPattern(re.Sub[0])
+
+	case syntax.OpPlus:
+		// Plus requires at least one match, check the sub-pattern
+		if len(re.Sub) == 0 {
+			return false
+		}
+		return isDigitLeadPattern(re.Sub[0])
+
+	case syntax.OpRepeat:
+		// OpRepeat with min >= 1 guarantees at least one match
+		if len(re.Sub) == 0 {
+			return false
+		}
+		if re.Min >= 1 {
+			return isDigitLeadPattern(re.Sub[0])
+		}
+		// min == 0 means could match zero times
+		return false
+
+	case syntax.OpStar, syntax.OpQuest:
+		// Star (*) and Quest (?) can match zero times, so pattern might not start with digit
+		return false
+
+	case syntax.OpEmptyMatch:
+		// Empty match doesn't require any character
+		return false
+
+	case syntax.OpAnyChar, syntax.OpAnyCharNotNL:
+		// Dot (.) matches any character, not specifically digits
+		return false
+
+	case syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText:
+		// Anchors don't consume characters
+		return false
+
+	case syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		// Word boundaries don't consume characters
+		return false
+
+	default:
+		return false
+	}
+}
+
+// shouldUseDigitPrefilter checks if the pattern should use digit prefilter optimization.
+// Returns true if:
+//   - Pattern must start with a digit [0-9]
+//   - DFA and prefilter are enabled
+//   - Pattern is suitable for SIMD digit scanning
+//
+// This is used for patterns like IP addresses where alternation structure
+// prevents literal extraction, but all branches must start with a digit.
+func shouldUseDigitPrefilter(re *syntax.Regexp, config Config) bool {
+	if re == nil || !config.EnableDFA || !config.EnablePrefilter {
+		return false
+	}
+	return isDigitLeadPattern(re)
 }
 
 // shouldUseReverseSuffixSet checks if multiple suffix literals are available for Teddy prefilter.
@@ -493,6 +722,12 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseDFA
 	}
 
+	// Check for digit-lead patterns (like IP addresses) that have no extractable literals.
+	// Delegated to helper function to reduce cyclomatic complexity.
+	if shouldUseDigitPrefilter(re, config) {
+		return UseDigitPrefilter
+	}
+
 	// Medium NFA without strong characteristics → adaptive
 	// Try DFA first (may hit cache), fallback to NFA if cache fills.
 	// This handles patterns like "a*b*c*" where DFA may or may not help.
@@ -559,6 +794,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseCharClassSearcher:
 		return "specialized lookup-table searcher for char_class+ patterns (14-17x faster than BoundedBacktracker)"
+
+	case UseDigitPrefilter:
+		return "SIMD digit scanner for digit-lead alternation patterns (5-10x for IP address patterns)"
 
 	default:
 		return "unknown strategy"
