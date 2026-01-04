@@ -183,6 +183,7 @@ linters:
           - gocyclo      # Engine selection complexity
           - gocognit     # Strategy orchestration
           - nestif       # Multi-engine decision logic
+          - funlen       # CompileRegexp and other orchestration functions
 
       # Literal extraction - complex heuristics
       - path: literal/.*\.go
