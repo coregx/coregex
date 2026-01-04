@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp/syntax"
 
+	"github.com/coregx/ahocorasick"
 	"github.com/coregx/coregex/dfa/lazy"
 	"github.com/coregx/coregex/dfa/onepass"
 	"github.com/coregx/coregex/literal"
@@ -47,6 +48,7 @@ type Engine struct {
 	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
 	reverseInnerSearcher     *ReverseInnerSearcher
 	digitPrefilter           *prefilter.DigitPrefilter // For digit-lead patterns like IP addresses
+	ahoCorasick              *ahocorasick.Automaton    // For large literal alternations (>8 patterns)
 	prefilter                prefilter.Prefilter
 	strategy                 Strategy
 	config                   Config
@@ -79,6 +81,9 @@ type Stats struct {
 
 	// OnePassSearches counts OnePass DFA searches (for FindSubmatch)
 	OnePassSearches uint64
+
+	// AhoCorasickSearches counts Aho-Corasick automaton searches
+	AhoCorasickSearches uint64
 
 	// PrefilterHits counts successful prefilter matches
 	PrefilterHits uint64
@@ -267,6 +272,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	var reverseSuffixSetSearcher *ReverseSuffixSetSearcher
 	var reverseInnerSearcher *ReverseInnerSearcher
 	var digitPre *prefilter.DigitPrefilter
+	var ahoCorasickAuto *ahocorasick.Automaton
 
 	needsDFA := strategy == UseDFA || strategy == UseBoth ||
 		strategy == UseReverseAnchored || strategy == UseReverseSuffix ||
@@ -359,6 +365,25 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		}
 	}
 
+	// Build Aho-Corasick automaton for large literal alternations (>8 patterns)
+	// This extends the "literal engine bypass" optimization beyond Teddy's 8 pattern limit.
+	// Aho-Corasick provides O(n) matching for thousands of patterns with ~1.6 GB/s throughput.
+	if strategy == UseAhoCorasick && literals != nil && !literals.IsEmpty() {
+		builder := ahocorasick.NewBuilder()
+		litCount := literals.Len()
+		for i := 0; i < litCount; i++ {
+			lit := literals.Get(i)
+			builder.AddPattern(lit.Bytes)
+		}
+		var acErr error
+		ahoCorasickAuto, acErr = builder.Build()
+		if acErr != nil {
+			// Aho-Corasick build failed: fall back to NFA
+			strategy = UseNFA
+			ahoCorasickAuto = nil
+		}
+	}
+
 	// Build specialized searchers for character class patterns
 	boundedBT, charClassSrch, strategy := buildCharClassSearchers(strategy, re, nfaEngine)
 
@@ -378,6 +403,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		reverseSuffixSetSearcher: reverseSuffixSetSearcher,
 		reverseInnerSearcher:     reverseInnerSearcher,
 		digitPrefilter:           digitPre,
+		ahoCorasick:              ahoCorasickAuto,
 		prefilter:                pf,
 		strategy:                 strategy,
 		config:                   config,
@@ -464,6 +490,8 @@ func (e *Engine) findAtZero(haystack []byte) *Match {
 		return e.findTeddy(haystack)
 	case UseDigitPrefilter:
 		return e.findDigitPrefilter(haystack)
+	case UseAhoCorasick:
+		return e.findAhoCorasick(haystack)
 	default:
 		return e.findNFA(haystack)
 	}
@@ -491,6 +519,8 @@ func (e *Engine) findAtNonZero(haystack []byte, at int) *Match {
 		return e.findTeddyAt(haystack, at)
 	case UseDigitPrefilter:
 		return e.findDigitPrefilterAt(haystack, at)
+	case UseAhoCorasick:
+		return e.findAhoCorasickAt(haystack, at)
 	default:
 		return e.findNFAAt(haystack, at)
 	}
@@ -533,6 +563,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchTeddy(haystack)
 	case UseDigitPrefilter:
 		return e.isMatchDigitPrefilter(haystack)
+	case UseAhoCorasick:
+		return e.isMatchAhoCorasick(haystack)
 	default:
 		return e.isMatchNFA(haystack)
 	}
@@ -772,6 +804,8 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesTeddy(haystack)
 	case UseDigitPrefilter:
 		return e.findIndicesDigitPrefilter(haystack)
+	case UseAhoCorasick:
+		return e.findIndicesAhoCorasick(haystack)
 	default:
 		return e.findIndicesNFA(haystack)
 	}
@@ -806,6 +840,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesTeddyAt(haystack, at)
 	case UseDigitPrefilter:
 		return e.findIndicesDigitPrefilterAt(haystack, at)
+	case UseAhoCorasick:
+		return e.findIndicesAhoCorasickAt(haystack, at)
 	default:
 		return e.findIndicesNFAAt(haystack, at)
 	}
@@ -2015,6 +2051,74 @@ func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int,
 	}
 
 	return -1, -1, false
+}
+
+// findAhoCorasick searches using Aho-Corasick automaton for large literal alternations.
+// This is the "literal engine bypass" for patterns with >8 literals.
+// The automaton performs O(n) multi-pattern matching with ~1.6 GB/s throughput.
+func (e *Engine) findAhoCorasick(haystack []byte) *Match {
+	if e.ahoCorasick == nil {
+		return e.findNFA(haystack)
+	}
+	e.stats.AhoCorasickSearches++
+
+	m := e.ahoCorasick.Find(haystack, 0)
+	if m == nil {
+		return nil
+	}
+	return NewMatch(m.Start, m.End, haystack)
+}
+
+// findAhoCorasickAt searches using Aho-Corasick starting at position 'at'.
+func (e *Engine) findAhoCorasickAt(haystack []byte, at int) *Match {
+	if e.ahoCorasick == nil || at >= len(haystack) {
+		return e.findNFAAt(haystack, at)
+	}
+	e.stats.AhoCorasickSearches++
+
+	m := e.ahoCorasick.Find(haystack, at)
+	if m == nil {
+		return nil
+	}
+	return NewMatch(m.Start, m.End, haystack)
+}
+
+// isMatchAhoCorasick checks for match using Aho-Corasick automaton.
+// Optimized for boolean matching with zero allocations.
+func (e *Engine) isMatchAhoCorasick(haystack []byte) bool {
+	if e.ahoCorasick == nil {
+		return e.isMatchNFA(haystack)
+	}
+	e.stats.AhoCorasickSearches++
+	return e.ahoCorasick.IsMatch(haystack)
+}
+
+// findIndicesAhoCorasick returns indices using Aho-Corasick - zero alloc.
+func (e *Engine) findIndicesAhoCorasick(haystack []byte) (int, int, bool) {
+	if e.ahoCorasick == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	e.stats.AhoCorasickSearches++
+
+	m := e.ahoCorasick.Find(haystack, 0)
+	if m == nil {
+		return -1, -1, false
+	}
+	return m.Start, m.End, true
+}
+
+// findIndicesAhoCorasickAt returns indices using Aho-Corasick starting at position 'at' - zero alloc.
+func (e *Engine) findIndicesAhoCorasickAt(haystack []byte, at int) (int, int, bool) {
+	if e.ahoCorasick == nil || at >= len(haystack) {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	e.stats.AhoCorasickSearches++
+
+	m := e.ahoCorasick.Find(haystack, at)
+	if m == nil {
+		return -1, -1, false
+	}
+	return m.Start, m.End, true
 }
 
 // CompileError represents a pattern compilation error.
