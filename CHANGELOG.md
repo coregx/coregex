@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **DigitPrefilter strategy** for IP regex patterns - PR #56 (Fixes #50)
+  - New `UseDigitPrefilter` strategy for patterns that must start with digits
+  - AVX2 SIMD digit scanner (`simd/memchr_digit_amd64.s`)
+  - AST analysis to detect digit-start patterns (IP validation, phone numbers)
+  - **2500x faster** than stdlib on no-match scenarios
+  - **39-152x faster** on sparse IP data
+
 - **Paired-byte SIMD search** for `simd.Memmem()` - PR #55
   - Byte frequency table for optimal rare byte selection (like Rust's memchr crate)
   - `SelectRareBytes()` finds two rarest bytes in needle
