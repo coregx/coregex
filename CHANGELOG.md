@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **UseAhoCorasick strategy** for large literal alternations (>8 patterns)
+  - Integrates `github.com/coregx/ahocorasick` v0.1.0 library
+  - Extends "literal engine bypass" optimization beyond Teddy's 8-pattern limit
+  - O(n) multi-pattern matching with ~1.6 GB/s throughput
+  - **75-113x faster** than stdlib on 15-20 pattern alternations
+  - Zero allocations for `IsMatch()`
+
 - **DigitPrefilter strategy** for IP regex patterns - PR #56 (Fixes #50)
   - New `UseDigitPrefilter` strategy for patterns that must start with digits
   - AVX2 SIMD digit scanner (`simd/memchr_digit_amd64.s`)
