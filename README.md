@@ -75,8 +75,7 @@ Cross-language benchmarks on 6MB input ([source](https://github.com/kolkov/regex
 - Multi-pattern (`foo|bar|baz`) — Teddy SIMD algorithm
 
 **Known gaps vs Rust:**
-- `literal_alt` — Rust uses Aho-Corasick (planned for coregex)
-- Complex alternations — architectural differences
+- Complex alternations — architectural differences in lazy DFA caching
 
 ## Features
 
@@ -87,9 +86,11 @@ coregex automatically selects the optimal engine:
 | Strategy | Pattern Type | Speedup |
 |----------|--------------|---------|
 | ReverseInner | `.*keyword.*` | 1000-3000x |
+| DigitPrefilter | IP patterns `\d+\.\d+\.\d+\.\d+` | 40-2500x |
 | ReverseSuffix | `.*\.txt` | 100-400x |
+| AhoCorasick | `a\|b\|c\|...\|z` (>8 patterns) | 75-113x |
 | CharClassSearcher | `[\w]+`, `\d+` | 20-25x |
-| Teddy | `foo\|bar\|baz` | 15-240x |
+| Teddy | `foo\|bar\|baz` (2-8 patterns) | 15-240x |
 | LazyDFA | Complex with literals | 10-50x |
 | OnePass | Anchored captures | 10x |
 | BoundedBacktracker | Small patterns | 2-5x |
