@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+- Look-around assertions
+- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
+- UTF-8 Automata optimization
+
+---
+
+## [0.9.0] - 2026-01-05
+
 ### Added
+- **UseAhoCorasick strategy** for large literal alternations (>8 patterns)
+  - Integrates `github.com/coregx/ahocorasick` v0.1.0 library
+  - Extends "literal engine bypass" optimization beyond Teddy's 8-pattern limit
+  - O(n) multi-pattern matching with ~1.6 GB/s throughput
+  - **75-113x faster** than stdlib on 15-20 pattern alternations
+  - Zero allocations for `IsMatch()`
+
 - **DigitPrefilter strategy** for IP regex patterns - PR #56 (Fixes #50)
   - New `UseDigitPrefilter` strategy for patterns that must start with digits
   - AVX2 SIMD digit scanner (`simd/memchr_digit_amd64.s`)
@@ -22,11 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - AVX2 assembly implementation for AMD64
   - SWAR (SIMD Within A Register) fallback for non-AVX2 and other architectures
   - Dramatically reduces false positives vs single-byte search
-
-### Planned
-- Look-around assertions
-- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
-- UTF-8 Automata optimization
 
 ---
 
@@ -1025,5 +1036,12 @@ v1.0.0 → Stable release (API frozen)
 
 ---
 
-[Unreleased]: https://github.com/coregx/coregex/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/coregx/coregex/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/coregx/coregex/releases/tag/v0.9.0
+[0.8.24]: https://github.com/coregx/coregex/releases/tag/v0.8.24
+[0.8.23]: https://github.com/coregx/coregex/releases/tag/v0.8.23
+[0.8.22]: https://github.com/coregx/coregex/releases/tag/v0.8.22
+[0.8.21]: https://github.com/coregx/coregex/releases/tag/v0.8.21
+[0.8.20]: https://github.com/coregx/coregex/releases/tag/v0.8.20
+[0.8.19]: https://github.com/coregx/coregex/releases/tag/v0.8.19
 [0.1.0]: https://github.com/coregx/coregex/releases/tag/v0.1.0

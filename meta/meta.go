@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp/syntax"
 
+	"github.com/coregx/ahocorasick"
 	"github.com/coregx/coregex/dfa/lazy"
 	"github.com/coregx/coregex/dfa/onepass"
 	"github.com/coregx/coregex/literal"
@@ -47,6 +48,7 @@ type Engine struct {
 	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
 	reverseInnerSearcher     *ReverseInnerSearcher
 	digitPrefilter           *prefilter.DigitPrefilter // For digit-lead patterns like IP addresses
+	ahoCorasick              *ahocorasick.Automaton    // For large literal alternations (>8 patterns)
 	prefilter                prefilter.Prefilter
 	strategy                 Strategy
 	config                   Config
@@ -79,6 +81,9 @@ type Stats struct {
 
 	// OnePassSearches counts OnePass DFA searches (for FindSubmatch)
 	OnePassSearches uint64
+
+	// AhoCorasickSearches counts Aho-Corasick automaton searches
+	AhoCorasickSearches uint64
 
 	// PrefilterHits counts successful prefilter matches
 	PrefilterHits uint64
@@ -143,6 +148,178 @@ func CompileWithConfig(pattern string, config Config) (*Engine, error) {
 // buildCharClassSearchers creates specialized searchers for character class patterns.
 // Returns (BoundedBacktracker, CharClassSearcher, updatedStrategy).
 // If CharClassSearcher extraction fails, falls back to BoundedBacktracker.
+// onePassResult holds the result of buildOnePassDFA.
+type onePassResult struct {
+	dfa   *onepass.DFA
+	cache *onepass.Cache
+}
+
+// buildOnePassDFA tries to build a OnePass DFA for anchored patterns with captures.
+// This is an optional optimization for FindSubmatch (10-20x faster).
+func buildOnePassDFA(re *syntax.Regexp, nfaEngine *nfa.NFA, config Config) onePassResult {
+	if !config.EnableDFA || nfaEngine.CaptureCount() <= 1 {
+		return onePassResult{}
+	}
+
+	// Compile anchored NFA for OnePass (requires Anchored: true)
+	anchoredCompiler := nfa.NewCompiler(nfa.CompilerConfig{
+		UTF8:              true,
+		Anchored:          true,
+		DotNewline:        false,
+		MaxRecursionDepth: config.MaxRecursionDepth,
+	})
+	anchoredNFA, err := anchoredCompiler.CompileRegexp(re)
+	if err != nil {
+		return onePassResult{}
+	}
+
+	// Try to build one-pass DFA
+	onepassDFA, err := onepass.Build(anchoredNFA)
+	if err != nil {
+		return onePassResult{}
+	}
+
+	return onePassResult{
+		dfa:   onepassDFA,
+		cache: onepass.NewCache(onepassDFA.NumCaptures()),
+	}
+}
+
+// strategyEngines holds all strategy-specific engines built by buildStrategyEngines.
+type strategyEngines struct {
+	dfa                      *lazy.DFA
+	reverseSearcher          *ReverseAnchoredSearcher
+	reverseSuffixSearcher    *ReverseSuffixSearcher
+	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
+	reverseInnerSearcher     *ReverseInnerSearcher
+	digitPrefilter           *prefilter.DigitPrefilter
+	ahoCorasick              *ahocorasick.Automaton
+	finalStrategy            Strategy
+}
+
+// buildStrategyEngines builds all strategy-specific engines based on the selected strategy.
+// Returns the engines and potentially updated strategy (if building fails and fallback is needed).
+func buildStrategyEngines(
+	strategy Strategy,
+	re *syntax.Regexp,
+	nfaEngine *nfa.NFA,
+	literals *literal.Seq,
+	pf prefilter.Prefilter,
+	config Config,
+) strategyEngines {
+	result := strategyEngines{finalStrategy: strategy}
+
+	// Build Aho-Corasick automaton for large literal alternations (>8 patterns)
+	if strategy == UseAhoCorasick && literals != nil && !literals.IsEmpty() {
+		builder := ahocorasick.NewBuilder()
+		litCount := literals.Len()
+		for i := 0; i < litCount; i++ {
+			lit := literals.Get(i)
+			builder.AddPattern(lit.Bytes)
+		}
+		auto, err := builder.Build()
+		if err != nil {
+			result.finalStrategy = UseNFA
+		} else {
+			result.ahoCorasick = auto
+		}
+		return result
+	}
+
+	// Check if DFA-based strategy is needed
+	needsDFA := strategy == UseDFA || strategy == UseBoth ||
+		strategy == UseReverseAnchored || strategy == UseReverseSuffix ||
+		strategy == UseReverseSuffixSet || strategy == UseReverseInner ||
+		strategy == UseDigitPrefilter
+
+	if !needsDFA {
+		return result
+	}
+
+	dfaConfig := lazy.Config{
+		MaxStates:            config.MaxDFAStates,
+		DeterminizationLimit: config.DeterminizationLimit,
+	}
+
+	result = buildReverseSearchers(result, strategy, re, nfaEngine, dfaConfig, config)
+
+	// Build forward DFA for non-reverse strategies
+	if result.finalStrategy == UseDFA || result.finalStrategy == UseBoth || result.finalStrategy == UseDigitPrefilter {
+		dfa, err := lazy.CompileWithPrefilter(nfaEngine, dfaConfig, pf)
+		if err != nil {
+			result.finalStrategy = UseNFA
+		} else {
+			result.dfa = dfa
+		}
+	}
+
+	// For digit prefilter strategy, create the digit prefilter
+	if result.finalStrategy == UseDigitPrefilter {
+		result.digitPrefilter = prefilter.NewDigitPrefilter()
+	}
+
+	return result
+}
+
+// buildReverseSearchers builds reverse searchers for reverse strategies.
+func buildReverseSearchers(
+	result strategyEngines,
+	strategy Strategy,
+	re *syntax.Regexp,
+	nfaEngine *nfa.NFA,
+	dfaConfig lazy.Config,
+	config Config,
+) strategyEngines {
+	extractor := literal.New(literal.ExtractorConfig{
+		MaxLiterals:   config.MaxLiterals,
+		MaxLiteralLen: 64,
+		MaxClassSize:  10,
+	})
+
+	switch strategy {
+	case UseReverseAnchored:
+		searcher, err := NewReverseAnchoredSearcher(nfaEngine, dfaConfig)
+		if err != nil {
+			result.finalStrategy = UseDFA
+		} else {
+			result.reverseSearcher = searcher
+		}
+
+	case UseReverseSuffix:
+		suffixLiterals := extractor.ExtractSuffixes(re)
+		searcher, err := NewReverseSuffixSearcher(nfaEngine, suffixLiterals, dfaConfig)
+		if err != nil {
+			result.finalStrategy = UseDFA
+		} else {
+			result.reverseSuffixSearcher = searcher
+		}
+
+	case UseReverseSuffixSet:
+		suffixLiterals := extractor.ExtractSuffixes(re)
+		searcher, err := NewReverseSuffixSetSearcher(nfaEngine, suffixLiterals, dfaConfig)
+		if err != nil {
+			result.finalStrategy = UseBoth
+		} else {
+			result.reverseSuffixSetSearcher = searcher
+		}
+
+	case UseReverseInner:
+		innerInfo := extractor.ExtractInnerForReverseSearch(re)
+		if innerInfo == nil {
+			result.finalStrategy = UseDFA
+		} else {
+			searcher, err := NewReverseInnerSearcher(nfaEngine, innerInfo, dfaConfig)
+			if err != nil {
+				result.finalStrategy = UseDFA
+			} else {
+				result.reverseInnerSearcher = searcher
+			}
+		}
+	}
+
+	return result
+}
+
 func buildCharClassSearchers(
 	strategy Strategy,
 	re *syntax.Regexp,
@@ -190,8 +367,6 @@ func buildCharClassSearchers(
 //
 //	re, _ := syntax.Parse("hello", syntax.Perl)
 //	engine, err := meta.CompileRegexp(re, meta.DefaultConfig())
-//
-//nolint:cyclop // complexity is inherent to multi-strategy compilation
 func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Compile to NFA
 	compiler := nfa.NewCompiler(nfa.CompilerConfig{
@@ -236,128 +411,12 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Build PikeVM (always needed for fallback)
 	pikevm := nfa.NewPikeVM(nfaEngine)
 
-	// Try to build OnePass DFA for anchored patterns with capture groups
-	// This is an optional optimization for FindSubmatch (10-20x faster)
-	var onepassDFA *onepass.DFA
-	var onepassCache *onepass.Cache
-	if config.EnableDFA && nfaEngine.CaptureCount() > 1 {
-		// Compile anchored NFA for OnePass (requires Anchored: true)
-		anchoredCompiler := nfa.NewCompiler(nfa.CompilerConfig{
-			UTF8:              true,
-			Anchored:          true, // Required for one-pass
-			DotNewline:        false,
-			MaxRecursionDepth: config.MaxRecursionDepth,
-		})
-		anchoredNFA, err := anchoredCompiler.CompileRegexp(re)
-		if err == nil {
-			// Try to build one-pass DFA
-			onepassDFA, err = onepass.Build(anchoredNFA)
-			if err == nil {
-				// Success! Create cache for reuse
-				onepassCache = onepass.NewCache(onepassDFA.NumCaptures())
-			}
-			// If onepass.Build fails (ErrNotOnePass), silently fall back to PikeVM
-		}
-	}
+	// Build OnePass DFA for anchored patterns with captures (optional optimization)
+	onePassRes := buildOnePassDFA(re, nfaEngine, config)
 
-	// Build DFA if strategy requires it
-	var dfaEngine *lazy.DFA
-	var reverseSearcher *ReverseAnchoredSearcher
-	var reverseSuffixSearcher *ReverseSuffixSearcher
-	var reverseSuffixSetSearcher *ReverseSuffixSetSearcher
-	var reverseInnerSearcher *ReverseInnerSearcher
-	var digitPre *prefilter.DigitPrefilter
-
-	needsDFA := strategy == UseDFA || strategy == UseBoth ||
-		strategy == UseReverseAnchored || strategy == UseReverseSuffix ||
-		strategy == UseReverseSuffixSet || strategy == UseReverseInner ||
-		strategy == UseDigitPrefilter
-
-	if needsDFA {
-		dfaConfig := lazy.Config{
-			MaxStates:            config.MaxDFAStates,
-			DeterminizationLimit: config.DeterminizationLimit,
-		}
-
-		// For reverse search, build reverse searcher
-		if strategy == UseReverseAnchored {
-			reverseSearcher, err = NewReverseAnchoredSearcher(nfaEngine, dfaConfig)
-			if err != nil {
-				// Reverse DFA compilation failed: fall back to forward DFA
-				strategy = UseDFA
-			}
-		}
-
-		// For reverse suffix search, build reverse suffix searcher
-		if strategy == UseReverseSuffix {
-			// Extract suffix literals
-			extractor := literal.New(literal.ExtractorConfig{
-				MaxLiterals:   config.MaxLiterals,
-				MaxLiteralLen: 64,
-				MaxClassSize:  10,
-			})
-			suffixLiterals := extractor.ExtractSuffixes(re)
-
-			reverseSuffixSearcher, err = NewReverseSuffixSearcher(nfaEngine, suffixLiterals, dfaConfig)
-			if err != nil {
-				// ReverseSuffix compilation failed: fall back to forward DFA
-				strategy = UseDFA
-			}
-		}
-
-		// For reverse suffix SET search (multiple suffix literals with empty LCS)
-		if strategy == UseReverseSuffixSet {
-			// Extract suffix literals
-			extractor := literal.New(literal.ExtractorConfig{
-				MaxLiterals:   config.MaxLiterals,
-				MaxLiteralLen: 64,
-				MaxClassSize:  10,
-			})
-			suffixLiterals := extractor.ExtractSuffixes(re)
-
-			reverseSuffixSetSearcher, err = NewReverseSuffixSetSearcher(nfaEngine, suffixLiterals, dfaConfig)
-			if err != nil {
-				// ReverseSuffixSet compilation failed: fall back to UseBoth
-				strategy = UseBoth
-			}
-		}
-
-		// For reverse inner search, build reverse inner searcher
-		if strategy == UseReverseInner {
-			// Extract inner literals
-			extractor := literal.New(literal.ExtractorConfig{
-				MaxLiterals:   config.MaxLiterals,
-				MaxLiteralLen: 64,
-				MaxClassSize:  10,
-			})
-			innerInfo := extractor.ExtractInnerForReverseSearch(re)
-			if innerInfo != nil {
-				reverseInnerSearcher, err = NewReverseInnerSearcher(nfaEngine, innerInfo, dfaConfig)
-				if err != nil {
-					// ReverseInner compilation failed: fall back to forward DFA
-					strategy = UseDFA
-				}
-			} else {
-				// No inner literals available: fall back to forward DFA
-				strategy = UseDFA
-			}
-		}
-
-		// Build forward DFA for non-reverse strategies (including UseDigitPrefilter)
-		if strategy == UseDFA || strategy == UseBoth || strategy == UseDigitPrefilter {
-			// Pass prefilter to DFA for start-state skip optimization
-			dfaEngine, err = lazy.CompileWithPrefilter(nfaEngine, dfaConfig, pf)
-			if err != nil {
-				// DFA compilation failed: fall back to NFA-only
-				strategy = UseNFA
-			}
-		}
-
-		// For digit prefilter strategy, create the digit prefilter
-		if strategy == UseDigitPrefilter {
-			digitPre = prefilter.NewDigitPrefilter()
-		}
-	}
+	// Build strategy-specific engines (DFA, reverse searchers, Aho-Corasick, etc.)
+	engines := buildStrategyEngines(strategy, re, nfaEngine, literals, pf, config)
+	strategy = engines.finalStrategy
 
 	// Build specialized searchers for character class patterns
 	boundedBT, charClassSrch, strategy := buildCharClassSearchers(strategy, re, nfaEngine)
@@ -369,20 +428,21 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 
 	return &Engine{
 		nfa:                      nfaEngine,
-		dfa:                      dfaEngine,
+		dfa:                      engines.dfa,
 		pikevm:                   pikevm,
 		boundedBacktracker:       boundedBT,
 		charClassSearcher:        charClassSrch,
-		reverseSearcher:          reverseSearcher,
-		reverseSuffixSearcher:    reverseSuffixSearcher,
-		reverseSuffixSetSearcher: reverseSuffixSetSearcher,
-		reverseInnerSearcher:     reverseInnerSearcher,
-		digitPrefilter:           digitPre,
+		reverseSearcher:          engines.reverseSearcher,
+		reverseSuffixSearcher:    engines.reverseSuffixSearcher,
+		reverseSuffixSetSearcher: engines.reverseSuffixSetSearcher,
+		reverseInnerSearcher:     engines.reverseInnerSearcher,
+		digitPrefilter:           engines.digitPrefilter,
+		ahoCorasick:              engines.ahoCorasick,
 		prefilter:                pf,
 		strategy:                 strategy,
 		config:                   config,
-		onepass:                  onepassDFA,
-		onepassCache:             onepassCache,
+		onepass:                  onePassRes.dfa,
+		onepassCache:             onePassRes.cache,
 		canMatchEmpty:            canMatchEmpty,
 		stats:                    Stats{},
 	}, nil
@@ -464,6 +524,8 @@ func (e *Engine) findAtZero(haystack []byte) *Match {
 		return e.findTeddy(haystack)
 	case UseDigitPrefilter:
 		return e.findDigitPrefilter(haystack)
+	case UseAhoCorasick:
+		return e.findAhoCorasick(haystack)
 	default:
 		return e.findNFA(haystack)
 	}
@@ -491,6 +553,8 @@ func (e *Engine) findAtNonZero(haystack []byte, at int) *Match {
 		return e.findTeddyAt(haystack, at)
 	case UseDigitPrefilter:
 		return e.findDigitPrefilterAt(haystack, at)
+	case UseAhoCorasick:
+		return e.findAhoCorasickAt(haystack, at)
 	default:
 		return e.findNFAAt(haystack, at)
 	}
@@ -533,6 +597,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchTeddy(haystack)
 	case UseDigitPrefilter:
 		return e.isMatchDigitPrefilter(haystack)
+	case UseAhoCorasick:
+		return e.isMatchAhoCorasick(haystack)
 	default:
 		return e.isMatchNFA(haystack)
 	}
@@ -772,6 +838,8 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesTeddy(haystack)
 	case UseDigitPrefilter:
 		return e.findIndicesDigitPrefilter(haystack)
+	case UseAhoCorasick:
+		return e.findIndicesAhoCorasick(haystack)
 	default:
 		return e.findIndicesNFA(haystack)
 	}
@@ -806,6 +874,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesTeddyAt(haystack, at)
 	case UseDigitPrefilter:
 		return e.findIndicesDigitPrefilterAt(haystack, at)
+	case UseAhoCorasick:
+		return e.findIndicesAhoCorasickAt(haystack, at)
 	default:
 		return e.findIndicesNFAAt(haystack, at)
 	}
@@ -2015,6 +2085,74 @@ func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int,
 	}
 
 	return -1, -1, false
+}
+
+// findAhoCorasick searches using Aho-Corasick automaton for large literal alternations.
+// This is the "literal engine bypass" for patterns with >8 literals.
+// The automaton performs O(n) multi-pattern matching with ~1.6 GB/s throughput.
+func (e *Engine) findAhoCorasick(haystack []byte) *Match {
+	if e.ahoCorasick == nil {
+		return e.findNFA(haystack)
+	}
+	e.stats.AhoCorasickSearches++
+
+	m := e.ahoCorasick.Find(haystack, 0)
+	if m == nil {
+		return nil
+	}
+	return NewMatch(m.Start, m.End, haystack)
+}
+
+// findAhoCorasickAt searches using Aho-Corasick starting at position 'at'.
+func (e *Engine) findAhoCorasickAt(haystack []byte, at int) *Match {
+	if e.ahoCorasick == nil || at >= len(haystack) {
+		return e.findNFAAt(haystack, at)
+	}
+	e.stats.AhoCorasickSearches++
+
+	m := e.ahoCorasick.Find(haystack, at)
+	if m == nil {
+		return nil
+	}
+	return NewMatch(m.Start, m.End, haystack)
+}
+
+// isMatchAhoCorasick checks for match using Aho-Corasick automaton.
+// Optimized for boolean matching with zero allocations.
+func (e *Engine) isMatchAhoCorasick(haystack []byte) bool {
+	if e.ahoCorasick == nil {
+		return e.isMatchNFA(haystack)
+	}
+	e.stats.AhoCorasickSearches++
+	return e.ahoCorasick.IsMatch(haystack)
+}
+
+// findIndicesAhoCorasick returns indices using Aho-Corasick - zero alloc.
+func (e *Engine) findIndicesAhoCorasick(haystack []byte) (int, int, bool) {
+	if e.ahoCorasick == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	e.stats.AhoCorasickSearches++
+
+	m := e.ahoCorasick.Find(haystack, 0)
+	if m == nil {
+		return -1, -1, false
+	}
+	return m.Start, m.End, true
+}
+
+// findIndicesAhoCorasickAt returns indices using Aho-Corasick starting at position 'at' - zero alloc.
+func (e *Engine) findIndicesAhoCorasickAt(haystack []byte, at int) (int, int, bool) {
+	if e.ahoCorasick == nil || at >= len(haystack) {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	e.stats.AhoCorasickSearches++
+
+	m := e.ahoCorasick.Find(haystack, at)
+	if m == nil {
+		return -1, -1, false
+	}
+	return m.Start, m.End, true
 }
 
 // CompileError represents a pattern compilation error.

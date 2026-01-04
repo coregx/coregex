@@ -134,6 +134,22 @@ const (
 	// This addresses Issue #50 (IP regex optimization) where alternations like
 	// `25[0-5]|2[0-4][0-9]|...` produce no extractable prefix literals.
 	UseDigitPrefilter
+
+	// UseAhoCorasick uses Aho-Corasick automaton for large literal alternations.
+	// Selected for:
+	//   - Exact literal alternations with >8 patterns (beyond Teddy's limit)
+	//   - All literals are complete (no regex engine verification needed)
+	//   - Each pattern >= 1 byte
+	//   - Speedup: 50-500x over PikeVM by using O(n) multi-pattern matching
+	//
+	// Uses github.com/coregx/ahocorasick library with:
+	//   - Dense array transitions for O(1) state lookup
+	//   - Byte class compression for memory efficiency
+	//   - ~1.6 GB/s throughput
+	//
+	// This extends the "literal engine bypass" optimization for large pattern sets
+	// where Teddy's SIMD approach becomes impractical.
+	UseAhoCorasick
 )
 
 // String returns a human-readable representation of the Strategy.
@@ -163,6 +179,8 @@ func (s Strategy) String() string {
 		return "UseCharClassSearcher"
 	case UseDigitPrefilter:
 		return "UseDigitPrefilter"
+	case UseAhoCorasick:
+		return "UseAhoCorasick"
 	default:
 		return "Unknown"
 	}
@@ -553,8 +571,36 @@ func isSimpleCharClass(re *syntax.Regexp) bool {
 
 // literalAnalysis contains the results of analyzing literals for strategy selection.
 type literalAnalysis struct {
-	hasGoodLiterals  bool // Good prefix literal (LCP >= MinLiteralLen)
-	hasTeddyLiterals bool // Suitable for Teddy (2-8 patterns, each >= 3 bytes)
+	hasGoodLiterals        bool // Good prefix literal (LCP >= MinLiteralLen)
+	hasTeddyLiterals       bool // Suitable for Teddy (2-8 patterns, each >= 3 bytes)
+	hasAhoCorasickLiterals bool // Suitable for Aho-Corasick (>8 patterns, each >= 1 byte)
+}
+
+// selectLiteralStrategy selects strategy based on literal analysis.
+// Returns 0 if no literal-based strategy is suitable.
+// This is a helper function to reduce cyclomatic complexity in SelectStrategy.
+func selectLiteralStrategy(literals *literal.Seq, litAnalysis literalAnalysis) Strategy {
+	if literals == nil {
+		return 0
+	}
+
+	// Exact literal alternations → use Teddy directly (literal engine bypass)
+	// Patterns like "(foo|bar|baz)" where all literals are complete don't need
+	// DFA verification - Teddy.Find() returns exact matches.
+	// Speedup: 50-250x by skipping all DFA/NFA construction overhead.
+	if litAnalysis.hasTeddyLiterals && literals.AllComplete() {
+		return UseTeddy
+	}
+
+	// Large literal alternations → use Aho-Corasick (extends literal engine bypass)
+	// Patterns with >8 literals exceed Teddy's capacity but Aho-Corasick handles
+	// thousands of patterns with O(n) matching time.
+	// Speedup: 50-500x by using dense array transitions (~1.6 GB/s throughput).
+	if litAnalysis.hasAhoCorasickLiterals && literals.AllComplete() {
+		return UseAhoCorasick
+	}
+
+	return 0
 }
 
 // analyzeLiterals checks if literals are suitable for prefiltering.
@@ -586,6 +632,22 @@ func analyzeLiterals(literals *literal.Seq, config Config) literalAnalysis {
 		}
 		if allLongEnough {
 			result.hasTeddyLiterals = true
+		}
+	}
+
+	// Check for Aho-Corasick suitability (>8 literals, each >= 1 byte)
+	// Aho-Corasick handles large pattern sets efficiently with O(n) matching.
+	// This extends the "literal engine bypass" optimization beyond Teddy's 8 pattern limit.
+	if litCount > 8 {
+		allNonEmpty := true
+		for i := 0; i < litCount; i++ {
+			if len(literals.Get(i).Bytes) < 1 {
+				allNonEmpty = false
+				break
+			}
+		}
+		if allNonEmpty {
+			result.hasAhoCorasickLiterals = true
 		}
 	}
 
@@ -679,13 +741,10 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseBoundedBacktracker
 	}
 
-	// Exact literal alternations → use Teddy directly (literal engine bypass)
-	// Patterns like "(foo|bar|baz)" where all literals are complete don't need
-	// DFA verification - Teddy.Find() returns exact matches.
-	// This is the "literal engine bypass" optimization from Rust regex.
-	// Speedup: 50-250x by skipping all DFA/NFA construction overhead.
-	if litAnalysis.hasTeddyLiterals && literals.AllComplete() {
-		return UseTeddy
+	// Check for exact literal alternations (Teddy, Aho-Corasick)
+	// Delegated to helper function to reduce cyclomatic complexity.
+	if strategy := selectLiteralStrategy(literals, litAnalysis); strategy != 0 {
+		return strategy
 	}
 
 	// Tiny NFA with literals: use prefilter + NFA (like Rust)
@@ -797,6 +856,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseDigitPrefilter:
 		return "SIMD digit scanner for digit-lead alternation patterns (5-10x for IP address patterns)"
+
+	case UseAhoCorasick:
+		return "Aho-Corasick automaton for large literal alternations (50-500x for >8 pattern sets)"
 
 	default:
 		return "unknown strategy"
