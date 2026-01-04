@@ -325,3 +325,144 @@ found_scalar3:
 	MOVQ    SI, ret+32(FP)
 	VZEROUPPER
 	RET
+
+// func memchrPairAVX2(haystack []byte, byte1, byte2 byte, offset int) int
+//
+// AVX2 implementation of paired-byte search. Finds positions where byte1 appears
+// at position i and byte2 appears at position i+offset.
+//
+// This is crucial for efficient substring searching - by verifying two bytes at
+// their correct relative positions, we dramatically reduce false positives.
+//
+// Algorithm:
+//  1. Broadcast byte1 to YMM0, byte2 to YMM1
+//  2. For each 32-byte chunk at position p:
+//     - Load haystack[p:p+32], compare with byte1 → mask1
+//     - Load haystack[p+offset:p+offset+32], compare with byte2 → mask2
+//     - AND mask1, mask2 → combined mask (only where both bytes match at correct distance)
+//  3. First set bit in combined mask is the answer
+//
+// Parameters:
+//   haystack_base+0(FP)  - pointer (8 bytes)
+//   haystack_len+8(FP)   - length (8 bytes)
+//   haystack_cap+16(FP)  - capacity (8 bytes, unused)
+//   byte1+24(FP)         - first byte to find (8 bytes)
+//   byte2+25(FP)         - second byte to find (8 bytes)
+//   offset+32(FP)        - distance between byte1 and byte2 (8 bytes)
+//   ret+40(FP)           - return value (8 bytes)
+//
+// Total: 48 bytes (8+8+8+8+8+8)
+TEXT ·memchrPairAVX2(SB), NOSPLIT, $0-48
+	// Load parameters
+	MOVQ    haystack_base+0(FP), SI      // SI = haystack pointer
+	MOVQ    haystack_len+8(FP), DX       // DX = haystack length
+	MOVBQZX byte1+24(FP), AX             // AX = byte1
+	MOVBQZX byte2+25(FP), BX             // BX = byte2
+	MOVQ    offset+32(FP), R10           // R10 = offset
+
+	// Empty check and bounds check
+	TESTQ   DX, DX
+	JZ      not_found_pair
+	CMPQ    R10, DX                      // offset >= length?
+	JAE     not_found_pair
+
+	// Broadcast both bytes
+	MOVD    AX, X0
+	VPBROADCASTB X0, Y0                  // Y0 = [byte1 × 32]
+	MOVD    BX, X1
+	VPBROADCASTB X1, Y1                  // Y1 = [byte2 × 32]
+
+	// Save start pointer
+	MOVQ    SI, DI                       // DI = haystack start
+
+	// Calculate limits:
+	// - We need 32 bytes at position p (for byte1 check)
+	// - We need 32 bytes at position p+offset (for byte2 check)
+	// - So we need p + offset + 32 <= length
+	// - Which means p <= length - offset - 32
+	MOVQ    DX, R8                       // R8 = length
+	SUBQ    R10, R8                      // R8 = length - offset
+	SUBQ    $32, R8                      // R8 = length - offset - 32 (last valid p)
+	CMPQ    R8, $0
+	JL      handle_tail_pair             // If negative, can't do vector loop
+
+	// R8 now contains the last valid position for vector loop
+	ADDQ    SI, R8                       // R8 = absolute last valid pointer
+
+loop32_pair:
+	// Check if SI <= R8 (still have room for full vector)
+	CMPQ    SI, R8
+	JA      handle_tail_pair
+
+	// Load 32 bytes at position p (for byte1)
+	VMOVDQU (SI), Y2                     // Y2 = haystack[p:p+32]
+
+	// Load 32 bytes at position p+offset (for byte2)
+	VMOVDQU (SI)(R10*1), Y3              // Y3 = haystack[p+offset:p+offset+32]
+
+	// Compare byte1
+	VPCMPEQB Y0, Y2, Y4                  // Y4 = positions where haystack[p+k] == byte1
+
+	// Compare byte2
+	VPCMPEQB Y1, Y3, Y5                  // Y5 = positions where haystack[p+offset+k] == byte2
+
+	// AND the results: bit k is set only if:
+	// - haystack[p+k] == byte1
+	// - haystack[p+offset+k] == byte2
+	// This means the pair (byte1, byte2) appears at (p+k, p+k+offset)
+	VPAND   Y4, Y5, Y4                   // Y4 = combined mask
+
+	// Extract mask
+	VPMOVMSKB Y4, CX
+	TESTL   CX, CX
+	JNZ     found_in_vector_pair
+
+	// No match in this chunk, advance by 32 bytes
+	ADDQ    $32, SI
+	JMP     loop32_pair
+
+handle_tail_pair:
+	// Process remaining positions byte-by-byte
+	// We need SI + offset < end (DI + DX)
+	LEAQ    (DI)(DX*1), R8               // R8 = end pointer
+
+tail_loop_pair:
+	// Check if SI + offset < end
+	LEAQ    (SI)(R10*1), R9              // R9 = SI + offset
+	CMPQ    R9, R8
+	JAE     not_found_pair               // If SI + offset >= end, we're done
+
+	// Load and compare both bytes
+	MOVBLZX (SI), CX                     // CX = haystack[SI]
+	CMPB    CL, AL                       // Compare with byte1
+	JNE     tail_next_pair               // Not byte1, skip
+
+	// byte1 matches, check byte2
+	MOVBLZX (SI)(R10*1), CX              // CX = haystack[SI + offset]
+	CMPB    CL, BL                       // Compare with byte2
+	JE      found_scalar_pair            // Both match!
+
+tail_next_pair:
+	INCQ    SI
+	JMP     tail_loop_pair
+
+not_found_pair:
+	MOVQ    $-1, AX
+	MOVQ    AX, ret+40(FP)
+	VZEROUPPER
+	RET
+
+found_in_vector_pair:
+	// Match found in vector! CX contains mask
+	BSFL    CX, CX                       // CX = index of first set bit (0-31)
+	SUBQ    DI, SI                       // SI = offset from start to current chunk
+	ADDQ    SI, CX                       // CX = absolute index
+	MOVQ    CX, ret+40(FP)
+	VZEROUPPER
+	RET
+
+found_scalar_pair:
+	SUBQ    DI, SI
+	MOVQ    SI, ret+40(FP)
+	VZEROUPPER
+	RET
