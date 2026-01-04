@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Longest() mode performance** - BoundedBacktracker now supports leftmost-longest matching (Fixes #52)
   - Root cause: BoundedBacktracker was disabled entirely in Longest() mode, forcing PikeVM fallback
   - Solution: Implemented `backtrackFindLongest()` that explores all branches at splits
-  - Found by: Ben Hoyt (GoAWK integration testing with `re.Longest()`)
+  - Found during GoAWK integration testing
 
 ### Performance (Longest() mode)
 
@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `[föd]+` on "fööd" returned "f" instead of "fööd"
   - Root cause: check was `> 255` but runes like ö (code point 246) are multi-byte in UTF-8 (0xC3 0xB6)
   - Fix: changed to `> 127` to only allow true ASCII (0-127) for byte lookup table
-  - Found by: Ben Hoyt (GoAWK integration testing)
+  - Found during GoAWK integration testing
   - PR: #51
 
 ---
@@ -56,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `\w+`, `[a-z]+` patterns: **15-20x faster** via CharClassSearcher
   - Zero allocations for all `*String` methods (MatchString, FindString, etc.)
 
-- **GoAWK benchmarks** - Added Ben Hoyt patterns for regression testing
+- **GoAWK benchmarks** - Added GoAWK patterns for regression testing
   - `j[a-z]+p`, `\w+`, `[a-z]+` in BenchmarkMatchString and BenchmarkIsMatch
 
 ### Changed
@@ -493,7 +493,7 @@ All tested patterns now faster than Go stdlib:
     - Multiline `^` support: `LookStartLine` satisfied after `\n`
   - Fixed prefilter bypass bug: don't use prefilter for start-anchored patterns
   - Resolves [#10](https://github.com/coregx/coregex/issues/10)
-  - Thanks to Ben Hoyt (GoAWK) for reporting!
+  - Found during GoAWK testing
 
 ### Changed
 - DFA now correctly handles start-anchored patterns (no NFA fallback needed)
@@ -515,13 +515,13 @@ All tested patterns now faster than Go stdlib:
   - Large complement classes (e.g., `[^\n]` = 1.1M codepoints) now use efficient Sparse state representation
   - Prevents memory explosion and "character class too large" errors
   - Optimized range-based compilation for classes >256 runes
-  - Thanks to Ben Hoyt (GoAWK) for reporting!
+  - Found during GoAWK testing
 
 - **Bug #7: Case-insensitive character class matching** `[oO]+d` didn't match "food"
   - `compileLiteral()` now respects `FoldCase` flag from `regexp/syntax` parser
   - ASCII letters create proper alternation between upper/lower variants
   - Fixes patterns like `[oO]`, `[aA][bB]`, etc.
-  - Thanks to Ben Hoyt (GoAWK) for reporting!
+  - Found during GoAWK testing
 
 ### Tests
 - Added comprehensive test suite `nfa/compile_bug_test.go` (402 lines, 33 test cases)
@@ -540,7 +540,7 @@ All tested patterns now faster than Go stdlib:
 - **Critical: Infinite loop in `onepass.Build()` for patterns like `(.*)`**
   - Bug: byte overflow when iterating ranges with hi=255 caused hang
   - Affected patterns: `(.*)`, `^(.*)$`, `([_a-zA-Z][_a-zA-Z0-9]*)=(.*)`
-  - Thanks to Ben Hoyt (GoAWK) for reporting!
+  - Found during GoAWK testing
 
 ### Added
 - **`Longest()` method**: API compatibility with stdlib `regexp.Regexp`
