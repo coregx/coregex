@@ -281,7 +281,18 @@ func memchrPairGeneric(haystack []byte, byte1, byte2 byte, offset int) int {
 		hasZero := hasZero1 & hasZero2
 
 		if hasZero != 0 {
-			return idx + bits.TrailingZeros64(hasZero)/8
+			// SWAR zero-detection can have false positives due to borrow propagation.
+			// When a byte equals 0x01 adjacent to a 0x00 byte, the borrow from the
+			// subtraction can cause the 0x01 to incorrectly appear as a match.
+			// Verify all candidates from this chunk.
+			for hasZero != 0 {
+				pos := bits.TrailingZeros64(hasZero) / 8
+				if haystack[idx+pos] == byte1 && haystack[idx+pos+offset] == byte2 {
+					return idx + pos
+				}
+				// Clear this byte's marker bit and check next candidate
+				hasZero &^= 0x80 << (pos * 8)
+			}
 		}
 
 		idx += 8
