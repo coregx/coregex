@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Paired-byte SIMD search** for `simd.Memmem()` - PR #55
+  - Byte frequency table for optimal rare byte selection (like Rust's memchr crate)
+  - `SelectRareBytes()` finds two rarest bytes in needle
+  - `MemchrPair()` searches for two bytes at specific offset simultaneously
+  - AVX2 assembly implementation for AMD64
+  - SWAR (SIMD Within A Register) fallback for non-AVX2 and other architectures
+  - Dramatically reduces false positives vs single-byte search
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
