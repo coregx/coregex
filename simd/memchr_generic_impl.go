@@ -219,6 +219,24 @@ func memchr3Generic(haystack []byte, needle1, needle2, needle3 byte) int {
 	return -1
 }
 
+// memchrDigitGeneric implements pure Go digit search.
+// Checks if each byte is in the range ['0'-'9'] (0x30-0x39).
+//
+// This function is used as a fallback on all platforms:
+//   - On amd64: fallback for small inputs (< 32 bytes) or when AVX2 is not available
+//   - On other platforms: primary implementation
+//
+// The implementation uses a simple range check which compiles to efficient code.
+// For very large inputs, the AVX2 version will be significantly faster.
+func memchrDigitGeneric(haystack []byte) int {
+	for i, b := range haystack {
+		if b >= '0' && b <= '9' {
+			return i
+		}
+	}
+	return -1
+}
+
 // memchrPairGeneric implements pure Go paired-byte search using SWAR technique.
 // It finds positions where byte1 appears at position i and byte2 appears at position i+offset.
 //

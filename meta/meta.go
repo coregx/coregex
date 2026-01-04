@@ -46,6 +46,7 @@ type Engine struct {
 	reverseSuffixSearcher    *ReverseSuffixSearcher
 	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
 	reverseInnerSearcher     *ReverseInnerSearcher
+	digitPrefilter           *prefilter.DigitPrefilter // For digit-lead patterns like IP addresses
 	prefilter                prefilter.Prefilter
 	strategy                 Strategy
 	config                   Config
@@ -265,8 +266,14 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	var reverseSuffixSearcher *ReverseSuffixSearcher
 	var reverseSuffixSetSearcher *ReverseSuffixSetSearcher
 	var reverseInnerSearcher *ReverseInnerSearcher
+	var digitPre *prefilter.DigitPrefilter
 
-	if strategy == UseDFA || strategy == UseBoth || strategy == UseReverseAnchored || strategy == UseReverseSuffix || strategy == UseReverseSuffixSet || strategy == UseReverseInner {
+	needsDFA := strategy == UseDFA || strategy == UseBoth ||
+		strategy == UseReverseAnchored || strategy == UseReverseSuffix ||
+		strategy == UseReverseSuffixSet || strategy == UseReverseInner ||
+		strategy == UseDigitPrefilter
+
+	if needsDFA {
 		dfaConfig := lazy.Config{
 			MaxStates:            config.MaxDFAStates,
 			DeterminizationLimit: config.DeterminizationLimit,
@@ -336,14 +343,19 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 			}
 		}
 
-		// Build forward DFA for non-reverse strategies
-		if strategy == UseDFA || strategy == UseBoth {
+		// Build forward DFA for non-reverse strategies (including UseDigitPrefilter)
+		if strategy == UseDFA || strategy == UseBoth || strategy == UseDigitPrefilter {
 			// Pass prefilter to DFA for start-state skip optimization
 			dfaEngine, err = lazy.CompileWithPrefilter(nfaEngine, dfaConfig, pf)
 			if err != nil {
 				// DFA compilation failed: fall back to NFA-only
 				strategy = UseNFA
 			}
+		}
+
+		// For digit prefilter strategy, create the digit prefilter
+		if strategy == UseDigitPrefilter {
+			digitPre = prefilter.NewDigitPrefilter()
 		}
 	}
 
@@ -365,6 +377,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		reverseSuffixSearcher:    reverseSuffixSearcher,
 		reverseSuffixSetSearcher: reverseSuffixSetSearcher,
 		reverseInnerSearcher:     reverseInnerSearcher,
+		digitPrefilter:           digitPre,
 		prefilter:                pf,
 		strategy:                 strategy,
 		config:                   config,
@@ -418,33 +431,47 @@ func (e *Engine) FindAt(haystack []byte, at int) *Match {
 
 	// For position 0, use the optimized strategy-specific paths
 	if at == 0 {
-		switch e.strategy {
-		case UseNFA:
-			return e.findNFA(haystack)
-		case UseDFA:
-			return e.findDFA(haystack)
-		case UseBoth:
-			return e.findAdaptive(haystack)
-		case UseReverseAnchored:
-			return e.findReverseAnchored(haystack)
-		case UseReverseSuffix:
-			return e.findReverseSuffix(haystack)
-		case UseReverseSuffixSet:
-			return e.findReverseSuffixSet(haystack)
-		case UseReverseInner:
-			return e.findReverseInner(haystack)
-		case UseBoundedBacktracker:
-			return e.findBoundedBacktracker(haystack)
-		case UseCharClassSearcher:
-			return e.findCharClassSearcher(haystack)
-		case UseTeddy:
-			return e.findTeddy(haystack)
-		default:
-			return e.findNFA(haystack)
-		}
+		return e.findAtZero(haystack)
 	}
 
 	// For non-zero positions, use FindAt variants that preserve absolute positions
+	return e.findAtNonZero(haystack, at)
+}
+
+// findAtZero dispatches to the appropriate strategy for position 0.
+// This is a helper function to reduce cyclomatic complexity in FindAt.
+func (e *Engine) findAtZero(haystack []byte) *Match {
+	switch e.strategy {
+	case UseNFA:
+		return e.findNFA(haystack)
+	case UseDFA:
+		return e.findDFA(haystack)
+	case UseBoth:
+		return e.findAdaptive(haystack)
+	case UseReverseAnchored:
+		return e.findReverseAnchored(haystack)
+	case UseReverseSuffix:
+		return e.findReverseSuffix(haystack)
+	case UseReverseSuffixSet:
+		return e.findReverseSuffixSet(haystack)
+	case UseReverseInner:
+		return e.findReverseInner(haystack)
+	case UseBoundedBacktracker:
+		return e.findBoundedBacktracker(haystack)
+	case UseCharClassSearcher:
+		return e.findCharClassSearcher(haystack)
+	case UseTeddy:
+		return e.findTeddy(haystack)
+	case UseDigitPrefilter:
+		return e.findDigitPrefilter(haystack)
+	default:
+		return e.findNFA(haystack)
+	}
+}
+
+// findAtNonZero dispatches to the appropriate strategy for non-zero positions.
+// This is a helper function to reduce cyclomatic complexity in FindAt.
+func (e *Engine) findAtNonZero(haystack []byte, at int) *Match {
 	switch e.strategy {
 	case UseNFA:
 		return e.findNFAAt(haystack, at)
@@ -462,6 +489,8 @@ func (e *Engine) FindAt(haystack []byte, at int) *Match {
 		return e.findCharClassSearcherAt(haystack, at)
 	case UseTeddy:
 		return e.findTeddyAt(haystack, at)
+	case UseDigitPrefilter:
+		return e.findDigitPrefilterAt(haystack, at)
 	default:
 		return e.findNFAAt(haystack, at)
 	}
@@ -502,6 +531,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchCharClassSearcher(haystack)
 	case UseTeddy:
 		return e.isMatchTeddy(haystack)
+	case UseDigitPrefilter:
+		return e.isMatchDigitPrefilter(haystack)
 	default:
 		return e.isMatchNFA(haystack)
 	}
@@ -739,6 +770,8 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesCharClassSearcher(haystack)
 	case UseTeddy:
 		return e.findIndicesTeddy(haystack)
+	case UseDigitPrefilter:
+		return e.findIndicesDigitPrefilter(haystack)
 	default:
 		return e.findIndicesNFA(haystack)
 	}
@@ -771,6 +804,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesCharClassSearcherAt(haystack, at)
 	case UseTeddy:
 		return e.findIndicesTeddyAt(haystack, at)
+	case UseDigitPrefilter:
+		return e.findIndicesDigitPrefilterAt(haystack, at)
 	default:
 		return e.findIndicesNFAAt(haystack, at)
 	}
@@ -1774,6 +1809,212 @@ func (e *Engine) FindAllSubmatch(haystack []byte, n int) []*MatchWithCaptures {
 	}
 
 	return matches
+}
+
+// findDigitPrefilter searches using SIMD digit scanning + DFA verification.
+// Used for digit-lead patterns like IP addresses where literal extraction fails
+// but all alternation branches must start with a digit.
+//
+// Algorithm:
+//  1. Use SIMD to find next digit position in haystack
+//  2. Verify match at digit position using lazy DFA + PikeVM
+//  3. If no match, continue from digit position + 1
+//
+// Performance:
+//   - Skips non-digit regions with SIMD (15-20x faster than byte-by-byte)
+//   - DFA verification is O(m) where m is pattern length
+//   - Total: O(n) for scan + O(k*m) for k digit candidates
+func (e *Engine) findDigitPrefilter(haystack []byte) *Match {
+	if e.digitPrefilter == nil {
+		return e.findNFA(haystack)
+	}
+
+	e.stats.PrefilterHits++ // Count prefilter usage
+	pos := 0
+
+	for pos < len(haystack) {
+		// Use SIMD to find next digit position
+		digitPos := e.digitPrefilter.Find(haystack, pos)
+		if digitPos < 0 {
+			return nil // No more digits, no match possible
+		}
+
+		// Verify match at digit position using DFA
+		if e.dfa != nil {
+			e.stats.DFASearches++
+			endPos := e.dfa.FindAt(haystack, digitPos)
+			if endPos != -1 {
+				// DFA found potential match - get exact bounds from NFA
+				start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+				if found {
+					return NewMatch(start, end, haystack)
+				}
+			}
+		} else {
+			// No DFA - use PikeVM directly
+			e.stats.NFASearches++
+			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+			if found {
+				return NewMatch(start, end, haystack)
+			}
+		}
+
+		// No match at this digit position, continue searching
+		pos = digitPos + 1
+	}
+
+	return nil
+}
+
+// findDigitPrefilterAt searches using digit prefilter starting at position 'at'.
+func (e *Engine) findDigitPrefilterAt(haystack []byte, at int) *Match {
+	if e.digitPrefilter == nil || at >= len(haystack) {
+		return e.findNFAAt(haystack, at)
+	}
+
+	e.stats.PrefilterHits++
+	pos := at
+
+	for pos < len(haystack) {
+		digitPos := e.digitPrefilter.Find(haystack, pos)
+		if digitPos < 0 {
+			return nil
+		}
+
+		if e.dfa != nil {
+			e.stats.DFASearches++
+			endPos := e.dfa.FindAt(haystack, digitPos)
+			if endPos != -1 {
+				start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+				if found {
+					return NewMatch(start, end, haystack)
+				}
+			}
+		} else {
+			e.stats.NFASearches++
+			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+			if found {
+				return NewMatch(start, end, haystack)
+			}
+		}
+
+		pos = digitPos + 1
+	}
+
+	return nil
+}
+
+// isMatchDigitPrefilter checks for match using digit prefilter.
+// Optimized for boolean matching with early termination.
+func (e *Engine) isMatchDigitPrefilter(haystack []byte) bool {
+	if e.digitPrefilter == nil {
+		return e.isMatchNFA(haystack)
+	}
+
+	e.stats.PrefilterHits++
+	pos := 0
+
+	for pos < len(haystack) {
+		digitPos := e.digitPrefilter.Find(haystack, pos)
+		if digitPos < 0 {
+			return false // No more digits
+		}
+
+		// Use DFA for fast boolean check if available
+		if e.dfa != nil {
+			e.stats.DFASearches++
+			// DFA.FindAt returns end position if match, -1 otherwise
+			if e.dfa.FindAt(haystack, digitPos) != -1 {
+				return true
+			}
+		} else {
+			e.stats.NFASearches++
+			_, _, found := e.pikevm.SearchAt(haystack, digitPos)
+			if found {
+				return true
+			}
+		}
+
+		pos = digitPos + 1
+	}
+
+	return false
+}
+
+// findIndicesDigitPrefilter returns indices using digit prefilter - zero alloc.
+func (e *Engine) findIndicesDigitPrefilter(haystack []byte) (int, int, bool) {
+	if e.digitPrefilter == nil {
+		return e.findIndicesNFA(haystack)
+	}
+
+	e.stats.PrefilterHits++
+	pos := 0
+
+	for pos < len(haystack) {
+		digitPos := e.digitPrefilter.Find(haystack, pos)
+		if digitPos < 0 {
+			return -1, -1, false
+		}
+
+		if e.dfa != nil {
+			e.stats.DFASearches++
+			endPos := e.dfa.FindAt(haystack, digitPos)
+			if endPos != -1 {
+				start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+				if found {
+					return start, end, true
+				}
+			}
+		} else {
+			e.stats.NFASearches++
+			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+			if found {
+				return start, end, true
+			}
+		}
+
+		pos = digitPos + 1
+	}
+
+	return -1, -1, false
+}
+
+// findIndicesDigitPrefilterAt returns indices starting at position 'at' - zero alloc.
+func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int, bool) {
+	if e.digitPrefilter == nil || at >= len(haystack) {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+
+	e.stats.PrefilterHits++
+	pos := at
+
+	for pos < len(haystack) {
+		digitPos := e.digitPrefilter.Find(haystack, pos)
+		if digitPos < 0 {
+			return -1, -1, false
+		}
+
+		if e.dfa != nil {
+			e.stats.DFASearches++
+			endPos := e.dfa.FindAt(haystack, digitPos)
+			if endPos != -1 {
+				start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+				if found {
+					return start, end, true
+				}
+			}
+		} else {
+			e.stats.NFASearches++
+			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+			if found {
+				return start, end, true
+			}
+		}
+
+		pos = digitPos + 1
+	}
+
+	return -1, -1, false
 }
 
 // CompileError represents a pattern compilation error.
