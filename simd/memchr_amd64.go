@@ -31,6 +31,9 @@ func memchr2AVX2(haystack []byte, needle1, needle2 byte) int
 //go:noescape
 func memchr3AVX2(haystack []byte, needle1, needle2, needle3 byte) int
 
+//go:noescape
+func memchrPairAVX2(haystack []byte, byte1, byte2 byte, offset int) int
+
 // Memchr returns the index of the first instance of needle in haystack,
 // or -1 if needle is not present in haystack.
 //
@@ -166,4 +169,61 @@ func Memchr3(haystack []byte, needle1, needle2, needle3 byte) int {
 
 	// Fallback to generic implementation
 	return memchr3Generic(haystack, needle1, needle2, needle3)
+}
+
+// MemchrPair finds the first position where byte1 appears at offset 0 and byte2
+// appears at the specified offset from byte1. This enables highly selective
+// substring searching by verifying two bytes at their correct relative positions.
+//
+// Parameters:
+//   - haystack: the byte slice to search
+//   - byte1: the first byte to find (anchor byte)
+//   - byte2: the second byte to find
+//   - offset: the distance from byte1 to byte2 (byte2 position = byte1 position + offset)
+//
+// Returns the position of byte1 where both conditions are met, or -1 if not found.
+//
+// This function is significantly more selective than single-byte search because
+// false positives require both bytes to appear at exactly the right distance apart.
+//
+// Example:
+//
+//	// Searching for pattern "ex" where 'e' is at offset 0 and 'x' is at offset 1
+//	haystack := []byte("hello example world")
+//	pos := simd.MemchrPair(haystack, 'e', 'x', 1)
+//	// pos == 6 (position of 'e' in "example")
+//
+// Example with larger offset:
+//
+//	// Searching for "@...com" where '@' is at offset 0 and 'c' is at offset 4
+//	haystack := []byte("contact@test.com for info")
+//	pos := simd.MemchrPair(haystack, '@', 'c', 9)
+//	// pos == 7 (position of '@')
+func MemchrPair(haystack []byte, byte1, byte2 byte, offset int) int {
+	// Validate offset
+	if offset < 0 {
+		return -1
+	}
+
+	// Need at least offset+1 bytes to find byte2 after byte1
+	if len(haystack) <= offset {
+		return -1
+	}
+
+	// If offset is 0, both bytes must be the same at same position
+	if offset == 0 {
+		if byte1 != byte2 {
+			return -1 // Impossible: same position, different bytes
+		}
+		return Memchr(haystack, byte1)
+	}
+
+	// Use AVX2 implementation if available and input is large enough
+	// Need at least 32 + offset bytes for the AVX2 algorithm to work efficiently
+	if hasAVX2 && len(haystack) >= 32+offset {
+		return memchrPairAVX2(haystack, byte1, byte2, offset)
+	}
+
+	// Fallback to generic implementation
+	return memchrPairGeneric(haystack, byte1, byte2, offset)
 }

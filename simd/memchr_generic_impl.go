@@ -218,3 +218,82 @@ func memchr3Generic(haystack []byte, needle1, needle2, needle3 byte) int {
 
 	return -1
 }
+
+// memchrPairGeneric implements pure Go paired-byte search using SWAR technique.
+// It finds positions where byte1 appears at position i and byte2 appears at position i+offset.
+//
+// This is used for highly selective substring prefiltering - the probability of
+// both bytes appearing at exactly the right distance is much lower than single-byte search.
+//
+// Algorithm:
+//  1. Create masks for both bytes
+//  2. For each 8-byte chunk at position i:
+//     - Check byte1 at position i
+//     - Check byte2 at position i+offset
+//     - AND the results to get positions where both match
+//  3. Return first position where both conditions are satisfied
+func memchrPairGeneric(haystack []byte, byte1, byte2 byte, offset int) int {
+	haystackLen := len(haystack)
+	if haystackLen == 0 || offset < 0 || haystackLen <= offset {
+		return -1
+	}
+
+	// For small inputs or small remaining space, byte-by-byte is simpler
+	if haystackLen < 8+offset {
+		for i := 0; i+offset < haystackLen; i++ {
+			if haystack[i] == byte1 && haystack[i+offset] == byte2 {
+				return i
+			}
+		}
+		return -1
+	}
+
+	// Broadcast both bytes to uint64 masks
+	needleMask1 := uint64(byte1) * 0x0101010101010101
+	needleMask2 := uint64(byte2) * 0x0101010101010101
+
+	idx := 0
+	const lo8 = uint64(0x0101010101010101)
+	const hi8 = uint64(0x8080808080808080)
+
+	// Process 8-byte chunks
+	// We need to ensure we have 8 bytes at position idx AND 8 bytes at position idx+offset
+	for idx+8+offset <= haystackLen {
+		// Read 8 bytes at position idx (for byte1)
+		chunk1 := binary.LittleEndian.Uint64(haystack[idx:])
+		// Read 8 bytes at position idx+offset (for byte2)
+		chunk2 := binary.LittleEndian.Uint64(haystack[idx+offset:])
+
+		// Check byte1 at position idx
+		xor1 := chunk1 ^ needleMask1
+		hasZero1 := (xor1 - lo8) & ^xor1 & hi8
+
+		// Check byte2 at position idx+offset
+		xor2 := chunk2 ^ needleMask2
+		hasZero2 := (xor2 - lo8) & ^xor2 & hi8
+
+		// AND the results: only positions where both bytes are found
+		// Bit k is set in hasZero1 if haystack[idx+k] == byte1
+		// Bit k is set in hasZero2 if haystack[idx+offset+k] == byte2
+		// We want positions where haystack[idx+k] == byte1 AND haystack[idx+k+offset] == byte2
+		// Since chunk2 starts at idx+offset, bit k in hasZero2 corresponds to idx+offset+k
+		// So AND gives us positions where both conditions are met
+		hasZero := hasZero1 & hasZero2
+
+		if hasZero != 0 {
+			return idx + bits.TrailingZeros64(hasZero)/8
+		}
+
+		idx += 8
+	}
+
+	// Process remaining positions byte-by-byte
+	for idx+offset < haystackLen {
+		if haystack[idx] == byte1 && haystack[idx+offset] == byte2 {
+			return idx
+		}
+		idx++
+	}
+
+	return -1
+}

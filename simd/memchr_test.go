@@ -669,3 +669,209 @@ func FuzzMemchr3(f *testing.F) {
 		}
 	})
 }
+
+// TestMemchrPairBasic tests basic functionality of MemchrPair
+func TestMemchrPairBasic(t *testing.T) {
+	tests := []struct {
+		name     string
+		haystack []byte
+		byte1    byte
+		byte2    byte
+		offset   int
+		want     int
+	}{
+		// Basic cases
+		{"simple_pair", []byte("hello"), 'h', 'e', 1, 0},
+		{"middle_pair", []byte("hello"), 'l', 'o', 2, 2},
+		{"not_found_wrong_offset", []byte("hello"), 'h', 'o', 1, -1},
+		{"not_found_byte1", []byte("hello"), 'x', 'e', 1, -1},
+		{"not_found_byte2", []byte("hello"), 'h', 'x', 1, -1},
+
+		// Edge cases
+		{"empty_haystack", []byte{}, 'a', 'b', 1, -1},
+		{"offset_zero_same", []byte("hello"), 'h', 'h', 0, 0},
+		{"offset_zero_diff", []byte("hello"), 'h', 'e', 0, -1},
+		{"offset_too_large", []byte("hi"), 'h', 'i', 5, -1},
+		{"negative_offset", []byte("hello"), 'h', 'e', -1, -1},
+
+		// Real patterns
+		{"email_at_dot", []byte("test@example.com"), '@', '.', 8, 4},
+		{"http_colon", []byte("http://localhost"), ':', '/', 1, 4},
+		{"json_key_colon", []byte(`{"key": "value"}`), '"', ':', 5, 1},
+
+		// Multiple occurrences - should return first
+		{"multiple_pairs", []byte("abababab"), 'a', 'b', 1, 0},
+		{"multiple_pairs_2", []byte("xxabxxab"), 'a', 'b', 1, 2},
+
+		// Large offset
+		{"large_offset", []byte("a0123456789b"), 'a', 'b', 11, 0},
+
+		// Boundary conditions
+		{"at_end", []byte("xxxxxab"), 'a', 'b', 1, 5},
+		{"exact_fit", []byte("ab"), 'a', 'b', 1, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MemchrPair(tt.haystack, tt.byte1, tt.byte2, tt.offset)
+			if got != tt.want {
+				t.Errorf("MemchrPair(%q, %q, %q, %d) = %d, want %d",
+					tt.haystack, tt.byte1, tt.byte2, tt.offset, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMemchrPairSizes tests various input sizes for MemchrPair
+func TestMemchrPairSizes(t *testing.T) {
+	sizes := []int{
+		8, 16, 31, 32, 33, 64, 128, 256, 512, 1024, 4096, 16384, 65536,
+	}
+	offsets := []int{1, 2, 5, 10, 20, 50}
+
+	for _, size := range sizes {
+		for _, offset := range offsets {
+			if offset >= size-1 {
+				continue
+			}
+
+			t.Run(fmt.Sprintf("size_%d_offset_%d", size, offset), func(t *testing.T) {
+				haystack := make([]byte, size)
+				for i := range haystack {
+					haystack[i] = 'x'
+				}
+				// Place pair near the end
+				pos := size - offset - 2
+				if pos < 0 {
+					pos = 0
+				}
+				haystack[pos] = 'A'
+				haystack[pos+offset] = 'B'
+
+				got := MemchrPair(haystack, 'A', 'B', offset)
+				if got != pos {
+					t.Errorf("size %d, offset %d: got %d, want %d", size, offset, got, pos)
+				}
+			})
+		}
+	}
+}
+
+// TestMemchrPairConsistency verifies MemchrPair matches manual verification
+func TestMemchrPairConsistency(t *testing.T) {
+	// Reference implementation
+	refMemchrPair := func(haystack []byte, byte1, byte2 byte, offset int) int {
+		if offset < 0 || len(haystack) <= offset {
+			return -1
+		}
+		if offset == 0 && byte1 != byte2 {
+			return -1
+		}
+		for i := 0; i+offset < len(haystack); i++ {
+			if haystack[i] == byte1 && haystack[i+offset] == byte2 {
+				return i
+			}
+		}
+		return -1
+	}
+
+	// Test with various patterns
+	patterns := [][]byte{
+		[]byte("hello world this is a test"),
+		[]byte("aaaaaaaaaaaaaaaaaaaaaaaaa"),
+		[]byte("ababababababababababababa"),
+		[]byte("the quick brown fox jumps over the lazy dog"),
+		[]byte("@user@domain.com @other@place.org"),
+		make([]byte, 1000),
+		make([]byte, 10000),
+	}
+
+	// Fill large patterns
+	for i := range patterns[5] {
+		patterns[5][i] = byte(i%26 + 'a')
+	}
+	for i := range patterns[6] {
+		patterns[6][i] = byte(i % 256)
+	}
+
+	for pi, pattern := range patterns {
+		for offset := 1; offset <= 20 && offset < len(pattern); offset++ {
+			for byte1 := byte('a'); byte1 <= byte('z'); byte1 += 5 {
+				for byte2 := byte('a'); byte2 <= byte('z'); byte2 += 5 {
+					got := MemchrPair(pattern, byte1, byte2, offset)
+					want := refMemchrPair(pattern, byte1, byte2, offset)
+					if got != want {
+						t.Errorf("pattern[%d], byte1=%q, byte2=%q, offset=%d: got %d, want %d",
+							pi, byte1, byte2, offset, got, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+// BenchmarkMemchrPair benchmarks MemchrPair performance
+func BenchmarkMemchrPair(b *testing.B) {
+	sizes := []int{64, 1024, 4096, 65536, 1048576}
+
+	for _, size := range sizes {
+		haystack := make([]byte, size)
+		for i := range haystack {
+			haystack[i] = 'x'
+		}
+		// Place pair at end
+		haystack[size-11] = '@'
+		haystack[size-1] = '.'
+
+		b.Run(fmt.Sprintf("memchrpair_%d", size), func(b *testing.B) {
+			b.SetBytes(int64(size))
+			for i := 0; i < b.N; i++ {
+				_ = MemchrPair(haystack, '@', '.', 10)
+			}
+		})
+	}
+}
+
+// refMemchrPairFuzz is a reference implementation for fuzzing.
+func refMemchrPairFuzz(haystack []byte, byte1, byte2 byte, offset int) int {
+	if offset < 0 || len(haystack) <= offset {
+		return -1
+	}
+	if offset == 0 {
+		if byte1 != byte2 {
+			return -1
+		}
+		return bytes.IndexByte(haystack, byte1)
+	}
+	for i := 0; i+offset < len(haystack); i++ {
+		if haystack[i] == byte1 && haystack[i+offset] == byte2 {
+			return i
+		}
+	}
+	return -1
+}
+
+// FuzzMemchrPair performs fuzz testing for MemchrPair
+func FuzzMemchrPair(f *testing.F) {
+	f.Add([]byte("hello"), byte('h'), byte('e'), 1)
+	f.Add([]byte("test@example.com"), byte('@'), byte('.'), 8)
+	f.Add([]byte(""), byte('a'), byte('b'), 1)
+	f.Add(make([]byte, 100), byte(0), byte(1), 5)
+
+	f.Fuzz(func(t *testing.T, haystack []byte, byte1, byte2 byte, offset int) {
+		// Limit offset to reasonable range
+		if offset < 0 || offset > 1000 {
+			return
+		}
+
+		got := MemchrPair(haystack, byte1, byte2, offset)
+
+		// Reference implementation using simple helper
+		want := refMemchrPairFuzz(haystack, byte1, byte2, offset)
+
+		if got != want {
+			t.Errorf("MemchrPair(%v, %v, %v, %d) = %d, want %d",
+				haystack, byte1, byte2, offset, got, want)
+		}
+	})
+}
