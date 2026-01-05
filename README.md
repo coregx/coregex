@@ -28,7 +28,7 @@ coregex brings Rust regex-crate architecture to Go:
 go get github.com/coregx/coregex
 ```
 
-Requires Go 1.25+. Zero external dependencies.
+Requires Go 1.25+. Minimal dependencies (`golang.org/x/sys`, `github.com/coregx/ahocorasick`).
 
 ## Quick Start
 
@@ -61,21 +61,19 @@ Cross-language benchmarks on 6MB input ([source](https://github.com/kolkov/regex
 
 | Pattern | Go stdlib | coregex | Rust regex | vs stdlib |
 |---------|-----------|---------|------------|-----------|
-| Email validation | 259 ms | 1.5 ms | 1.5 ms | **172x** |
-| URL extraction | 257 ms | 1.3 ms | 0.8 ms | **192x** |
-| Suffix `.*\.txt` | 240 ms | 1.5 ms | 1.3 ms | **166x** |
-| Inner `.*keyword.*` | 232 ms | 1.5 ms | 0.6 ms | **153x** |
-| Char class `[\w]+` | 550 ms | 26 ms | 52 ms | **21x** |
-| Alternation `a\|b\|c` | 473 ms | 31 ms | 0.8 ms | **15x** |
+| IP validation | 493 ms | 3.2 ms | 12 ms | **154x** |
+| Inner `.*keyword.*` | 231 ms | 1.9 ms | 0.6 ms | **122x** |
+| Suffix `.*\.txt` | 233 ms | 1.8 ms | 1.4 ms | **127x** |
+| Literal alternation | 473 ms | 4.2 ms | 0.7 ms | **113x** |
+| Email validation | 259 ms | 1.7 ms | 1.3 ms | **155x** |
+| URL extraction | 266 ms | 2.8 ms | 0.9 ms | **96x** |
+| Char class `[\w]+` | 525 ms | 119 ms | 52 ms | **4.4x** |
 
 **Where coregex excels:**
+- IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — SIMD digit prefilter, **2.7x faster than Rust!**
 - Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search optimization
 - Inner literals (`.*error.*`, `.*@example\.com`) — bidirectional DFA
-- Character classes (`[\w]+`, `\d+`) — 256-byte lookup table
-- Multi-pattern (`foo|bar|baz`) — Teddy SIMD algorithm
-
-**Known gaps vs Rust:**
-- Complex alternations — architectural differences in lazy DFA caching
+- Multi-pattern (`foo|bar|baz|...`) — Teddy (≤8) or Aho-Corasick (>8 patterns)
 
 ## Features
 
@@ -156,11 +154,13 @@ Uses Go's `regexp/syntax` parser:
 Pattern → Parse → NFA → Literal Extract → Strategy Select
                                                ↓
                          ┌─────────────────────────────────┐
-                         │ Engines:                        │
+                         │ Engines (13 strategies):        │
                          │  LazyDFA, PikeVM, OnePass,      │
                          │  BoundedBacktracker,            │
                          │  ReverseInner, ReverseSuffix,   │
-                         │  CharClassSearcher, Teddy       │
+                         │  ReverseSuffixSet,              │
+                         │  CharClassSearcher, Teddy,      │
+                         │  DigitPrefilter, AhoCorasick    │
                          └─────────────────────────────────┘
                                                ↓
 Input → Prefilter (SIMD) → Engine → Match Result
