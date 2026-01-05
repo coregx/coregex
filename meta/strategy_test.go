@@ -387,3 +387,174 @@ func TestEmailPatternStrategy(t *testing.T) {
 		})
 	}
 }
+
+// TestIPPatternStrategy verifies that complex IP-like patterns do NOT use DigitPrefilter.
+//
+// Issue: IP patterns like `(?:(?:25[0-5]|2[0-4][0-9]|...)\.){3}...` have:
+//   - 74 NFA states (high verification cost)
+//   - 16+ alternation branches (high false positive rate)
+//   - 9.2x more digit positions than actual matches
+//
+// Using DigitPrefilter on such patterns causes 1.3x REGRESSION vs stdlib.
+// These patterns should use UseBoth (lazy DFA without prefilter) instead.
+//
+// Reference: Rust regex avoids prefiltering for patterns with high false positive rates.
+// See: regex-automata/src/util/prefilter/mod.rs lines 12-18.
+func TestIPPatternStrategy(t *testing.T) {
+	// Full IP validation pattern - MUST NOT use DigitPrefilter
+	ipPattern := `(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])`
+
+	config := DefaultConfig()
+	engine, err := CompileWithConfig(ipPattern, config)
+	if err != nil {
+		t.Fatalf("failed to compile IP pattern: %v", err)
+	}
+
+	strategy := engine.Strategy()
+
+	// IP pattern should NOT use DigitPrefilter due to complexity
+	if strategy == UseDigitPrefilter {
+		t.Errorf("REGRESSION: IP pattern should NOT use UseDigitPrefilter\n"+
+			"Got: %v\n"+
+			"Complex patterns with many alternations have high false positive rate.\n"+
+			"DigitPrefilter causes 1.3x regression vs stdlib for IP patterns.",
+			strategy)
+	}
+
+	// Expected: UseBoth or UseDFA (lazy DFA without prefilter overhead)
+	if strategy != UseBoth && strategy != UseDFA {
+		t.Logf("IP pattern using strategy: %v (expected UseBoth or UseDFA)", strategy)
+	}
+}
+
+// TestDigitPrefilterComplexityAnalysis verifies the complexity analysis for DigitPrefilter.
+//
+// Note: Go's regex parser aggressively simplifies simple alternations to char classes:
+//   - `a|b|c` becomes CharClass [a-c] (no OpAlternate!)
+//   - `(a|b)|(c|d)` has only 2 OpAlternate branches (inner ones become CharClass)
+//
+// This means we test with patterns that can't be simplified.
+func TestDigitPrefilterComplexityAnalysis(t *testing.T) {
+	tests := []struct {
+		pattern              string
+		wantBranches         int
+		wantMaxDepth         int
+		wantNestedRepetition bool
+		desc                 string
+	}{
+		// Simple patterns - no alternation
+		{`\d+`, 0, 0, false, "simple digit+"},
+		{`[0-9]+`, 0, 0, false, "char class digit+"},
+
+		// Simple alternations get optimized to char class by Go's parser
+		// `a|b|c` → CharClass [a-c], no OpAlternate
+		{`a|b|c`, 0, 0, false, "simple alternation optimized to char class"},
+
+		// Alternation with captures preserves OpAlternate at top level
+		// `(a|b)|(c|d)` → Alternate with 2 branches (Capture(CharClass))
+		{`(a|b)|(c|d)`, 2, 1, false, "2-branch alternation with captures"},
+
+		// Nested alternation with captures
+		// `(a|(b|c))` → Capture → Alternate(Literal, Capture(CharClass))
+		{`(a|(b|c))`, 2, 1, false, "nested alternation (inner optimized to char class)"},
+
+		// Repetition inside alternation
+		{`(a+|b+)`, 2, 1, true, "repetition inside alternation"},
+		{`(a*|b)`, 2, 1, true, "star inside alternation"},
+
+		// Note: Go's parser is very aggressive at optimizing alternations.
+		// `(foo|bar|baz)` becomes Alternate(Literal("foo"), Concat(Literal("ba"), CharClass([rz])))
+		// So it has 2 branches at OpAlternate level, not 3.
+		{`(foo|bar|baz)`, 2, 1, false, "3 different literals (Go optimizes to 2 branches)"},
+		{`(abc|def|ghi|jkl)`, 4, 1, false, "4 different literals"},
+
+		// IP pattern complexity - should have many branches
+		// Each octet has 4 branches: 25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9]
+		// Repeated {3} creates more complexity
+		{`(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])`,
+			0, 0, false, "IP pattern - complex (checked separately)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			re, err := syntax.Parse(tt.pattern, syntax.Perl)
+			if err != nil {
+				t.Fatalf("failed to parse %q: %v", tt.pattern, err)
+			}
+
+			result := analyzeDigitPrefilterComplexity(re)
+
+			// For IP pattern, we just verify it has high complexity
+			if tt.desc == "IP pattern - complex (checked separately)" {
+				// IP pattern - check it's detected as complex
+				if result.alternationBranches < 8 {
+					t.Errorf("IP pattern should have >= 8 alternation branches, got %d",
+						result.alternationBranches)
+				}
+				if !result.hasNestedRepetition {
+					t.Errorf("IP pattern should have nested repetition")
+				}
+				return
+			}
+
+			if result.alternationBranches != tt.wantBranches {
+				t.Errorf("alternationBranches: got %d, want %d",
+					result.alternationBranches, tt.wantBranches)
+			}
+
+			if result.maxNestingDepth != tt.wantMaxDepth {
+				t.Errorf("maxNestingDepth: got %d, want %d",
+					result.maxNestingDepth, tt.wantMaxDepth)
+			}
+
+			if result.hasNestedRepetition != tt.wantNestedRepetition {
+				t.Errorf("hasNestedRepetition: got %v, want %v",
+					result.hasNestedRepetition, tt.wantNestedRepetition)
+			}
+		})
+	}
+}
+
+// TestIsDigitPrefilterBeneficial verifies that complex patterns are correctly excluded.
+func TestIsDigitPrefilterBeneficial(t *testing.T) {
+	tests := []struct {
+		pattern string
+		nfaSize int
+		want    bool
+		desc    string
+	}{
+		// Simple digit patterns - should be beneficial
+		{`\d+`, 10, true, "simple digit+ with small NFA"},
+		{`[0-9]+`, 10, true, "char class digit+ with small NFA"},
+		{`\d{3}`, 15, true, "fixed digit repetition"},
+
+		// Too large NFA - not beneficial
+		{`\d+`, 60, false, "digit+ with large NFA (>50 states)"},
+		{`[0-9]+`, 100, false, "digit+ with very large NFA"},
+
+		// Note: Go's parser optimizes `(0|1|2|3|4|5|6|7|8|9)+` to CharClass [0-9]+
+		// So it has 0 alternation branches. Use a pattern that preserves alternations.
+		// IP-like patterns with mixed literal prefixes preserve alternation structure.
+		{`(10|20|30|40|50|60|70|80|90)+`, 30, false, "9 branches with different prefixes"},
+
+		// Complex IP pattern - not beneficial
+		{`(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])`,
+			74, false, "IP pattern - too complex"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			re, err := syntax.Parse(tt.pattern, syntax.Perl)
+			if err != nil {
+				t.Fatalf("failed to parse %q: %v", tt.pattern, err)
+			}
+
+			got := isDigitPrefilterBeneficial(re, tt.nfaSize)
+
+			if got != tt.want {
+				t.Errorf("isDigitPrefilterBeneficial(%q, nfaSize=%d): got %v, want %v",
+					tt.pattern, tt.nfaSize, got, tt.want)
+			}
+		})
+	}
+}

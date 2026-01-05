@@ -127,13 +127,11 @@ func (b *Builder) Build() (*DFA, error) {
 // buildPrefilter extracts literals from the NFA and builds a prefilter.
 // Returns nil if no suitable prefilter can be constructed.
 //
-// For MVP, prefilter extraction from NFA is not implemented.
-// Future enhancement: Walk NFA to extract literal sequences.
+// buildPrefilter returns nil - literal extraction is handled by meta/ package.
+// The meta.Engine extracts literals from AST before DFA construction.
 func (b *Builder) buildPrefilter() prefilter.Prefilter {
-	// TODO: Extract literals from NFA
-	// For now, we don't have NFA → syntax.Regexp conversion
-	// This will be implemented when we add regex compilation
-	// For MVP, prefilter is optional
+	// Literal extraction happens in meta/ via literal.ExtractFromAST()
+	// DFA builder doesn't need independent prefilter construction
 
 	// Placeholder: extract from pattern if available
 	// In a full implementation, we would:
@@ -569,12 +567,9 @@ func ExtractPrefilter(pattern string) (prefilter.Prefilter, error) {
 		return nil, err
 	}
 
-	// TODO: Extract literals from NFA
-	// For now, return (nil, nil) indicating no prefilter (not an error)
-	// Full implementation requires NFA → AST conversion or literal extraction from NFA
-	_ = nfaObj // Suppress unused variable warning
-
-	// No prefilter available - this is not an error condition
+	// Literal extraction is handled by meta/ package via literal.ExtractFromAST()
+	// This function returns nil prefilter - meta.Engine manages prefilters
+	_ = nfaObj // NFA used for state construction, not literal extraction
 	// Returning (nil, nil) is intentional and documented
 	//nolint:nilnil // nil prefilter with nil error indicates "no prefilter available" (not an error)
 	return nil, nil

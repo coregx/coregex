@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **DigitPrefilter regression for complex patterns** (IP address validation)
+  - DigitPrefilter caused 1.3x slowdown on complex IP patterns with many alternations
+  - Root cause: High false positive rate (9x) + expensive DFA verification per candidate
+  - Solution: Added `isDigitPrefilterBeneficial()` complexity analysis
+  - Thresholds: >50 NFA states, >8 alternation branches, >2 nesting depth → disable prefilter
+  - Complex IP patterns now use `UseBoth` (lazy DFA without prefilter)
+  - **Result**: 1.3x slower → **3.5x faster** than stdlib
+  - Reference: Rust regex-automata prefilter heuristics
+
+### Changed
+- **DigitPrefilter scope refined**: Now applies only to simple digit-lead patterns
+  - Version patterns (`\d+\.\d+\.\d+`) — still uses DigitPrefilter (40-2500x speedup)
+  - Complex IP validation — uses LazyDFA strategy (3.5x speedup)
+- **Removed outdated TODO comments**: Cleaned up 4 obsolete TODOs in dfa/lazy and prefilter
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)

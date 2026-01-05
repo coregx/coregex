@@ -411,19 +411,142 @@ func isDigitLeadPattern(re *syntax.Regexp) bool {
 	}
 }
 
+// digitPrefilterComplexity holds metrics for determining if DigitPrefilter is beneficial.
+// High complexity patterns have high false positive rates, making prefiltering counterproductive.
+type digitPrefilterComplexity struct {
+	// alternationBranches is the total number of alternation branches in the pattern.
+	// Example: `(a|b|c)|(d|e)` has 5 branches (3 + 2).
+	alternationBranches int
+
+	// maxNestingDepth is the maximum depth of nested alternations.
+	// Example: `(a|(b|c))` has depth 2.
+	maxNestingDepth int
+
+	// hasNestedRepetition indicates if there's a repetition inside alternation.
+	// Example: `(a+|b*)` has nested repetition.
+	hasNestedRepetition bool
+}
+
+// analyzeDigitPrefilterComplexity analyzes the pattern to determine if DigitPrefilter
+// would be beneficial. Returns complexity metrics used to decide if prefiltering
+// would have too high a false positive rate.
+//
+// The analysis is based on Rust regex's observation that prefiltering is counterproductive
+// when it produces many false positives that require expensive DFA verification.
+func analyzeDigitPrefilterComplexity(re *syntax.Regexp) digitPrefilterComplexity {
+	var result digitPrefilterComplexity
+	analyzeComplexityRecursive(re, 0, &result)
+	return result
+}
+
+// analyzeComplexityRecursive recursively analyzes pattern complexity.
+func analyzeComplexityRecursive(re *syntax.Regexp, depth int, result *digitPrefilterComplexity) {
+	if re == nil {
+		return
+	}
+
+	switch re.Op {
+	case syntax.OpAlternate:
+		result.alternationBranches += len(re.Sub)
+		newDepth := depth + 1
+		if newDepth > result.maxNestingDepth {
+			result.maxNestingDepth = newDepth
+		}
+		for _, sub := range re.Sub {
+			analyzeComplexityRecursive(sub, newDepth, result)
+		}
+
+	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		if depth > 0 {
+			result.hasNestedRepetition = true
+		}
+		for _, sub := range re.Sub {
+			analyzeComplexityRecursive(sub, depth, result)
+		}
+
+	case syntax.OpConcat, syntax.OpCapture:
+		for _, sub := range re.Sub {
+			analyzeComplexityRecursive(sub, depth, result)
+		}
+
+	default:
+		// Leaf nodes (literals, char classes, etc.) - no recursion needed
+	}
+}
+
+// isDigitPrefilterBeneficial determines if DigitPrefilter would be beneficial
+// for the given pattern based on complexity analysis and NFA size.
+//
+// Returns false (not beneficial) when:
+//   - NFA has > 50 states (verification cost too high)
+//   - Pattern has > 8 alternation branches (false positive rate too high)
+//   - Pattern has > 2 levels of nested alternations
+//   - Pattern has repetition inside alternation (state explosion)
+//
+// These thresholds are based on empirical analysis:
+//   - IP pattern: 74 states, 16 branches, depth 2 → NOT beneficial (1.3x slower)
+//   - Version pattern: 14 states, 0 branches → beneficial via ReverseInner instead
+//
+// Reference: Rust regex uses similar heuristics to avoid counterproductive prefiltering.
+func isDigitPrefilterBeneficial(re *syntax.Regexp, nfaSize int) bool {
+	// Threshold: NFA with more than 50 states has expensive verification
+	// IP pattern has 74 states - too complex for digit prefiltering
+	const maxNFAStatesForDigitPrefilter = 50
+
+	if nfaSize > maxNFAStatesForDigitPrefilter {
+		return false
+	}
+
+	complexity := analyzeDigitPrefilterComplexity(re)
+
+	// Threshold: More than 8 alternation branches = high false positive rate
+	// IP pattern has ~16 branches across nested alternations
+	const maxAlternationBranches = 8
+	if complexity.alternationBranches > maxAlternationBranches {
+		return false
+	}
+
+	// Threshold: Deep nesting (>2) indicates complex structure
+	// IP pattern has depth 2 with repetition - borderline
+	const maxNestingDepth = 2
+	if complexity.maxNestingDepth > maxNestingDepth {
+		return false
+	}
+
+	// Nested repetition inside alternation causes state explosion
+	// Example: `(a+|b+){3}` has exponential state growth
+	if complexity.hasNestedRepetition && complexity.maxNestingDepth > 1 {
+		return false
+	}
+
+	return true
+}
+
 // shouldUseDigitPrefilter checks if the pattern should use digit prefilter optimization.
 // Returns true if:
 //   - Pattern must start with a digit [0-9]
 //   - DFA and prefilter are enabled
-//   - Pattern is suitable for SIMD digit scanning
+//   - Pattern complexity is low enough for prefiltering to be beneficial
 //
-// This is used for patterns like IP addresses where alternation structure
-// prevents literal extraction, but all branches must start with a digit.
-func shouldUseDigitPrefilter(re *syntax.Regexp, config Config) bool {
+// This is used for simple digit-lead patterns where SIMD digit scanning provides
+// speedup. Complex patterns like IP addresses with many alternations are excluded
+// because the high false positive rate makes prefiltering counterproductive.
+//
+// Based on Rust regex's observation: "if a prefilter has a high false positive rate
+// and it produces lots of candidates, then a prefilter can overall make a regex
+// search slower" (regex-automata/src/util/prefilter/mod.rs).
+func shouldUseDigitPrefilter(re *syntax.Regexp, nfaSize int, config Config) bool {
 	if re == nil || !config.EnableDFA || !config.EnablePrefilter {
 		return false
 	}
-	return isDigitLeadPattern(re)
+
+	// First check if pattern is digit-lead
+	if !isDigitLeadPattern(re) {
+		return false
+	}
+
+	// Then check if prefiltering would be beneficial given complexity
+	return isDigitPrefilterBeneficial(re, nfaSize)
 }
 
 // shouldUseReverseSuffixSet checks if multiple suffix literals are available for Teddy prefilter.
@@ -781,9 +904,10 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseDFA
 	}
 
-	// Check for digit-lead patterns (like IP addresses) that have no extractable literals.
+	// Check for simple digit-lead patterns that have no extractable literals.
+	// Complex patterns like IP addresses are excluded due to high false positive rate.
 	// Delegated to helper function to reduce cyclomatic complexity.
-	if shouldUseDigitPrefilter(re, config) {
+	if shouldUseDigitPrefilter(re, nfaSize, config) {
 		return UseDigitPrefilter
 	}
 
@@ -855,7 +979,7 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 		return "specialized lookup-table searcher for char_class+ patterns (14-17x faster than BoundedBacktracker)"
 
 	case UseDigitPrefilter:
-		return "SIMD digit scanner for digit-lead alternation patterns (5-10x for IP address patterns)"
+		return "SIMD digit scanner for simple digit-lead patterns (5-10x, excludes complex alternations)"
 
 	case UseAhoCorasick:
 		return "Aho-Corasick automaton for large literal alternations (50-500x for >8 pattern sets)"

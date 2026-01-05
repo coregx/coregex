@@ -233,7 +233,7 @@ func (b *Builder) Build() Prefilter {
 //     - len==1 → MemchrPrefilter (single byte search)
 //     - len>1 → MemmemPrefilter (substring search)
 //  4. If 2-8 literals and minLen≥3 → TeddyPrefilter (SIMD multi-pattern)
-//  5. If many/short literals → nil (TODO: AhoCorasickPrefilter)
+//  5. If many/short literals → nil (Aho-Corasick handled via meta.UseAhoCorasick strategy)
 //
 // Returns nil if no effective prefilter can be constructed.
 func selectPrefilter(prefixes, suffixes *literal.Seq) Prefilter {
@@ -266,9 +266,9 @@ func selectPrefilter(prefixes, suffixes *literal.Seq) Prefilter {
 		return newTeddy(seq)
 	}
 
-	// Many literals or short literals
-	// TODO: implement Aho-Corasick (Phase 3)
-	// Aho-Corasick handles many patterns efficiently via automaton
+	// Many literals or short literals - return nil
+	// Aho-Corasick is handled at strategy level (meta.UseAhoCorasick)
+	// for >8 literal alternations, not as a prefilter
 	return nil
 }
 

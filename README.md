@@ -86,12 +86,12 @@ coregex automatically selects the optimal engine:
 | Strategy | Pattern Type | Speedup |
 |----------|--------------|---------|
 | ReverseInner | `.*keyword.*` | 1000-3000x |
-| DigitPrefilter | IP patterns `\d+\.\d+\.\d+\.\d+` | 40-2500x |
+| DigitPrefilter | Simple digit-lead `\d+\.\d+\.\d+` | 40-2500x |
 | ReverseSuffix | `.*\.txt` | 100-400x |
 | AhoCorasick | `a\|b\|c\|...\|z` (>8 patterns) | 75-113x |
 | CharClassSearcher | `[\w]+`, `\d+` | 20-25x |
 | Teddy | `foo\|bar\|baz` (2-8 patterns) | 15-240x |
-| LazyDFA | Complex with literals | 10-50x |
+| LazyDFA | Complex patterns, IP validation | 3-50x |
 | OnePass | Anchored captures | 10x |
 | BoundedBacktracker | Small patterns | 2-5x |
 
