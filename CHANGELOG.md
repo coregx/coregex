@@ -14,6 +14,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.1] - 2026-01-05
+
+### Fixed
+- **DigitPrefilter adaptive switching** for high false-positive scenarios
+  - Problem: DigitPrefilter was slow on dense digit data (many consecutive FPs)
+  - Solution: Runtime adaptive switching - after 64 consecutive false positives, switch to DFA
+  - Based on Rust regex insight: "prefilter with high FP rate makes search slower"
+  - Sparse data: prefilter remains fast (100-3000x speedup via SIMD skip)
+  - Dense data: adaptively switches to lazy DFA (3-5x speedup vs stdlib)
+  - New stat: `Stats.PrefilterAbandoned` tracks adaptive switching events
+  - New constant: `digitPrefilterAdaptiveThreshold = 64`
+
+### Performance (IP regex benchmarks)
+
+| Scenario | stdlib | coregex | Speedup |
+|----------|--------|---------|---------|
+| Sparse 64KB | 833 µs | 2.8 µs | **300x** |
+| Dense 64KB | 8.5 µs | 2.4 µs | **3.5x** |
+| No IPs 1MB | 60.7 ms | 19.8 µs | **3000x** |
+
+---
+
 ## [0.9.0] - 2026-01-05
 
 ### Added
