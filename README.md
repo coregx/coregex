@@ -220,6 +220,7 @@ uawk '/error/ { print $0 }' server.log
 - [uawk](https://github.com/kolkov/uawk) — Ultra AWK interpreter powered by coregex
 - [kolkov/regex-bench](https://github.com/kolkov/regex-bench) — Cross-language benchmarks
 - [golang/go#26623](https://github.com/golang/go/issues/26623) — Go regexp performance discussion
+- [golang/go#76818](https://github.com/golang/go/issues/76818) — Upstream path proposal
 
 **Inspired by:**
 - [Rust regex](https://github.com/rust-lang/regex) — Architecture
