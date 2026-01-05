@@ -177,6 +177,21 @@ Pure Go fallback on other architectures.
 
 coregex was [tested in GoAWK](https://github.com/benhoyt/goawk/pull/264). This real-world testing uncovered 15+ edge cases that synthetic benchmarks missed.
 
+### Powered by coregex: uawk
+
+[uawk](https://github.com/kolkov/uawk) is a modern AWK interpreter built on coregex:
+
+| Benchmark (10MB) | GoAWK | uawk | Speedup |
+|------------------|-------|------|---------|
+| Regex alternation | 1.85s | 97ms | **19x** |
+| IP matching | 290ms | 99ms | **2.9x** |
+| General regex | 320ms | 100ms | **3.2x** |
+
+```bash
+go install github.com/kolkov/uawk/cmd/uawk@latest
+uawk '/error/ { print $0 }' server.log
+```
+
 **We need more testers!** If you have a project using `regexp`, try coregex and [report issues](https://github.com/coregx/coregex/issues).
 
 ## Documentation
@@ -202,9 +217,9 @@ coregex was [tested in GoAWK](https://github.com/benhoyt/goawk/pull/264). This r
 
 ## Related
 
-- [golang/go#26623](https://github.com/golang/go/issues/26623) — Go regexp performance discussion
-- [golang/go#76818](https://github.com/golang/go/issues/76818) — Upstream path proposal
+- [uawk](https://github.com/kolkov/uawk) — Ultra AWK interpreter powered by coregex
 - [kolkov/regex-bench](https://github.com/kolkov/regex-bench) — Cross-language benchmarks
+- [golang/go#26623](https://github.com/golang/go/issues/26623) — Go regexp performance discussion
 
 **Inspired by:**
 - [Rust regex](https://github.com/rust-lang/regex) — Architecture
