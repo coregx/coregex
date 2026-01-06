@@ -367,9 +367,9 @@ func TestRealWorldPatterns(t *testing.T) {
 			desc:     "date pattern YYYY-MM-DD",
 		},
 		{
-			// Parser optimizes POST|PUT to P(OST|UT), so we get "GET", "P", "DELETE"
+			// Parser optimizes POST|PUT to P(OST|UT), but we now expand it back
 			pattern:  `(GET|POST|PUT|DELETE)\s+`,
-			prefixes: []string{"GET", "P", "DELETE"}, // Parser factors common "P" prefix
+			prefixes: []string{"GET", "POST", "PUT", "DELETE"}, // Properly expanded from factored prefix
 			suffixes: []string{},
 			desc:     "HTTP method (with parser optimization)",
 		},
@@ -699,6 +699,81 @@ func BenchmarkExtractInnerForReverseSearch(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
 				_ = extractor.ExtractInnerForReverseSearch(re)
+			}
+		})
+	}
+}
+
+// TestExtractPrefixesFactoredPrefix tests extraction of prefixes when the regex parser
+// factors common prefixes. For example: (Wanderlust|Weltanschauung) becomes W(anderlust|eltanschauung).
+// We should expand this back to ["Wanderlust", "Weltanschauung"].
+func TestExtractPrefixesFactoredPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		pattern  string
+		expected []string
+	}{
+		{
+			name:     "two words with common prefix W",
+			pattern:  "(Wanderlust|Weltanschauung)",
+			expected: []string{"Wanderlust", "Weltanschauung"},
+		},
+		{
+			name:     "three words with common prefix",
+			pattern:  "(test1|test2|test3)",
+			expected: []string{"test1", "test2", "test3"},
+		},
+		{
+			name:     "no common prefix",
+			pattern:  "(foo|bar|baz)",
+			expected: []string{"foo", "bar", "baz"},
+		},
+		{
+			name:     "nested factored prefix",
+			pattern:  "(abc1|abc2|abd1|abd2)",
+			expected: []string{"abc1", "abc2", "abd1", "abd2"},
+		},
+		{
+			name:     "german words benchmark pattern",
+			pattern:  "(Bildungsroman|Doppelganger|Gestalt|Kindergarten)",
+			expected: []string{"Bildungsroman", "Doppelganger", "Gestalt", "Kindergarten"},
+		},
+	}
+
+	extractor := New(DefaultConfig())
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			re, err := syntax.Parse(tc.pattern, syntax.Perl)
+			if err != nil {
+				t.Fatalf("failed to parse pattern: %v", err)
+			}
+
+			seq := extractor.ExtractPrefixes(re)
+
+			if seq.Len() != len(tc.expected) {
+				t.Errorf("expected %d literals, got %d", len(tc.expected), seq.Len())
+				t.Logf("Got literals:")
+				for i := 0; i < seq.Len(); i++ {
+					t.Logf("  [%d] %q complete=%v", i, seq.Get(i).Bytes, seq.Get(i).Complete)
+				}
+				return
+			}
+
+			// Check each literal
+			gotSet := make(map[string]bool)
+			for i := 0; i < seq.Len(); i++ {
+				lit := seq.Get(i)
+				gotSet[string(lit.Bytes)] = true
+				if !lit.Complete {
+					t.Errorf("literal %q should be complete", lit.Bytes)
+				}
+			}
+
+			for _, exp := range tc.expected {
+				if !gotSet[exp] {
+					t.Errorf("expected literal %q not found", exp)
+				}
 			}
 		})
 	}
