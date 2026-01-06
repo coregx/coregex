@@ -531,6 +531,13 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 		// because: (1) Match() is fast with memchr prefilter, (2) Find() uses
 		// early return optimization. ReverseInner detects quadratic behavior
 		// and falls back to Core when needed.
+		//
+		// EXCEPTION: For digit-lead patterns like `\d+\.\d+\.\d+`, single-byte
+		// inner literals (like ".") have very high frequency (~2% of text).
+		// DigitPrefilter is much more effective for these patterns.
+		if len(lcp) == 1 && isDigitLeadPattern(re) {
+			return 0 // Let DigitPrefilter handle digit-lead patterns
+		}
 		if len(lcp) >= 1 {
 			return UseReverseInner // Inner literal available - use ReverseInner
 		}
@@ -766,6 +773,14 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseNFA // findIndicesNFA now uses prefilter for skip-ahead
 	}
 
+	// Check for simple digit-lead patterns BEFORE tiny NFA fallback.
+	// Patterns like `\d+\.\d+\.\d+` (14 NFA states) benefit more from
+	// DigitPrefilter than plain NFA because SIMD digit scanning skips
+	// non-digit regions entirely.
+	if shouldUseDigitPrefilter(re, nfaSize, config) {
+		return UseDigitPrefilter
+	}
+
 	// Tiny NFA without literals: use PikeVM directly (DFA overhead not worth it)
 	// For patterns like "a", ".", "[0-9]", the DFA cache lookup and
 	// determinization overhead exceeds the benefit.
@@ -790,12 +805,6 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	// than NFA's parallel state tracking.
 	if nfaSize > 100 {
 		return UseDFA
-	}
-
-	// Check for simple digit-lead patterns that have no extractable literals.
-	// Complex digit-lead patterns (like IP with 74 states) use plain DFA.
-	if shouldUseDigitPrefilter(re, nfaSize, config) {
-		return UseDigitPrefilter
 	}
 
 	// Medium NFA without strong characteristics → adaptive

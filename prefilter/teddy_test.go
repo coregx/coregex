@@ -504,9 +504,9 @@ func TestTeddy_MaskConstruction(t *testing.T) {
 		t.Fatal("masks is nil")
 	}
 
-	// Check fingerprint length
-	if teddy.masks.fingerprintLen != 1 {
-		t.Errorf("fingerprintLen = %d, want 1", teddy.masks.fingerprintLen)
+	// Check fingerprint length (default is now 2)
+	if teddy.masks.fingerprintLen != 2 {
+		t.Errorf("fingerprintLen = %d, want 2", teddy.masks.fingerprintLen)
 	}
 
 	// Check buckets were assigned
