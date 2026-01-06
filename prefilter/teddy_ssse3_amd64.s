@@ -245,3 +245,243 @@ found_scalar:
 	MOVQ    SI, pos+32(FP)
 	MOVQ    BX, bucket+40(FP)
 	RET                                 // No VZEROUPPER needed (SSSE3)
+
+// func teddySlimSSSE3_2(masks *teddyMasks, haystack []byte) (pos, bucket int)
+//
+// SSSE3 implementation of Teddy Slim with 2-byte fingerprint.
+// This reduces false positives by ~90% compared to 1-byte fingerprint.
+//
+// Algorithm:
+//  1. Load nibble masks for positions 0 and 1
+//  2. Main loop: process 16 bytes per iteration
+//     a. Load haystack[i:i+16] for position 0
+//     b. Load haystack[i+1:i+17] for position 1 (overlapping)
+//     c. For each position: extract nibbles, PSHUFB lookup, AND lo/hi
+//     d. AND results from both positions
+//     e. Non-zero result = candidate
+//
+// teddyMasks struct layout:
+//   +0:   fingerprintLen (4 bytes)
+//   +4:   padding (4 bytes)
+//   +8:   loMasks[0] (32 bytes, we use first 16)
+//   +40:  loMasks[1] (32 bytes, we use first 16)
+//   +72:  loMasks[2] (32 bytes, unused)
+//   +104: loMasks[3] (32 bytes, unused)
+//   +136: hiMasks[0] (32 bytes, we use first 16)
+//   +168: hiMasks[1] (32 bytes, we use first 16)
+//   +200: hiMasks[2] (32 bytes, unused)
+//   +232: hiMasks[3] (32 bytes, unused)
+TEXT ·teddySlimSSSE3_2(SB), NOSPLIT, $0-48
+	// Load parameters
+	MOVQ    masks+0(FP), R8             // R8 = pointer to teddyMasks
+	MOVQ    haystack_base+8(FP), SI     // SI = haystack pointer
+	MOVQ    haystack_len+16(FP), DX     // DX = haystack length
+
+	// Empty haystack check
+	TESTQ   DX, DX
+	JZ      not_found_2
+
+	// Check minimum length (need at least 2 bytes for 2-byte fingerprint)
+	CMPQ    DX, $2
+	JB      not_found_2
+
+	// Load nibble masks for positions 0 and 1
+	// Position 0: loMasks[0] at +8, hiMasks[0] at +136
+	// Position 1: loMasks[1] at +40, hiMasks[1] at +168
+	MOVOU   8(R8), X0                   // X0 = loMasks[0]
+	MOVOU   136(R8), X1                 // X1 = hiMasks[0]
+	MOVOU   40(R8), X8                  // X8 = loMasks[1]
+	MOVOU   168(R8), X9                 // X9 = hiMasks[1]
+
+	// Create nibble extraction mask: 0x0F repeated 16 times
+	MOVQ    $0x0F0F0F0F0F0F0F0F, AX
+	MOVQ    AX, X2
+	PUNPCKLQDQ X2, X2                   // X2 = [0x0F x 16]
+
+	// Save original haystack pointer for offset calculation
+	MOVQ    SI, DI                      // DI = haystack start (preserved)
+
+	// Calculate end pointer (need 1 extra byte for overlapping load)
+	LEAQ    (SI)(DX*1), R9              // R9 = SI + length (end pointer)
+	SUBQ    $1, R9                      // Adjust for 2-byte fingerprint overlap
+
+loop16_2:
+	// Check if we have at least 16 bytes remaining
+	LEAQ    16(SI), R10                 // R10 = SI + 16
+	CMPQ    R10, R9                     // Compare with adjusted end pointer
+	JA      handle_tail_2               // If R10 > R9, less than 16 bytes left
+
+	// Load 16 bytes from haystack for position 0
+	MOVOU   (SI), X3                    // X3 = haystack[SI:SI+16]
+	// Load 16 bytes from haystack for position 1 (offset by 1)
+	MOVOU   1(SI), X10                  // X10 = haystack[SI+1:SI+17]
+
+	// === Process position 0 ===
+	// Extract low nibbles
+	MOVOA   X3, X4                      // X4 = copy
+	PAND    X2, X4                      // X4 = low nibbles
+
+	// Extract high nibbles
+	MOVOA   X3, X5                      // X5 = copy
+	PSRLW   $4, X5                      // Shift right 4 bits
+	PAND    X2, X5                      // X5 = high nibbles
+
+	// PSHUFB lookups for position 0
+	MOVOA   X0, X6                      // X6 = loMasks[0]
+	PSHUFB  X4, X6                      // X6 = lo lookup results
+	MOVOA   X1, X7                      // X7 = hiMasks[0]
+	PSHUFB  X5, X7                      // X7 = hi lookup results
+	PAND    X7, X6                      // X6 = position 0 result
+
+	// === Process position 1 ===
+	// Extract low nibbles
+	MOVOA   X10, X4                     // X4 = copy
+	PAND    X2, X4                      // X4 = low nibbles
+
+	// Extract high nibbles
+	MOVOA   X10, X5                     // X5 = copy
+	PSRLW   $4, X5                      // Shift right 4 bits
+	PAND    X2, X5                      // X5 = high nibbles
+
+	// PSHUFB lookups for position 1
+	MOVOA   X8, X11                     // X11 = loMasks[1]
+	PSHUFB  X4, X11                     // X11 = lo lookup results
+	MOVOA   X9, X12                     // X12 = hiMasks[1]
+	PSHUFB  X5, X12                     // X12 = hi lookup results
+	PAND    X12, X11                    // X11 = position 1 result
+
+	// === Combine both positions ===
+	PAND    X11, X6                     // X6 = pos0 & pos1 (final result)
+
+	// Detect non-zero bytes
+	PXOR    X13, X13                    // X13 = zero vector
+	PCMPEQB X13, X6                     // X6[i] = 0xFF if zero, else 0x00
+	PMOVMSKB X6, CX                     // CX = bitmask where bytes were ZERO
+	XORL    $0xFFFF, CX                 // Invert: CX = bitmask where bytes were NON-ZERO
+
+	// Check if any candidates found
+	TESTL   CX, CX
+	JNZ     found_candidate_2
+
+	// No candidates, advance to next 16 bytes
+	ADDQ    $16, SI
+	JMP     loop16_2
+
+handle_tail_2:
+	// Add back the 1 we subtracted for overlap check
+	ADDQ    $1, R9
+
+	// Process remaining bytes with scalar loop
+	CMPQ    SI, R9
+	JAE     not_found_2
+
+	// Need at least 2 bytes for fingerprint
+	LEAQ    1(SI), R10
+	CMPQ    R10, R9
+	JAE     not_found_2
+
+tail_loop_2:
+	// Load two consecutive bytes
+	MOVBLZX (SI), AX                    // AX = byte at position 0
+	MOVBLZX 1(SI), R10                  // R10 = byte at position 1
+
+	// === Position 0 lookup ===
+	MOVL    AX, BX
+	ANDL    $0x0F, BX                   // BX = low nibble pos0
+	MOVL    AX, CX
+	SHRL    $4, CX
+	ANDL    $0x0F, CX                   // CX = high nibble pos0
+
+	MOVBLZX 8(R8)(BX*1), AX             // AX = loMasks[0][lowNibble]
+	MOVBLZX 136(R8)(CX*1), CX           // CX = hiMasks[0][highNibble]
+	ANDL    CX, AX                      // AX = pos0 bucket bits
+
+	// === Position 1 lookup ===
+	MOVL    R10, BX
+	ANDL    $0x0F, BX                   // BX = low nibble pos1
+	MOVL    R10, CX
+	SHRL    $4, CX
+	ANDL    $0x0F, CX                   // CX = high nibble pos1
+
+	MOVBLZX 40(R8)(BX*1), BX            // BX = loMasks[1][lowNibble]
+	MOVBLZX 168(R8)(CX*1), CX           // CX = hiMasks[1][highNibble]
+	ANDL    CX, BX                      // BX = pos1 bucket bits
+
+	// === Combine ===
+	ANDL    BX, AX                      // AX = pos0 & pos1
+
+	// Check if any bucket matched
+	TESTL   AX, AX
+	JNZ     found_scalar_2
+
+	// Advance to next byte
+	INCQ    SI
+	LEAQ    1(SI), R10
+	CMPQ    R10, R9
+	JB      tail_loop_2
+
+not_found_2:
+	MOVQ    $-1, AX
+	MOVQ    AX, pos+32(FP)
+	MOVQ    $-1, BX
+	MOVQ    BX, bucket+40(FP)
+	RET
+
+found_candidate_2:
+	// Find first set bit in mask
+	BSFL    CX, AX                      // AX = position of first set bit (0-15)
+
+	// Save chunk start
+	MOVQ    SI, R10
+
+	// Calculate absolute position
+	SUBQ    DI, SI                      // SI = offset from haystack start
+	ADDQ    SI, AX                      // AX = absolute position
+
+	// Get chunk offset for byte lookup
+	MOVQ    AX, R11
+	SUBQ    SI, R11                     // R11 = chunk offset (0-15)
+
+	// Load two consecutive bytes at candidate position
+	MOVBLZX (R10)(R11*1), BX            // BX = byte at pos0
+	MOVBLZX 1(R10)(R11*1), R12          // R12 = byte at pos1
+
+	// === Position 0 nibble lookup ===
+	MOVL    BX, CX
+	ANDL    $0x0F, CX                   // CX = low nibble
+	SHRL    $4, BX                      // BX = high nibble
+
+	MOVBLZX 8(R8)(CX*1), CX             // CX = loMasks[0][low]
+	MOVBLZX 136(R8)(BX*1), BX           // BX = hiMasks[0][high]
+	ANDL    BX, CX                      // CX = pos0 bucket bits
+
+	// === Position 1 nibble lookup ===
+	MOVL    R12, BX
+	ANDL    $0x0F, BX                   // BX = low nibble
+	MOVL    R12, R13
+	SHRL    $4, R13                     // R13 = high nibble
+
+	MOVBLZX 40(R8)(BX*1), BX            // BX = loMasks[1][low]
+	MOVBLZX 168(R8)(R13*1), R13         // R13 = hiMasks[1][high]
+	ANDL    R13, BX                     // BX = pos1 bucket bits
+
+	// === Combine and find bucket ===
+	ANDL    BX, CX                      // CX = final bucket bits
+	BSFL    CX, BX                      // BX = bucket ID
+
+	// Return results
+	MOVQ    AX, pos+32(FP)
+	MOVQ    BX, bucket+40(FP)
+	RET
+
+found_scalar_2:
+	// Calculate position
+	SUBQ    DI, SI
+
+	// Find first set bucket bit
+	BSFL    AX, BX                      // BX = bucket ID
+
+	// Return results
+	MOVQ    SI, pos+32(FP)
+	MOVQ    BX, bucket+40(FP)
+	RET
