@@ -25,12 +25,12 @@ var (
 // Returns:
 //
 //	pos - position of first candidate (relative to haystack start), or -1
-//	bucketMask - bitmask of matching buckets (bits 0-7), or -1 if not found
-//	            Caller should iterate through all set bits using bits.TrailingZeros.
+//	bucketMask - bitmask of matching buckets (bits 0-7), or 0 if not found
+//	            Caller should iterate through all set bits using bits.TrailingZeros8.
 //	            This matches Rust's aho-corasick verify64() approach.
 //
 //go:noescape
-func teddySlimSSSE3_1(masks *teddyMasks, haystack []byte) (pos, bucketMask int)
+func teddySlimSSSE3_1(masks *teddyMasks, haystack []byte) (pos int, bucketMask uint8)
 
 // teddySlimSSSE3_2 is the SSSE3 assembly implementation for 2-byte fingerprint.
 //
@@ -48,7 +48,7 @@ func teddySlimSSSE3_1(masks *teddyMasks, haystack []byte) (pos, bucketMask int)
 // Returns bucketMask (bitmask of all matching buckets), not bucket ID.
 //
 //go:noescape
-func teddySlimSSSE3_2(masks *teddyMasks, haystack []byte) (pos, bucketMask int)
+func teddySlimSSSE3_2(masks *teddyMasks, haystack []byte) (pos int, bucketMask uint8)
 
 // findSIMD performs SIMD search for candidate positions.
 //
@@ -61,10 +61,10 @@ func teddySlimSSSE3_2(masks *teddyMasks, haystack []byte) (pos, bucketMask int)
 //   - x86-64 without SSSE3: fallback to findScalarCandidate
 //   - Other platforms: fallback (via build tags)
 //
-// Returns (position, bucketMask) or (-1, -1) if no candidate found.
+// Returns (position, bucketMask) or (-1, 0) if no candidate found.
 // bucketMask contains bits for ALL matching buckets (not just first).
-// Caller should iterate through all set bits using bits.TrailingZeros.
-func (t *Teddy) findSIMD(haystack []byte) (pos, bucketMask int) {
+// Caller should iterate through all set bits using bits.TrailingZeros8.
+func (t *Teddy) findSIMD(haystack []byte) (pos int, bucketMask uint8) {
 	// Check CPU support
 	if !hasSSSE3 {
 		// CPU doesn't support SSSE3, use scalar fallback

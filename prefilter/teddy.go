@@ -335,11 +335,10 @@ func (t *Teddy) Find(haystack []byte, start int) int {
 	for pos != -1 {
 		// Iterate through all set bits in bucket mask (like Rust's verify64)
 		// This ensures we check ALL potential buckets, not just the first one
-		mask := bucketMask
-		for mask != 0 {
+		for bucketMask != 0 {
 			// Find lowest set bit (bucket ID)
-			bucket := bits.TrailingZeros(uint(mask))
-			mask &^= 1 << bucket // Clear the bit
+			bucket := bits.TrailingZeros8(bucketMask)
+			bucketMask &^= 1 << bucket // Clear the bit
 
 			// Verify patterns in this specific bucket
 			matchPos, _ := t.verifyBucket(haystack[accumulatedOffset:], pos, bucket)
@@ -396,11 +395,10 @@ func (t *Teddy) FindMatch(haystack []byte, start int) (int, int) {
 	// Process candidates
 	for pos != -1 {
 		// Iterate through all set bits in bucket mask (like Rust's verify64)
-		mask := bucketMask
-		for mask != 0 {
+		for bucketMask != 0 {
 			// Find lowest set bit (bucket ID)
-			bucket := bits.TrailingZeros(uint(mask))
-			mask &^= 1 << bucket // Clear the bit
+			bucket := bits.TrailingZeros8(bucketMask)
+			bucketMask &^= 1 << bucket // Clear the bit
 
 			// Verify patterns in this specific bucket
 			matchPos, patternID := t.verifyBucket(haystack[accumulatedOffset:], pos, bucket)
@@ -471,9 +469,9 @@ func (t *Teddy) findScalar(haystack []byte, start int) int {
 //
 // Performance: ~100x slower than SIMD, but functionally identical.
 //
-// Returns (position, bucketMask) or (-1, -1) if no candidate found.
+// Returns (position, bucketMask) or (-1, 0) if no candidate found.
 // bucketMask contains bits for ALL matching buckets (not just first).
-func (t *Teddy) findScalarCandidate(haystack []byte) (pos, bucketMask int) {
+func (t *Teddy) findScalarCandidate(haystack []byte) (pos int, bucketMask uint8) {
 	// Get fingerprint length
 	fpLen := int(t.masks.fingerprintLen)
 
@@ -496,62 +494,11 @@ func (t *Teddy) findScalarCandidate(haystack []byte) (pos, bucketMask int) {
 		// If any bucket bits remain, this is a candidate
 		// Return the FULL mask - caller iterates through all set bits
 		if candidateMask != 0 {
-			return i, int(candidateMask)
+			return i, candidateMask
 		}
 	}
 
-	return -1, -1 // No candidate found
-}
-
-// verify checks if any pattern in any bucket matches at the given position.
-//
-// This is called after SIMD finds a candidate position. It performs full
-// pattern comparison to eliminate false positives.
-//
-// CRITICAL: This recalculates the candidate mask at the position and checks
-// ALL buckets (not just the first one returned by SIMD BSFL). This is necessary
-// because multiple buckets may match at the same position (e.g., patterns with
-// the same fingerprint: "pattern1", "pattern2", "pattern3" all start with 'p').
-//
-// Returns (match_position, pattern_id) or (-1, -1) if no match.
-func (t *Teddy) verify(haystack []byte, pos int) (int, int) {
-	// Recalculate candidate mask at this position
-	// This is necessary because SIMD BSFL returns only the first bucket,
-	// but multiple buckets may be candidates at the same position.
-	fpLen := int(t.masks.fingerprintLen)
-	if pos+fpLen > len(haystack) {
-		return -1, -1
-	}
-
-	candidateMask := byte(0xFF) // Start with all buckets possible
-	for i := 0; i < fpLen; i++ {
-		b := haystack[pos+i]
-		loNibble := b & 0x0F
-		hiNibble := (b >> 4) & 0x0F
-		loMask := t.masks.loMasks[i][loNibble]
-		hiMask := t.masks.hiMasks[i][hiNibble]
-		candidateMask &= loMask & hiMask
-	}
-
-	// Check all buckets in candidate mask
-	for bucketID := 0; bucketID < len(t.buckets); bucketID++ {
-		if candidateMask&(1<<bucketID) != 0 {
-			// Check patterns in this bucket
-			for _, patternID := range t.buckets[bucketID] {
-				pattern := t.patterns[patternID]
-				end := pos + len(pattern)
-				if end > len(haystack) {
-					continue
-				}
-				// Compare full pattern
-				if bytes.Equal(haystack[pos:end], pattern) {
-					return pos, patternID
-				}
-			}
-		}
-	}
-
-	return -1, -1 // No match in any bucket
+	return -1, 0 // No candidate found
 }
 
 // verifyBucket checks if any pattern in the specified bucket matches at the given position.
