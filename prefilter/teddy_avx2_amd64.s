@@ -5,24 +5,21 @@
 // func fatTeddyAVX2_2(masks *fatTeddyMasks, haystack []byte) (pos int, bucketMask uint16)
 //
 // AVX2 implementation of Fat Teddy with 2-byte fingerprint and 16 buckets.
-// This is optimal for 33-64 patterns on AVX2-capable CPUs.
+// Based on Rust aho-corasick generic.rs Fat<V, 2> implementation.
 //
-// Algorithm (based on Rust aho-corasick generic.rs:447-512):
-//  1. Load nibble masks (32 bytes each, covering all 16 buckets)
-//  2. Main loop: process 16 bytes per iteration
-//     a. VBROADCASTI128: Load 16 bytes, duplicate to both 128-bit lanes
-//     b. Extract low/high nibbles with VPAND
-//     c. VPSHUFB: Lookup bucket bits in masks
-//        - Low lane (bytes 0-15) → buckets 0-7
-//        - High lane (bytes 16-31) → buckets 8-15
-//     d. VPAND: Combine lo/hi results for each position
-//     e. VPAND: Combine results from both fingerprint positions
-//     f. VPERM2I128 + VPUNPCKLBW: Interleave to create 16-bit bucket masks
-//     g. VPMOVMSKB: Extract candidate mask
-//  3. If candidate found: extract position and 16-bit bucket mask
-//  4. Handle tail (< 16 bytes) with scalar loop
+// Algorithm:
+//  1. Start at position 1 (cur = start + 1)
+//  2. Initialize prev0 = 0xFF (all bits set)
+//  3. Main loop: process 16 bytes per iteration
+//     a. Load 16 bytes and broadcast to both lanes (VBROADCASTI128)
+//     b. Compute res0 = masks[0] lookup (first fingerprint byte)
+//     c. Compute res1 = masks[1] lookup (second fingerprint byte)
+//     d. Shift res0 right by 1 byte within each lane, bringing in prev0 (VPALIGNR)
+//     e. AND res0_shifted with res1
+//     f. Check for non-zero bytes (candidates)
+//  4. If candidate found: extract position and 16-bit bucket mask
 //
-// CRITICAL: VZEROUPPER must be called before every RET to avoid AVX-SSE transition penalty.
+// CRITICAL: VZEROUPPER before every RET to avoid AVX-SSE transition penalty.
 //
 // Parameters (FP offsets):
 //   masks+0(FP)          - pointer to fatTeddyMasks struct (8 bytes)
@@ -31,8 +28,6 @@
 //   haystack_cap+24(FP)  - haystack capacity (8 bytes, unused)
 //   pos+32(FP)           - return: candidate position or -1 (8 bytes)
 //   bucketMask+40(FP)    - return: 16-bit bucket mask or 0 (2 bytes)
-//
-// Total argument frame size: 42 bytes (8+8+8+8+8+2)
 //
 // fatTeddyMasks struct layout (offsets):
 //   +0:   fingerprintLen (uint32, 4 bytes)
@@ -72,285 +67,228 @@ TEXT ·fatTeddyAVX2_2(SB), NOSPLIT, $0-42
 	MOVQ    AX, X2
 	VPBROADCASTQ X2, Y2                 // Y2 = [0x0F x 32]
 
+	// Initialize prev0 = 0xFF (all bits set)
+	VPCMPEQD Y7, Y7, Y7                 // Y7 = prev0 = all 0xFF
+
 	// Save original haystack pointer for offset calculation
 	MOVQ    SI, DI                      // DI = haystack start (preserved)
 
-	// Calculate end pointer (need 1 extra byte for overlapping load)
-	LEAQ    (SI)(DX*1), R9              // R9 = SI + length (end pointer)
-	SUBQ    $1, R9                      // Adjust for 2-byte fingerprint overlap
+	// Start at position 1 (per Rust algorithm)
+	INCQ    SI                          // cur = start + 1
+
+	// Calculate end pointer for 16-byte chunks
+	LEAQ    (DI)(DX*1), R9              // R9 = haystack end pointer
 
 loop16:
-	// Check if we have at least 16 bytes remaining
-	LEAQ    16(SI), R10                 // R10 = SI + 16
-	CMPQ    R10, R9                     // Compare with adjusted end pointer
+	// Check if we have at least 16 bytes remaining from cur
+	LEAQ    16(SI), R10                 // R10 = cur + 16
+	CMPQ    R10, R9                     // Compare with end pointer
 	JA      handle_tail                 // If R10 > R9, less than 16 bytes left
 
-	// Load 16 bytes from haystack and broadcast to both lanes
-	// VBROADCASTI128: loads 16 bytes and duplicates to both 128-bit lanes
-	VBROADCASTI128 (SI), Y3             // Y3 = haystack[SI:SI+16] in both lanes
-	VBROADCASTI128 1(SI), Y10           // Y10 = haystack[SI+1:SI+17] in both lanes
+	// Load 16 bytes from cur and broadcast to both 128-bit lanes
+	VBROADCASTI128 (SI), Y3             // Y3 = chunk (16 bytes duplicated)
 
-	// === Process position 0 ===
-	// Extract low nibbles: Y3 & 0x0F
+	// === Compute res0 = masks[0] lookup ===
+	// Extract low nibbles: chunk & 0x0F
 	VPAND   Y2, Y3, Y4                  // Y4 = low nibbles
 
-	// Extract high nibbles: (Y3 >> 4) & 0x0F
-	VPSRLW  $4, Y3, Y5                  // Shift right 4 bits
+	// Extract high nibbles: (chunk >> 4) & 0x0F
+	VPSRLW  $4, Y3, Y5                  // Shift right 4 bits (within 16-bit words)
 	VPAND   Y2, Y5, Y5                  // Y5 = high nibbles
 
-	// VPSHUFB lookups for position 0
-	// Low lane uses loMasks bytes 0-15, high lane uses bytes 16-31
-	VPSHUFB Y4, Y0, Y6                  // Y6 = lo lookup results
-	VPSHUFB Y5, Y1, Y7                  // Y7 = hi lookup results
-	VPAND   Y7, Y6, Y6                  // Y6 = position 0 candidate mask
+	// VPSHUFB lookups for masks[0]
+	VPSHUFB Y4, Y0, Y6                  // Y6 = loMasks[0][low_nibbles]
+	VPSHUFB Y5, Y1, Y10                 // Y10 = hiMasks[0][high_nibbles]
+	VPAND   Y10, Y6, Y6                 // Y6 = res0 (position 0 candidates)
 
-	// === Process position 1 ===
-	// Extract low nibbles
-	VPAND   Y2, Y10, Y4                 // Y4 = low nibbles
+	// === Compute res1 = masks[1] lookup ===
+	// Use same nibbles (Y4, Y5) since same chunk
+	VPSHUFB Y4, Y8, Y10                 // Y10 = loMasks[1][low_nibbles]
+	VPSHUFB Y5, Y9, Y11                 // Y11 = hiMasks[1][high_nibbles]
+	VPAND   Y11, Y10, Y10               // Y10 = res1 (position 1 candidates)
 
-	// Extract high nibbles
-	VPSRLW  $4, Y10, Y5                 // Shift right 4 bits
-	VPAND   Y2, Y5, Y5                  // Y5 = high nibbles
+	// === half_shift_in_one_byte: VPALIGNR(res0, prev0, 15) ===
+	// This shifts res0 right by 1 byte within each 128-bit lane,
+	// bringing in the last byte from prev0
+	VPALIGNR $15, Y7, Y6, Y11           // Y11 = res0 shifted right by 1 with prev0
 
-	// VPSHUFB lookups for position 1
-	VPSHUFB Y4, Y8, Y11                 // Y11 = lo lookup results
-	VPSHUFB Y5, Y9, Y12                 // Y12 = hi lookup results
-	VPAND   Y12, Y11, Y11               // Y11 = position 1 candidate mask
+	// Update prev0 for next iteration
+	VMOVDQA Y6, Y7                      // prev0 = res0
 
-	// === Combine both positions ===
-	VPAND   Y11, Y6, Y6                 // Y6 = pos0 & pos1 (both positions must match)
+	// === Combine: res = res0_shifted AND res1 ===
+	VPAND   Y10, Y11, Y6                // Y6 = final candidates
 
-	// Now Y6 has the combined results:
-	// - Low lane (Y6[0:16]): candidate bits for buckets 0-7
-	// - High lane (Y6[16:32]): candidate bits for buckets 8-15
+	// === Check for non-zero bytes ===
+	// In Fat Teddy, each byte position has an 8-bit bucket mask
+	// Low lane (bytes 0-15): buckets 0-7
+	// High lane (bytes 16-31): buckets 8-15 (same position, different buckets)
 	//
-	// We need to interleave these to create 16-bit bucket masks per position.
-	// For position i in 0..15:
-	//   bucket_mask[i] = (Y6[16+i] << 8) | Y6[i]
-	//
-	// Use VPERM2I128 to get lanes in order, then VPUNPCKLBW to interleave.
+	// We need to find first position where BOTH lanes have non-zero bytes
+	// A match at position i means: Y6[i] != 0 AND Y6[16+i] != 0
 
-	// Swap lanes: Y13[0:16] = Y6[16:32], Y13[16:32] = Y6[0:16]
-	VPERM2I128 $0x01, Y6, Y6, Y13       // Y13 = swapped lanes
+	// Check if any byte is non-zero in low lane
+	VPXOR   Y12, Y12, Y12               // Y12 = zero
+	VPCMPEQB Y12, Y6, Y13               // Y13[i] = 0xFF if Y6[i] == 0, else 0
+	VPMOVMSKB Y13, CX                   // CX = byte mask (1 = zero, 0 = non-zero)
+	NOTL    CX                          // CX = inverted (1 = non-zero)
 
-	// Interleave low bytes: result[2i] = Y6[i], result[2i+1] = Y13[i]
-	// This creates 16-bit values where low byte is from buckets 0-7, high byte from 8-15
-	VPUNPCKLBW Y13, Y6, Y14             // Y14 = interleaved (first 16 positions)
+	// Low 16 bits = positions 0-15 in low lane
+	// High 16 bits = positions 0-15 in high lane (buckets 8-15)
+	MOVL    CX, AX
+	ANDL    $0xFFFF, AX                 // AX = low lane mask
+	SHRL    $16, CX                     // CX = high lane mask
 
-	// Check if any 16-bit words in Y14 are non-zero
-	// Extract mask from low 128 bits (covers positions 0-7)
-	VPXOR   Y15, Y15, Y15               // Y15 = zero
-	VPCMPEQW Y15, Y14, Y15              // Y15[i] = 0xFFFF if Y14[i]==0, else 0
-	VPMOVMSKB Y15, CX                   // CX = byte mask (2 bits per position)
-	XORL    $0xFFFFFFFF, CX             // Invert: 1 means NON-ZERO
+	// Both lanes must have non-zero for a valid candidate
+	ANDL    CX, AX                      // AX = positions with candidates in BOTH lanes
 
-	// Each 16-bit word produces 2 bits in the mask
-	// Positions 0-7 are in bits 0-15 of CX
-	// We need to check if any word is non-zero
-	ANDL    $0xFFFF, CX                 // Keep only low 16 bits (positions 0-7)
-
-	// Check if any candidates found
-	TESTL   CX, CX
+	TESTL   AX, AX
 	JNZ     found_candidate
 
-	// No candidates in this chunk, advance to next 16 bytes
+	// No candidates in this chunk, advance
 	ADDQ    $16, SI
 	JMP     loop16
 
 handle_tail:
-	// Add back the 1 we subtracted for overlap check
-	ADDQ    $1, R9
+	// Process remaining bytes one at a time using scalar code
+	// Reset prev0 logic doesn't matter for scalar
 
-	// Process remaining bytes with scalar loop
-	CMPQ    SI, R9
-	JAE     not_found
-
-	// Need at least 2 bytes for fingerprint
+tail_check:
+	// Need at least 2 bytes
 	LEAQ    1(SI), R10
 	CMPQ    R10, R9
 	JAE     not_found
 
 tail_loop:
 	// Load two consecutive bytes
-	MOVBLZX (SI), AX                    // AX = byte at position 0
-	MOVBLZX 1(SI), R10                  // R10 = byte at position 1
+	MOVBLZX (SI), AX                    // AX = byte at position i
+	MOVBLZX 1(SI), R10                  // R10 = byte at position i+1
 
-	// === Position 0 lookup (buckets 0-7) ===
+	// === Position 0 lookup ===
+	// Buckets 0-7 (loMasks[0][0:16], hiMasks[0][0:16])
 	MOVL    AX, BX
 	ANDL    $0x0F, BX                   // BX = low nibble
 	MOVL    AX, CX
 	SHRL    $4, CX
 	ANDL    $0x0F, CX                   // CX = high nibble
 
-	// Lookup in buckets 0-7 (loMasks[0][0:16] and hiMasks[0][0:16])
-	MOVBLZX 8(R8)(BX*1), AX             // AX = loMasks[0][low] (buckets 0-7)
-	MOVBLZX 136(R8)(CX*1), CX           // CX = hiMasks[0][high] (buckets 0-7)
-	ANDL    CX, AX                      // AX = pos0 bucket bits (low 8)
+	MOVBLZX 8(R8)(BX*1), R11            // R11 = loMasks[0][low]
+	MOVBLZX 136(R8)(CX*1), R12          // R12 = hiMasks[0][high]
+	ANDL    R12, R11                    // R11 = pos0 buckets 0-7
 
-	// === Position 0 lookup (buckets 8-15) ===
-	MOVBLZX (SI), R11                   // Reload byte
-	MOVL    R11, BX
-	ANDL    $0x0F, BX                   // BX = low nibble
-	MOVL    R11, CX
-	SHRL    $4, CX
-	ANDL    $0x0F, CX                   // CX = high nibble
+	// Buckets 8-15 (loMasks[0][16:32], hiMasks[0][16:32])
+	MOVBLZX 24(R8)(BX*1), R12           // R12 = loMasks[0][16+low]
+	MOVBLZX 152(R8)(CX*1), R13          // R13 = hiMasks[0][16+high]
+	ANDL    R13, R12                    // R12 = pos0 buckets 8-15
+	SHLL    $8, R12
+	ORL     R12, R11                    // R11 = 16-bit pos0 mask
 
-	MOVBLZX 24(R8)(BX*1), BX            // BX = loMasks[0][16+low] (buckets 8-15)
-	MOVBLZX 152(R8)(CX*1), CX           // CX = hiMasks[0][16+high] (buckets 8-15)
-	ANDL    CX, BX                      // BX = pos0 bucket bits (high 8)
-	SHLL    $8, BX                      // Shift to high byte
-	ORL     BX, AX                      // AX = 16-bit pos0 bucket mask
-
-	// === Position 1 lookup (buckets 0-7) ===
+	// === Position 1 lookup ===
 	MOVL    R10, BX
 	ANDL    $0x0F, BX                   // BX = low nibble
 	MOVL    R10, CX
 	SHRL    $4, CX
 	ANDL    $0x0F, CX                   // CX = high nibble
 
-	MOVBLZX 40(R8)(BX*1), R11           // R11 = loMasks[1][low] (buckets 0-7)
-	MOVBLZX 168(R8)(CX*1), CX           // CX = hiMasks[1][high] (buckets 0-7)
-	ANDL    CX, R11                     // R11 = pos1 bucket bits (low 8)
+	// Buckets 0-7
+	MOVBLZX 40(R8)(BX*1), R12           // R12 = loMasks[1][low]
+	MOVBLZX 168(R8)(CX*1), R13          // R13 = hiMasks[1][high]
+	ANDL    R13, R12                    // R12 = pos1 buckets 0-7
 
-	// === Position 1 lookup (buckets 8-15) ===
-	MOVBLZX 1(SI), R12                  // Reload byte
-	MOVL    R12, BX
-	ANDL    $0x0F, BX                   // BX = low nibble
-	MOVL    R12, CX
-	SHRL    $4, CX
-	ANDL    $0x0F, CX                   // CX = high nibble
+	// Buckets 8-15
+	MOVBLZX 56(R8)(BX*1), R13           // R13 = loMasks[1][16+low]
+	MOVBLZX 184(R8)(CX*1), R14          // R14 = hiMasks[1][16+high]
+	ANDL    R14, R13                    // R13 = pos1 buckets 8-15
+	SHLL    $8, R13
+	ORL     R13, R12                    // R12 = 16-bit pos1 mask
 
-	MOVBLZX 56(R8)(BX*1), BX            // BX = loMasks[1][16+low] (buckets 8-15)
-	MOVBLZX 184(R8)(CX*1), CX           // CX = hiMasks[1][16+high] (buckets 8-15)
-	ANDL    CX, BX                      // BX = pos1 bucket bits (high 8)
-	SHLL    $8, BX                      // Shift to high byte
-	ORL     BX, R11                     // R11 = 16-bit pos1 bucket mask
+	// Combine pos0 and pos1
+	ANDL    R12, R11                    // R11 = 16-bit combined mask
 
-	// === Combine ===
-	ANDL    R11, AX                     // AX = pos0 & pos1 (16-bit)
-
-	// Check if any bucket matched
-	TESTL   AX, AX
+	TESTL   R11, R11
 	JNZ     found_scalar
 
-	// Advance to next byte
+	// Next position
 	INCQ    SI
 	LEAQ    1(SI), R10
 	CMPQ    R10, R9
 	JB      tail_loop
 
 not_found:
-	// No candidate found
-	MOVQ    $-1, AX
-	MOVQ    AX, pos+32(FP)
+	MOVQ    $-1, pos+32(FP)
 	MOVW    $0, bucketMask+40(FP)
-	VZEROUPPER                          // CRITICAL: Required before RET after AVX2 usage
+	VZEROUPPER
 	RET
 
 found_candidate:
-	// Candidate found! CX contains mask where pairs of bits indicate non-zero words.
-	// Each position uses 2 bits in the mask (because VPMOVMSKB extracts byte masks).
-	// Position i is non-zero if bits 2i and 2i+1 are set.
-	//
-	// Find first position with non-zero word:
-	// - BSFL finds lowest set bit
-	// - Divide by 2 to get word position
+	// AX contains mask of positions with candidates
+	// Find first set bit
+	BSFL    AX, BX                      // BX = first position with candidate
 
-	BSFL    CX, AX                      // AX = lowest set bit position
-	SHRL    $1, AX                      // AX = word position (0-7)
+	// Calculate absolute position: (cur - start - 1) + BX
+	// Note: we started at start+1, so actual match position is cur-1+BX relative to start
+	MOVQ    SI, AX
+	SUBQ    DI, AX                      // AX = cur - start
+	DECQ    AX                          // AX = cur - start - 1 (because we're at position after the match byte)
+	ADDQ    BX, AX                      // AX = absolute position
 
-	// Save chunk start for byte lookup
-	MOVQ    SI, R10
+	// Extract 16-bit bucket mask at position BX
+	// Need to read Y6[BX] (buckets 0-7) and Y6[16+BX] (buckets 8-15)
+	// Use scalar reload from haystack
+	ADDQ    DI, BX                      // BX = absolute pointer to match position
+	SUBQ    $1, BX                      // Adjust for the -1 in position calc
+	ADDQ    AX, DI                      // DI = pointer to match position
 
-	// Calculate absolute position in haystack
-	SUBQ    DI, SI                      // SI = chunk offset from haystack start
-	ADDQ    SI, AX                      // AX = absolute position
+	// Reload bytes at match position for bucket mask calculation
+	MOVBLZX (DI), R10                   // R10 = first byte
+	MOVBLZX 1(DI), R11                  // R11 = second byte
 
-	// Extract the 16-bit bucket mask at the found position
-	// The bucket mask is in Y14 at word position (AX - SI) = original word index
-	MOVQ    AX, R11
-	SUBQ    SI, R11                     // R11 = word position within chunk (0-7)
+	// Position 0 bucket mask
+	MOVL    R10, BX
+	ANDL    $0x0F, BX
+	MOVL    R10, CX
+	SHRL    $4, CX
+	ANDL    $0x0F, CX
 
-	// Load 16-bit bucket mask from the result vector
-	// Each word in Y14 is a 16-bit bucket mask
-	// Position R11 * 2 bytes into the vector
-	SHLL    $1, R11                     // R11 = byte offset (word * 2)
+	MOVBLZX 8(R8)(BX*1), R12
+	MOVBLZX 136(R8)(CX*1), R13
+	ANDL    R13, R12                    // R12 = pos0 buckets 0-7
 
-	// Extract word from Y14 - need to do scalar reload since we can't easily index YMM
-	// Reload and compute bucket mask directly from haystack bytes
-	MOVBLZX (R10)(AX*1), BX             // BX = byte at position 0 (relative to chunk)
-	// Correction: AX now has absolute position, need chunk-relative offset
-	MOVQ    AX, R12
-	ADDQ    DI, R12                     // R12 = absolute pointer
-	SUBQ    R10, R12                    // R12 = offset from chunk start
-	MOVBLZX (R10)(R12*1), BX            // BX = byte at pos0
+	MOVBLZX 24(R8)(BX*1), R13
+	MOVBLZX 152(R8)(CX*1), R14
+	ANDL    R14, R13
+	SHLL    $8, R13
+	ORL     R13, R12                    // R12 = 16-bit pos0 mask
 
-	// Position 0 bucket mask (buckets 0-7)
-	MOVL    BX, CX
-	ANDL    $0x0F, CX                   // CX = low nibble
-	MOVL    BX, R13
-	SHRL    $4, R13
-	ANDL    $0x0F, R13                  // R13 = high nibble
+	// Position 1 bucket mask
+	MOVL    R11, BX
+	ANDL    $0x0F, BX
+	MOVL    R11, CX
+	SHRL    $4, CX
+	ANDL    $0x0F, CX
 
-	MOVBLZX 8(R8)(CX*1), CX             // CX = loMasks[0][low]
-	MOVBLZX 136(R8)(R13*1), R13         // R13 = hiMasks[0][high]
-	ANDL    R13, CX                     // CX = pos0 buckets 0-7
-
-	// Position 0 bucket mask (buckets 8-15)
-	MOVL    BX, R13
-	ANDL    $0x0F, R13                  // R13 = low nibble
-	MOVL    BX, R14
-	SHRL    $4, R14
-	ANDL    $0x0F, R14                  // R14 = high nibble
-
-	MOVBLZX 24(R8)(R13*1), R13          // R13 = loMasks[0][16+low]
-	MOVBLZX 152(R8)(R14*1), R14         // R14 = hiMasks[0][16+high]
-	ANDL    R14, R13                    // R13 = pos0 buckets 8-15
-	SHLL    $8, R13                     // Shift to high byte
-	ORL     R13, CX                     // CX = 16-bit pos0 mask
-
-	// Position 1 byte
-	MOVBLZX 1(R10)(R12*1), BX           // BX = byte at pos1
-
-	// Position 1 bucket mask (buckets 0-7)
-	MOVL    BX, R13
-	ANDL    $0x0F, R13                  // R13 = low nibble
-	MOVL    BX, R14
-	SHRL    $4, R14
-	ANDL    $0x0F, R14                  // R14 = high nibble
-
-	MOVBLZX 40(R8)(R13*1), R13          // R13 = loMasks[1][low]
-	MOVBLZX 168(R8)(R14*1), R14         // R14 = hiMasks[1][high]
+	MOVBLZX 40(R8)(BX*1), R13
+	MOVBLZX 168(R8)(CX*1), R14
 	ANDL    R14, R13                    // R13 = pos1 buckets 0-7
 
-	// Position 1 bucket mask (buckets 8-15)
-	MOVL    BX, R14
-	ANDL    $0x0F, R14                  // R14 = low nibble
-	MOVL    BX, R15
-	SHRL    $4, R15
-	ANDL    $0x0F, R15                  // R15 = high nibble
-
-	MOVBLZX 56(R8)(R14*1), R14          // R14 = loMasks[1][16+low]
-	MOVBLZX 184(R8)(R15*1), R15         // R15 = hiMasks[1][16+high]
-	ANDL    R15, R14                    // R14 = pos1 buckets 8-15
-	SHLL    $8, R14                     // Shift to high byte
+	MOVBLZX 56(R8)(BX*1), R14
+	MOVBLZX 184(R8)(CX*1), R15
+	ANDL    R15, R14
+	SHLL    $8, R14
 	ORL     R14, R13                    // R13 = 16-bit pos1 mask
 
-	// Combine pos0 and pos1
-	ANDL    R13, CX                     // CX = final 16-bit bucket mask
+	// Combine
+	ANDL    R13, R12                    // R12 = final 16-bit bucket mask
 
-	// Return results
-	MOVQ    AX, pos+32(FP)              // Return position
-	MOVW    CX, bucketMask+40(FP)       // Return 16-bit bucket mask
-	VZEROUPPER                          // CRITICAL: Required before RET
+	MOVQ    AX, pos+32(FP)
+	MOVW    R12, bucketMask+40(FP)
+	VZEROUPPER
 	RET
 
 found_scalar:
 	// Calculate position
-	SUBQ    DI, SI
+	SUBQ    DI, SI                      // SI = position relative to start
 
-	// Return results
 	MOVQ    SI, pos+32(FP)
-	MOVW    AX, bucketMask+40(FP)       // Return 16-bit bucket mask
-	VZEROUPPER                          // CRITICAL: Required before RET
+	MOVW    R11, bucketMask+40(FP)
+	VZEROUPPER
 	RET

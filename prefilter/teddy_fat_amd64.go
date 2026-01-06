@@ -32,11 +32,6 @@ func fatTeddyAVX2_2(masks *fatTeddyMasks, haystack []byte) (pos int, bucketMask 
 // Returns (position, bucketMask) or (-1, 0) if no candidate found.
 // bucketMask is 16-bit (16 buckets).
 func (t *FatTeddy) findSIMD(haystack []byte) (pos int, bucketMask uint16) {
-	// TODO: Enable AVX2 once assembly is debugged
-	// Currently using scalar fallback while we fix the AVX2 assembly
-	return t.findScalarCandidate(haystack)
-
-	/* AVX2 path disabled for debugging
 	// Check CPU support (hasAVX2 is defined in teddy_ssse3_amd64.go)
 	if !hasAVX2 {
 		return t.findScalarCandidate(haystack)
@@ -55,5 +50,4 @@ func (t *FatTeddy) findSIMD(haystack []byte) (pos int, bucketMask uint16) {
 		// Fall back to scalar
 		return t.findScalarCandidate(haystack)
 	}
-	*/
 }
