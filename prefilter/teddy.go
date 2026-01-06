@@ -321,7 +321,8 @@ func (t *Teddy) Find(haystack []byte, start int) int {
 
 	// Use SIMD search (SSSE3)
 	// Returns (candidate_position_relative_to_haystack, bucket_id)
-	// Note: bucket_id is just the first bucket found by BSFL, but verify() checks all buckets
+	// Note: bucket is currently unused - SIMD returns only first set bit via BSFL,
+	// but multiple buckets may be candidates. verify() recalculates the full mask.
 	pos, _ := t.findSIMD(haystack)
 
 	// Track accumulated offset for continuation searches
@@ -332,7 +333,9 @@ func (t *Teddy) Find(haystack []byte, start int) int {
 		// Calculate absolute position in current haystack slice
 		absolutePos := accumulatedOffset + pos
 
-		// Verify patterns at this position (checks all buckets)
+		// Verify patterns at this position
+		// verify() recalculates the candidate mask to check ALL matching buckets,
+		// not just the first one returned by SIMD's BSFL instruction.
 		matchPos, _ := t.verify(haystack[accumulatedOffset:], pos)
 		if matchPos != -1 {
 			// Match found! Return absolute position
@@ -377,6 +380,7 @@ func (t *Teddy) FindMatch(haystack []byte, start int) (int, int) {
 	}
 
 	// Use SIMD search (SSSE3)
+	// Note: bucket is currently unused - see comment in Find()
 	pos, _ := t.findSIMD(haystack)
 
 	// Track accumulated offset for continuation searches
@@ -387,7 +391,8 @@ func (t *Teddy) FindMatch(haystack []byte, start int) (int, int) {
 		// Calculate absolute position in current haystack slice
 		absolutePos := accumulatedOffset + pos
 
-		// Verify patterns at this position (checks all buckets)
+		// Verify patterns at this position
+		// verify() recalculates the candidate mask to check ALL matching buckets
 		matchPos, patternID := t.verify(haystack[accumulatedOffset:], pos)
 		if matchPos != -1 && patternID >= 0 && patternID < len(t.patterns) {
 			// Match found! Return absolute start and end
@@ -537,6 +542,37 @@ func (t *Teddy) verify(haystack []byte, pos int) (int, int) {
 	}
 
 	return -1, -1 // No match in any bucket
+}
+
+// verifyBucket checks if any pattern in the specified bucket matches at the given position.
+//
+// This follows Rust's aho-corasick Teddy implementation which only checks patterns
+// in the SIMD-indicated bucket. SIMD uses BSFL to find the first set bit in the
+// candidate mask, giving us the exact bucket to check.
+//
+// Reference: BurntSushi/aho-corasick src/packed/teddy/generic.rs verify_bucket()
+//
+// Performance: Eliminates mask recalculation overhead present in verify().
+//
+// Returns (match_position, pattern_id) or (-1, -1) if no match.
+func (t *Teddy) verifyBucket(haystack []byte, pos int, bucket int) (int, int) {
+	// Bounds check
+	if pos < 0 || pos >= len(haystack) {
+		return -1, -1
+	}
+
+	// Check patterns ONLY in the SIMD-indicated bucket (Rust behavior)
+	if bucket >= 0 && bucket < len(t.buckets) {
+		for _, patternID := range t.buckets[bucket] {
+			pattern := t.patterns[patternID]
+			end := pos + len(pattern)
+			if end <= len(haystack) && bytes.Equal(haystack[pos:end], pattern) {
+				return pos, patternID
+			}
+		}
+	}
+
+	return -1, -1
 }
 
 // IsComplete implements Prefilter.IsComplete.
