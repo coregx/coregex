@@ -411,16 +411,27 @@ func isDigitLeadPattern(re *syntax.Regexp) bool {
 	}
 }
 
+// digitPrefilterMaxNFAStates is the maximum NFA state count for using digit prefilter.
+// Set to 100 to include IP patterns (74 states) - digit prefilter + sliced haystack
+// optimization provides good speedup by skipping non-digit positions.
+const digitPrefilterMaxNFAStates = 100
+
 // shouldUseDigitPrefilter checks if the pattern should use digit prefilter optimization.
 // Returns true if:
 //   - Pattern must start with a digit [0-9]
 //   - DFA and prefilter are enabled
+//   - Pattern is not too complex (NFA states <= digitPrefilterMaxNFAStates)
 //   - Pattern is suitable for SIMD digit scanning
 //
-// This is used for patterns like IP addresses where alternation structure
-// prevents literal extraction, but all branches must start with a digit.
-func shouldUseDigitPrefilter(re *syntax.Regexp, config Config) bool {
+// This is used for simple digit-lead patterns where SIMD scanning is beneficial.
+// Complex patterns like IP addresses (74 NFA states) should use plain DFA because
+// the per-position verification overhead exceeds the SIMD scanning benefit.
+func shouldUseDigitPrefilter(re *syntax.Regexp, nfaSize int, config Config) bool {
 	if re == nil || !config.EnableDFA || !config.EnablePrefilter {
+		return false
+	}
+	// Complex patterns have too much DFA overhead per digit position
+	if nfaSize > digitPrefilterMaxNFAStates {
 		return false
 	}
 	return isDigitLeadPattern(re)
@@ -781,9 +792,9 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseDFA
 	}
 
-	// Check for digit-lead patterns (like IP addresses) that have no extractable literals.
-	// Delegated to helper function to reduce cyclomatic complexity.
-	if shouldUseDigitPrefilter(re, config) {
+	// Check for simple digit-lead patterns that have no extractable literals.
+	// Complex digit-lead patterns (like IP with 74 states) use plain DFA.
+	if shouldUseDigitPrefilter(re, nfaSize, config) {
 		return UseDigitPrefilter
 	}
 

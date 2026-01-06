@@ -14,6 +14,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.2] - 2026-01-06
+
+### Changed
+- **Simplified DigitPrefilter** - removed adaptive switching overhead
+  - Problem: Adaptive FP tracking added ~50ms overhead on large data
+  - Solution: Remove runtime tracking, use NFA state limit instead
+  - New constant: `digitPrefilterMaxNFAStates = 100` (simple patterns only)
+  - Complex patterns (IP with 74 states) now use plain DFA strategy
+
+### Performance
+- **IP pattern: 146x faster** (731ms → 5ms on 6MB data)
+- All other patterns: 1.2-2.1x faster (reduced overhead)
+- No regressions on small data
+
+| Pattern | v0.9.1 | v0.9.2 | Speedup |
+|---------|--------|--------|---------|
+| ip | 731ms | 5ms | **146x** |
+| char_class | 183ms | 113ms | **1.6x** |
+| literal_alt | 61ms | 29ms | **2.1x** |
+
+---
+
 ## [0.9.1] - 2026-01-05
 
 ### Fixed

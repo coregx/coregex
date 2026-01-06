@@ -572,6 +572,109 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 	return -1, -1, false
 }
 
+// SearchBetween finds the first match in the range [startAt, maxEnd] of haystack.
+// This is an optimization for cases where we know the match ends at or before maxEnd
+// (e.g., after DFA found the end position). It avoids scanning the full haystack.
+//
+// Parameters:
+//   - haystack: the input byte slice
+//   - startAt: minimum position to start searching
+//   - maxEnd: maximum position where match can end (exclusive for search, inclusive for match)
+//
+// Returns (start, end, found) where start >= startAt and end <= maxEnd.
+//
+// Performance: O(maxEnd - startAt) instead of O(len(haystack) - startAt).
+func (p *PikeVM) SearchBetween(haystack []byte, startAt, maxEnd int) (int, int, bool) {
+	if startAt > len(haystack) || startAt >= maxEnd {
+		return -1, -1, false
+	}
+
+	// Clamp maxEnd to haystack length
+	if maxEnd > len(haystack) {
+		maxEnd = len(haystack)
+	}
+
+	if p.nfa.IsAnchored() {
+		// Anchored mode: only try at startAt position
+		start, end, matched := p.searchAt(haystack[:maxEnd], startAt)
+		return start, end, matched
+	}
+
+	// Unanchored mode: parallel NFA simulation limited to [startAt, maxEnd]
+	return p.searchUnanchoredBetween(haystack, startAt, maxEnd)
+}
+
+// searchUnanchoredBetween implements Thompson's parallel NFA simulation for bounded search.
+// It's identical to searchUnanchoredAt but stops at maxEnd instead of len(haystack).
+func (p *PikeVM) searchUnanchoredBetween(haystack []byte, startAt, maxEnd int) (int, int, bool) {
+	// Reset state
+	p.queue = p.queue[:0]
+	p.nextQueue = p.nextQueue[:0]
+	p.visited.Clear()
+
+	// Track leftmost-first match (with priority for alternation)
+	bestStart := -1
+	bestEnd := -1
+	var bestPriority uint32
+
+	// Check if NFA is anchored at start (e.g., reverse NFA for $ patterns)
+	isAnchored := p.nfa.IsAnchored()
+
+	// Process each byte position, stopping at maxEnd instead of len(haystack)
+	for pos := startAt; pos <= maxEnd; pos++ {
+		// Add new start thread at current position (simulates .*? prefix)
+		if bestStart == -1 && (!isAnchored || pos == 0) {
+			p.visited.Clear()
+			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, priority: 0}, haystack, pos)
+		}
+
+		// Check for matches in current generation
+		for _, t := range p.queue {
+			if p.nfa.IsMatch(t.state) && p.isBetterMatch(bestStart, bestEnd, bestPriority, t.startPos, pos, t.priority) {
+				bestStart = t.startPos
+				bestEnd = pos
+				bestPriority = t.priority
+			}
+		}
+
+		// If at boundary, stop
+		if pos >= maxEnd || pos >= len(haystack) {
+			break
+		}
+
+		// If we have a match and no threads could produce a leftmost match, stop early
+		if bestStart != -1 {
+			hasLeftmostCandidate := false
+			for _, t := range p.queue {
+				if t.startPos <= bestStart {
+					hasLeftmostCandidate = true
+					break
+				}
+			}
+			if !hasLeftmostCandidate {
+				break
+			}
+		}
+
+		// Process current byte for all active threads
+		if len(p.queue) > 0 {
+			b := haystack[pos]
+			p.visited.Clear()
+			for _, t := range p.queue {
+				p.step(t, b, haystack, pos+1)
+			}
+		}
+
+		// Swap queues for next iteration
+		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+	}
+
+	if bestStart != -1 {
+		return bestStart, bestEnd, true
+	}
+	return -1, -1, false
+}
+
 // SearchWithCaptures finds the first match with capture group positions.
 // Returns nil if no match is found.
 func (p *PikeVM) SearchWithCaptures(haystack []byte) *MatchWithCaptures {

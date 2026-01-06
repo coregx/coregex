@@ -59,18 +59,18 @@ func main() {
 
 Cross-language benchmarks on 6MB input ([source](https://github.com/kolkov/regex-bench)):
 
-| Pattern | Go stdlib | coregex | Rust regex | vs stdlib |
-|---------|-----------|---------|------------|-----------|
-| IP validation | 493 ms | 3.2 ms | 12 ms | **154x** |
-| Inner `.*keyword.*` | 231 ms | 1.9 ms | 0.6 ms | **122x** |
-| Suffix `.*\.txt` | 233 ms | 1.8 ms | 1.4 ms | **127x** |
-| Literal alternation | 473 ms | 4.2 ms | 0.7 ms | **113x** |
-| Email validation | 259 ms | 1.7 ms | 1.3 ms | **155x** |
-| URL extraction | 266 ms | 2.8 ms | 0.9 ms | **96x** |
-| Char class `[\w]+` | 525 ms | 119 ms | 52 ms | **4.4x** |
+| Pattern | Go stdlib | coregex | vs stdlib |
+|---------|-----------|---------|-----------|
+| IP validation | 600 ms | 5 ms | **120x** |
+| Inner `.*keyword.*` | 408 ms | 3 ms | **136x** |
+| Suffix `.*\.txt` | 441 ms | 2 ms | **220x** |
+| Literal alternation | 435 ms | 29 ms | **15x** |
+| Email validation | 352 ms | 2 ms | **176x** |
+| URL extraction | 319 ms | 2 ms | **160x** |
+| Char class `[\w]+` | 932 ms | 113 ms | **8x** |
 
 **Where coregex excels:**
-- IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — SIMD digit prefilter, **2.7x faster than Rust!**
+- IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — optimized DFA strategy
 - Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search optimization
 - Inner literals (`.*error.*`, `.*@example\.com`) — bidirectional DFA
 - Multi-pattern (`foo|bar|baz|...`) — Teddy (≤8) or Aho-Corasick (>8 patterns)
@@ -83,13 +83,12 @@ coregex automatically selects the optimal engine:
 
 | Strategy | Pattern Type | Speedup |
 |----------|--------------|---------|
-| ReverseInner | `.*keyword.*` | 1000-3000x |
-| DigitPrefilter | IP patterns `\d+\.\d+\.\d+\.\d+` | 40-2500x |
-| ReverseSuffix | `.*\.txt` | 100-400x |
+| ReverseInner | `.*keyword.*` | 100-200x |
+| ReverseSuffix | `.*\.txt` | 100-220x |
+| LazyDFA | IP, complex patterns | 10-150x |
 | AhoCorasick | `a\|b\|c\|...\|z` (>8 patterns) | 75-113x |
-| CharClassSearcher | `[\w]+`, `\d+` | 20-25x |
+| CharClassSearcher | `[\w]+`, `\d+` | 4-25x |
 | Teddy | `foo\|bar\|baz` (2-8 patterns) | 15-240x |
-| LazyDFA | Complex with literals | 10-50x |
 | OnePass | Anchored captures | 10x |
 | BoundedBacktracker | Small patterns | 2-5x |
 
