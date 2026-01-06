@@ -454,3 +454,34 @@ func (t *FatTeddy) HeapBytes() int {
 
 	return heapBytes
 }
+
+// MinimumLen returns the minimum haystack length for efficient SIMD search.
+//
+// For haystacks smaller than this, the SIMD setup overhead exceeds the benefit.
+// Callers should use a fallback strategy (like Aho-Corasick) for small inputs.
+//
+// This follows Rust regex's minimum_len() approach:
+//   - AVX2 processes 32 bytes per iteration
+//   - With 2-byte fingerprint, minimum is 32 + 1 = 33 bytes
+//   - We use 64 as conservative threshold based on benchmarks showing
+//     Aho-Corasick is ~2x faster than Fat Teddy on ~37 byte inputs
+//
+// Reference: rust-aho-corasick/src/packed/teddy/builder.rs:585
+func (t *FatTeddy) MinimumLen() int {
+	// Conservative threshold: Aho-Corasick beats Fat Teddy below this size.
+	// Benchmarks: 37-byte haystack with 50 patterns:
+	//   Fat Teddy: ~267 ns, Aho-Corasick: ~130 ns
+	return 64
+}
+
+// PatternCount returns the number of patterns in this Fat Teddy searcher.
+// Used by meta-engine to build appropriate fallback strategy.
+func (t *FatTeddy) PatternCount() int {
+	return len(t.patterns)
+}
+
+// Patterns returns the patterns stored in this Fat Teddy searcher.
+// Used by meta-engine to build Aho-Corasick fallback for small haystacks.
+func (t *FatTeddy) Patterns() [][]byte {
+	return t.patterns
+}

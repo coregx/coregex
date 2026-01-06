@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Pure Go scalar fallback for non-AVX2 platforms
   - Algorithm from Rust aho-corasick `generic.rs` Fat<V, 2> implementation
 
+- **Aho-Corasick fallback for small haystacks with Fat Teddy**
+  - Fat Teddy's AVX2 SIMD has setup overhead slower than Aho-Corasick on small inputs
+  - Automatic fallback for haystacks < 64 bytes (threshold based on benchmarks)
+  - 2.4x faster on 37-byte haystacks with 50 patterns (267ns → 110ns)
+  - Follows Rust regex's `minimum_len()` approach (`builder.rs:585`)
+
 ### Technical Details
 - **fatTeddyMasks struct**: 32-byte SIMD masks (256-bit AVX2 vectors)
   - Low lane (bytes 0-15): buckets 0-7
@@ -43,10 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | 70 | Aho-Corasick | 152 MB/s | baseline |
 
 ### Files
-- `prefilter/teddy_fat.go` - Fat Teddy core implementation
+- `prefilter/teddy_fat.go` - Fat Teddy core implementation + MinimumLen()
 - `prefilter/teddy_fat_amd64.go` - AVX2 dispatch
 - `prefilter/teddy_avx2_amd64.s` - AVX2 assembly (~300 lines)
+- `meta/meta.go` - Aho-Corasick fallback for small haystacks
 - `meta/strategy.go` - strategy selection update (32→Fat Teddy, >64→Aho-Corasick)
+- `meta/fat_teddy_fallback_test.go` - tests for fallback logic
 
 ---
 
