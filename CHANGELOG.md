@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Teddy pattern limit expanded from 8 to 32** (#67)
+  - Slim Teddy now handles up to 32 patterns (was 8)
+  - Strategy threshold updated: Aho-Corasick triggers at >32 patterns (was >8)
+  - Follows Rust aho-corasick architecture (Slim Teddy = 32, Fat Teddy = 64)
+
+### Fixed
+- **Literal extraction for factored prefixes** (#67)
+  - Problem: `syntax.Parse` factors `(Wanderlust|Weltanschauung)` → `W(anderlust|eltanschauung)`
+  - Extractor returned `["W" incomplete]` instead of full literals
+  - Caused wrong strategy selection: UseReverseSuffixSet instead of UseTeddy
+  - New function: `expandLiteralAlternate()` expands factored patterns back
+  - Benchmark fix: 376µs → 1.7µs (**220x faster**)
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
