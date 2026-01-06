@@ -14,6 +14,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.3] - 2026-01-06
+
+### Changed
+- **Teddy 2-byte fingerprint** - reduced false positives by ~90%
+  - Changed default from 1-byte to 2-byte fingerprint
+  - New SSSE3 assembly: `teddySlimSSSE3_2` in `prefilter/teddy_ssse3_amd64.s`
+  - 1-byte: ~25% false positive rate on typical text
+  - 2-byte: <0.5% false positive rate
+
+- **Strategy selection reorder** - DigitPrefilter prioritized for digit-lead patterns
+  - Moved DigitPrefilter check before tiny NFA fallback
+  - Added `isDigitLeadPattern()` helper to reject single-byte inner literals for digit patterns
+  - Prevents high-frequency literals (like `.`) from being used as inner search targets
+
+### Performance
+
+| Pattern | v0.9.2 | v0.9.3 | Change |
+|---------|--------|--------|--------|
+| literal_alt | 31ms | 8ms | **+4x faster** |
+| version | 8.2ms | 2ms | **+4x faster** |
+| IP | 3.9ms | 5.5ms | -43% (trade-off) |
+
+**Trade-off note**: IP pattern is 43% slower but remains **2.2x faster than Rust regex**.
+See #62 for future IP optimization research.
+
+---
+
 ## [0.9.2] - 2026-01-06
 
 ### Changed
