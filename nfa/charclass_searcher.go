@@ -214,31 +214,39 @@ func (s *CharClassSearcher) Count(haystack []byte) int {
 		return 0
 	}
 
+	// State machine approach: single pass, no function calls
+	const (
+		stateSearching = iota
+		stateMatching
+	)
+
 	count := 0
-	state := 0 // 0 = searching, 1 = matching
+	state := stateSearching
 	matchStart := 0
 	membership := &s.membership
 
 	for i := 0; i < n; i++ {
 		matches := membership[haystack[i]]
 
-		if state == 0 { // searching
+		switch state {
+		case stateSearching:
 			if matches {
 				matchStart = i
-				state = 1
+				state = stateMatching
 			}
-		} else { // matching
+
+		case stateMatching:
 			if !matches {
 				if i-matchStart >= s.minMatch {
 					count++
 				}
-				state = 0
+				state = stateSearching
 			}
 		}
 	}
 
 	// Handle match at end of input
-	if state == 1 && n-matchStart >= s.minMatch {
+	if state == stateMatching && n-matchStart >= s.minMatch {
 		count++
 	}
 

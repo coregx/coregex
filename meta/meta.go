@@ -1355,11 +1355,7 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 	pos := 0
 	lastMatchEnd := -1
 
-	for {
-		if n > 0 && len(results) >= n {
-			break
-		}
-
+	for n <= 0 || len(results) < n {
 		start, end, found := e.FindIndicesAt(haystack, pos)
 		if !found {
 			break
