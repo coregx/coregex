@@ -1319,6 +1319,78 @@ func (e *Engine) findIndicesCharClassSearcherAt(haystack []byte, at int) (int, i
 	return e.charClassSearcher.SearchAt(haystack, at)
 }
 
+// FindAllIndicesStreaming returns all non-overlapping match indices using streaming algorithm.
+// For CharClassSearcher strategy, this uses single-pass state machine which is significantly
+// faster than repeated FindIndicesAt calls (no per-match function call overhead).
+//
+// Returns slice of [2]int{start, end} pairs. Limit n (0=no limit) restricts match count.
+// The results slice is reused if provided (pass nil for fresh allocation).
+//
+// This method is optimized for patterns like \w+, \d+, [a-z]+ where matches are frequent.
+func (e *Engine) FindAllIndicesStreaming(haystack []byte, n int, results [][2]int) [][2]int {
+	// Only CharClassSearcher benefits from streaming - others use standard loop
+	if e.strategy != UseCharClassSearcher || e.charClassSearcher == nil {
+		return e.findAllIndicesLoop(haystack, n, results)
+	}
+
+	// Use streaming state machine for CharClassSearcher
+	allMatches := e.charClassSearcher.FindAllIndices(haystack, results)
+
+	// Apply limit if specified
+	if n > 0 && len(allMatches) > n {
+		return allMatches[:n]
+	}
+
+	return allMatches
+}
+
+// findAllIndicesLoop is the standard loop-based FindAll for non-streaming strategies.
+func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) [][2]int {
+	if results == nil {
+		results = make([][2]int, 0, len(haystack)/100+1)
+	} else {
+		results = results[:0]
+	}
+
+	pos := 0
+	lastMatchEnd := -1
+
+	for {
+		if n > 0 && len(results) >= n {
+			break
+		}
+
+		start, end, found := e.FindIndicesAt(haystack, pos)
+		if !found {
+			break
+		}
+
+		// Handle empty matches
+		if start == end {
+			if start == lastMatchEnd {
+				// Skip empty match right after previous match to avoid infinite loop
+				if pos < len(haystack) {
+					pos++
+				} else {
+					break
+				}
+				continue
+			}
+			pos = end
+			if pos < len(haystack) {
+				pos++
+			}
+		} else {
+			pos = end
+			lastMatchEnd = end
+		}
+
+		results = append(results, [2]int{start, end})
+	}
+
+	return results
+}
+
 // findTeddy searches using Teddy multi-pattern prefilter directly.
 // This is the "literal engine bypass" - for exact literal alternations like (foo|bar|baz),
 // Teddy.Find() returns complete matches without needing DFA/NFA verification.

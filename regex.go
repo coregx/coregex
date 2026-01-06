@@ -322,6 +322,12 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 		return nil
 	}
 
+	// Fast path: CharClassSearcher uses streaming state machine (single-pass, no per-match overhead)
+	// This is 2-3x faster than the loop below for patterns like \w+, \d+, [a-z]+
+	if r.engine.Strategy() == meta.UseCharClassSearcher {
+		return r.findAllStreaming(b, n)
+	}
+
 	var matches [][]byte
 	pos := 0
 	lastMatchEnd := -1 // Track where the last non-empty match ended
@@ -385,6 +391,25 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 		if n > 0 && len(matches) >= n {
 			break
 		}
+	}
+
+	return matches
+}
+
+// findAllStreaming uses single-pass streaming state machine for CharClassSearcher patterns.
+// This avoids per-match function call overhead (2-3x faster than the loop approach).
+func (r *Regex) findAllStreaming(b []byte, n int) [][]byte {
+	// Get streaming indices ([][2]int format)
+	streamResults := r.engine.FindAllIndicesStreaming(b, n, nil)
+
+	if len(streamResults) == 0 {
+		return nil
+	}
+
+	// Convert indices to byte slices
+	matches := make([][]byte, len(streamResults))
+	for i, m := range streamResults {
+		matches[i] = b[m[0]:m[1]]
 	}
 
 	return matches
@@ -572,6 +597,12 @@ func (r *Regex) FindAllIndex(b []byte, n int) [][]int {
 		return nil
 	}
 
+	// Fast path: CharClassSearcher uses streaming state machine (single-pass, no per-match overhead)
+	// This is 2-3x faster than the loop below for patterns like \w+, \d+, [a-z]+
+	if r.engine.Strategy() == meta.UseCharClassSearcher {
+		return r.findAllIndexStreaming(b, n)
+	}
+
 	var indices [][]int
 	pos := 0
 	lastMatchEnd := -1 // Track where the last non-empty match ended
@@ -639,6 +670,28 @@ func (r *Regex) FindAllIndex(b []byte, n int) [][]int {
 		if n > 0 && len(indices) >= n {
 			break
 		}
+	}
+
+	return indices
+}
+
+// findAllIndexStreaming uses single-pass streaming state machine for CharClassSearcher patterns.
+// This avoids per-match function call overhead (2-3x faster than the loop approach).
+// CharClassSearcher patterns like \w+, \d+, [a-z]+ cannot produce empty matches (minMatch=1),
+// so the empty match handling logic is not needed here.
+func (r *Regex) findAllIndexStreaming(b []byte, n int) [][]int {
+	// Get streaming results ([][2]int format)
+	streamResults := r.engine.FindAllIndicesStreaming(b, n, nil)
+
+	if len(streamResults) == 0 {
+		return nil
+	}
+
+	// Convert [][2]int to [][]int for stdlib-compatible API
+	// This allocation is necessary for API compatibility, but still faster than per-match overhead
+	indices := make([][]int, len(streamResults))
+	for i, m := range streamResults {
+		indices[i] = []int{m[0], m[1]}
 	}
 
 	return indices

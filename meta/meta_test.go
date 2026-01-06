@@ -511,6 +511,56 @@ func BenchmarkCharClassFindAll(b *testing.B) {
 	}
 }
 
+// BenchmarkCharClassFindAllStreaming compares streaming vs loop-based FindAll at Engine level
+func BenchmarkCharClassFindAllStreaming(b *testing.B) {
+	// Generate test data with letters, digits, and spaces
+	input1KB := make([]byte, 1024)
+	for i := range input1KB {
+		switch i % 10 {
+		case 0, 1, 2:
+			input1KB[i] = 'a' + byte(i%26)
+		case 3, 4:
+			input1KB[i] = '0' + byte(i%10)
+		default:
+			input1KB[i] = ' '
+		}
+	}
+
+	engine, err := Compile(`\w+`)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// Verify strategy is CharClassSearcher
+	if engine.Strategy() != UseCharClassSearcher {
+		b.Skipf("Strategy is %v, expected UseCharClassSearcher", engine.Strategy())
+	}
+
+	b.Run("Streaming/1KB", func(b *testing.B) {
+		b.ReportAllocs()
+		var results [][2]int
+		for i := 0; i < b.N; i++ {
+			results = engine.FindAllIndicesStreaming(input1KB, -1, results)
+		}
+	})
+
+	b.Run("Loop/1KB", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			at := 0
+			count := 0
+			for {
+				_, end, found := engine.FindIndicesAt(input1KB, at)
+				if !found {
+					break
+				}
+				count++
+				at = end
+			}
+		}
+	})
+}
+
 // BenchmarkFind benchmarks search performance
 // Includes GoAWK patterns (Ben Hoyt) for small string regression testing.
 func BenchmarkFind(b *testing.B) {

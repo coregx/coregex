@@ -252,3 +252,165 @@ func BenchmarkCharClassSearcher_vs_BoundedBacktracker_Large(b *testing.B) {
 		}
 	})
 }
+
+// TestCharClassSearcher_FindAllIndices tests the streaming FindAllIndices method
+func TestCharClassSearcher_FindAllIndices(t *testing.T) {
+	ranges := [][2]byte{
+		{'a', 'z'},
+		{'A', 'Z'},
+		{'0', '9'},
+		{'_', '_'},
+	}
+	s := NewCharClassSearcher(ranges, 1)
+
+	tests := []struct {
+		name  string
+		input string
+		want  [][2]int
+	}{
+		{"empty", "", nil},
+		{"single_word", "hello", [][2]int{{0, 5}}},
+		{"multiple_words", "hello world", [][2]int{{0, 5}, {6, 11}}},
+		{"leading_spaces", "   hello", [][2]int{{3, 8}}},
+		{"trailing_spaces", "hello   ", [][2]int{{0, 5}}},
+		{"mixed", "a b c", [][2]int{{0, 1}, {2, 3}, {4, 5}}},
+		{"digits", "123 456 789", [][2]int{{0, 3}, {4, 7}, {8, 11}}},
+		{"underscore", "foo_bar_baz", [][2]int{{0, 11}}},
+		{"no_matches", "!@# $%^", nil},
+		{"complex", "  abc123  DEF_456  ", [][2]int{{2, 8}, {10, 17}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := s.FindAllIndices([]byte(tt.input), nil)
+			if len(got) != len(tt.want) {
+				t.Errorf("FindAllIndices(%q) = %v, want %v", tt.input, got, tt.want)
+				return
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("FindAllIndices(%q)[%d] = %v, want %v", tt.input, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestCharClassSearcher_Count tests the streaming Count method
+func TestCharClassSearcher_Count(t *testing.T) {
+	ranges := [][2]byte{
+		{'a', 'z'},
+		{'A', 'Z'},
+		{'0', '9'},
+		{'_', '_'},
+	}
+	s := NewCharClassSearcher(ranges, 1)
+
+	tests := []struct {
+		input string
+		want  int
+	}{
+		{"", 0},
+		{"hello", 1},
+		{"hello world", 2},
+		{"a b c d e", 5},
+		{"!@# $%^", 0},
+		{"  abc123  DEF_456  ", 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := s.Count([]byte(tt.input))
+			if got != tt.want {
+				t.Errorf("Count(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// BenchmarkCharClassSearcher_StreamingVsLoop compares streaming vs loop-based FindAll
+func BenchmarkCharClassSearcher_StreamingVsLoop(b *testing.B) {
+	ranges := [][2]byte{
+		{'a', 'z'},
+		{'A', 'Z'},
+		{'0', '9'},
+		{'_', '_'},
+	}
+	s := NewCharClassSearcher(ranges, 1)
+
+	// Generate 4KB input with ~400 matches
+	input := make([]byte, 4096)
+	for i := range input {
+		if i%10 < 5 {
+			input[i] = 'a' + byte(i%26)
+		} else {
+			input[i] = ' '
+		}
+	}
+
+	// Fair comparison: both build results slice
+	b.Run("Streaming/4KB", func(b *testing.B) {
+		b.ReportAllocs()
+		var results [][2]int // reusable buffer
+		for i := 0; i < b.N; i++ {
+			results = s.FindAllIndices(input, results)
+		}
+	})
+
+	b.Run("LoopWithResults/4KB", func(b *testing.B) {
+		b.ReportAllocs()
+		results := make([][2]int, 0, 512) // pre-allocate
+		for i := 0; i < b.N; i++ {
+			results = results[:0]
+			at := 0
+			for {
+				start, end, found := s.SearchAt(input, at)
+				if !found {
+					break
+				}
+				results = append(results, [2]int{start, end})
+				at = end
+			}
+		}
+	})
+
+	// Count-only comparison (for reference)
+	b.Run("StreamingCount/4KB", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			s.Count(input)
+		}
+	})
+
+	b.Run("LoopCount/4KB", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			at := 0
+			count := 0
+			for {
+				_, end, found := s.SearchAt(input, at)
+				if !found {
+					break
+				}
+				count++
+				at = end
+			}
+		}
+	})
+
+	// Verify both produce same results
+	streamResults := s.FindAllIndices(input, nil)
+	loopCount := 0
+	at := 0
+	for {
+		_, end, found := s.SearchAt(input, at)
+		if !found {
+			break
+		}
+		loopCount++
+		at = end
+	}
+	if len(streamResults) != loopCount {
+		b.Fatalf("mismatch: streaming=%d, loop=%d", len(streamResults), loopCount)
+	}
+}
