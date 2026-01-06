@@ -2,7 +2,7 @@
 
 #include "textflag.h"
 
-// func teddySlimSSSE3_1(masks *teddyMasks, haystack []byte) (pos, bucket int)
+// func teddySlimSSSE3_1(masks *teddyMasks, haystack []byte) (pos, bucketMask int)
 //
 // SSSE3 implementation of Teddy Slim with 1-byte fingerprint.
 // Searches for multiple patterns (2-8) simultaneously using SIMD shuffle instructions.
@@ -15,8 +15,11 @@
 //     c. Use PSHUFB to lookup bucket bits from masks
 //     d. AND lo/hi results to find candidates
 //     e. Extract bitmask and check for candidates
-//  3. If candidate found: find first set bit position, extract bucket ID
+//  3. If candidate found: find first set bit position, extract bucket MASK
 //  4. Handle tail (< 16 bytes) with scalar loop
+//
+// Returns bucket MASK (not bucket ID) - caller iterates through all set bits.
+// This matches Rust's aho-corasick verify64() approach.
 //
 // CRITICAL: This function does NOT call VZEROUPPER because it uses only SSE/SSSE3 (XMM registers).
 // VZEROUPPER is only needed after using AVX/AVX2 (YMM registers).
@@ -27,7 +30,7 @@
 //   haystack_len+16(FP)  - haystack length (8 bytes)
 //   haystack_cap+24(FP)  - haystack capacity (8 bytes, unused)
 //   pos+32(FP)           - return: candidate position or -1 (8 bytes)
-//   bucket+40(FP)        - return: bucket ID or -1 (8 bytes)
+//   bucket+40(FP)        - return: bucket MASK (bits for all matching buckets) or -1 (8 bytes)
 //
 // Total argument frame size: 48 bytes (8+8+8+8+8+8)
 //
@@ -222,13 +225,11 @@ found_candidate:
 	// AND together to get bucket bits
 	ANDL    BX, CX                      // CX = bucket bits (byte with bits set for matching buckets)
 
-	// Find first set bucket bit (0-7)
-	// We use BSF to find lowest set bit
-	BSFL    CX, BX                      // BX = first set bit position (bucket ID)
-
 	// Return results
+	// NOTE: We return the FULL bucket mask, not just first bucket.
+	// Caller iterates through all set bits (like Rust's verify64).
 	MOVQ    AX, pos+32(FP)              // Return position (absolute offset)
-	MOVQ    BX, bucket+40(FP)           // Return bucket ID (0-7)
+	MOVQ    CX, bucket+40(FP)           // Return bucket MASK (bits set for all matching buckets)
 	RET                                 // No VZEROUPPER needed (SSSE3)
 
 found_scalar:
@@ -238,15 +239,12 @@ found_scalar:
 	// Calculate position (SI is already advanced to candidate position)
 	SUBQ    DI, SI                      // SI = offset from haystack start
 
-	// Find first set bucket bit
-	BSFL    AX, BX                      // BX = bucket ID (0-7)
-
-	// Return results
+	// Return results (bucket mask, not bucket ID)
 	MOVQ    SI, pos+32(FP)
-	MOVQ    BX, bucket+40(FP)
+	MOVQ    AX, bucket+40(FP)           // Return bucket MASK
 	RET                                 // No VZEROUPPER needed (SSSE3)
 
-// func teddySlimSSSE3_2(masks *teddyMasks, haystack []byte) (pos, bucket int)
+// func teddySlimSSSE3_2(masks *teddyMasks, haystack []byte) (pos, bucketMask int)
 //
 // SSSE3 implementation of Teddy Slim with 2-byte fingerprint.
 // This reduces false positives by ~90% compared to 1-byte fingerprint.
@@ -259,6 +257,8 @@ found_scalar:
 //     c. For each position: extract nibbles, PSHUFB lookup, AND lo/hi
 //     d. AND results from both positions
 //     e. Non-zero result = candidate
+//
+// Returns bucket MASK (not bucket ID) - caller iterates through all set bits.
 //
 // teddyMasks struct layout:
 //   +0:   fingerprintLen (4 bytes)
@@ -465,23 +465,19 @@ found_candidate_2:
 	MOVBLZX 168(R8)(R13*1), R13         // R13 = hiMasks[1][high]
 	ANDL    R13, BX                     // BX = pos1 bucket bits
 
-	// === Combine and find bucket ===
-	ANDL    BX, CX                      // CX = final bucket bits
-	BSFL    CX, BX                      // BX = bucket ID
+	// === Combine bucket masks ===
+	ANDL    BX, CX                      // CX = final bucket MASK
 
-	// Return results
+	// Return results (bucket mask, not bucket ID)
 	MOVQ    AX, pos+32(FP)
-	MOVQ    BX, bucket+40(FP)
+	MOVQ    CX, bucket+40(FP)           // Return bucket MASK
 	RET
 
 found_scalar_2:
 	// Calculate position
 	SUBQ    DI, SI
 
-	// Find first set bucket bit
-	BSFL    AX, BX                      // BX = bucket ID
-
-	// Return results
+	// Return results (bucket mask, not bucket ID)
 	MOVQ    SI, pos+32(FP)
-	MOVQ    BX, bucket+40(FP)
+	MOVQ    AX, bucket+40(FP)           // Return bucket MASK
 	RET

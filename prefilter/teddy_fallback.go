@@ -9,8 +9,9 @@ package prefilter
 //
 // Future: Implement NEON version for ARM64 platforms.
 //
-// Returns (position, bucket_id) or (-1, -1) if no candidate found.
-func (t *Teddy) findSIMD(haystack []byte) (pos, bucket int) {
+// Returns (position, bucketMask) or (-1, -1) if no candidate found.
+// bucketMask contains bits for ALL matching buckets (not just first).
+func (t *Teddy) findSIMD(haystack []byte) (pos, bucketMask int) {
 	// No SIMD available on this platform, use scalar fallback
 	return t.findScalarCandidate(haystack)
 }

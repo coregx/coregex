@@ -33,6 +33,7 @@ package prefilter
 
 import (
 	"bytes"
+	"math/bits"
 
 	"github.com/coregx/coregex/literal"
 )
@@ -320,31 +321,34 @@ func (t *Teddy) Find(haystack []byte, start int) int {
 	}
 
 	// Use SIMD search (SSSE3)
-	// Returns (candidate_position_relative_to_haystack, bucket_id)
-	// Note: bucket is currently unused - SIMD returns only first set bit via BSFL,
-	// but multiple buckets may be candidates. verify() recalculates the full mask.
-	pos, _ := t.findSIMD(haystack)
+	// Returns (candidate_position, bucket_mask) where bucket_mask has bits set
+	// for ALL matching buckets (not just first). This matches Rust's approach.
+	pos, bucketMask := t.findSIMD(haystack)
 
 	// Track accumulated offset for continuation searches
 	accumulatedOffset := 0
 
 	// Process candidates
 	for pos != -1 {
-		// Calculate absolute position in current haystack slice
-		absolutePos := accumulatedOffset + pos
+		// Iterate through all set bits in bucket mask (like Rust's verify64)
+		// This ensures we check ALL potential buckets, not just the first one
+		mask := bucketMask
+		for mask != 0 {
+			// Find lowest set bit (bucket ID)
+			bucket := bits.TrailingZeros(uint(mask))
+			mask &^= 1 << bucket // Clear the bit
 
-		// Verify patterns at this position
-		// verify() recalculates the candidate mask to check ALL matching buckets,
-		// not just the first one returned by SIMD's BSFL instruction.
-		matchPos, _ := t.verify(haystack[accumulatedOffset:], pos)
-		if matchPos != -1 {
-			// Match found! Return absolute position
-			return start + accumulatedOffset + matchPos
+			// Verify patterns in this specific bucket
+			matchPos, _ := t.verifyBucket(haystack[accumulatedOffset:], pos, bucket)
+			if matchPos != -1 {
+				// Match found! Return absolute position
+				return start + accumulatedOffset + matchPos
+			}
 		}
 
-		// No match at this candidate, continue searching
+		// No match at this candidate in any bucket, continue searching
 		// Search from position after the candidate
-		nextSearchStart := absolutePos + 1
+		nextSearchStart := accumulatedOffset + pos + 1
 		if nextSearchStart >= len(haystack) {
 			break
 		}
@@ -353,7 +357,7 @@ func (t *Teddy) Find(haystack []byte, start int) int {
 		accumulatedOffset = nextSearchStart
 
 		// Search in remaining haystack
-		pos, _ = t.findSIMD(haystack[accumulatedOffset:])
+		pos, bucketMask = t.findSIMD(haystack[accumulatedOffset:])
 	}
 
 	return -1 // No match found
@@ -380,29 +384,33 @@ func (t *Teddy) FindMatch(haystack []byte, start int) (int, int) {
 	}
 
 	// Use SIMD search (SSSE3)
-	// Note: bucket is currently unused - see comment in Find()
-	pos, _ := t.findSIMD(haystack)
+	// Returns (candidate_position, bucket_mask) - see comment in Find()
+	pos, bucketMask := t.findSIMD(haystack)
 
 	// Track accumulated offset for continuation searches
 	accumulatedOffset := 0
 
 	// Process candidates
 	for pos != -1 {
-		// Calculate absolute position in current haystack slice
-		absolutePos := accumulatedOffset + pos
+		// Iterate through all set bits in bucket mask (like Rust's verify64)
+		mask := bucketMask
+		for mask != 0 {
+			// Find lowest set bit (bucket ID)
+			bucket := bits.TrailingZeros(uint(mask))
+			mask &^= 1 << bucket // Clear the bit
 
-		// Verify patterns at this position
-		// verify() recalculates the candidate mask to check ALL matching buckets
-		matchPos, patternID := t.verify(haystack[accumulatedOffset:], pos)
-		if matchPos != -1 && patternID >= 0 && patternID < len(t.patterns) {
-			// Match found! Return absolute start and end
-			matchStart := start + accumulatedOffset + matchPos
-			matchEnd := matchStart + len(t.patterns[patternID])
-			return matchStart, matchEnd
+			// Verify patterns in this specific bucket
+			matchPos, patternID := t.verifyBucket(haystack[accumulatedOffset:], pos, bucket)
+			if matchPos != -1 && patternID >= 0 && patternID < len(t.patterns) {
+				// Match found! Return absolute start and end
+				matchStart := start + accumulatedOffset + matchPos
+				matchEnd := matchStart + len(t.patterns[patternID])
+				return matchStart, matchEnd
+			}
 		}
 
-		// No match at this candidate, continue searching
-		nextSearchStart := absolutePos + 1
+		// No match at this candidate in any bucket, continue searching
+		nextSearchStart := accumulatedOffset + pos + 1
 		if nextSearchStart >= len(haystack) {
 			break
 		}
@@ -411,7 +419,7 @@ func (t *Teddy) FindMatch(haystack []byte, start int) (int, int) {
 		accumulatedOffset = nextSearchStart
 
 		// Search in remaining haystack
-		pos, _ = t.findSIMD(haystack[accumulatedOffset:])
+		pos, bucketMask = t.findSIMD(haystack[accumulatedOffset:])
 	}
 
 	return -1, -1 // No match found
@@ -459,7 +467,10 @@ func (t *Teddy) findScalar(haystack []byte, start int) int {
 //  3. Build-time compatibility (code compiles everywhere)
 //
 // Performance: ~100x slower than SIMD, but functionally identical.
-func (t *Teddy) findScalarCandidate(haystack []byte) (pos, bucket int) {
+//
+// Returns (position, bucketMask) or (-1, -1) if no candidate found.
+// bucketMask contains bits for ALL matching buckets (not just first).
+func (t *Teddy) findScalarCandidate(haystack []byte) (pos, bucketMask int) {
 	// Get fingerprint length
 	fpLen := int(t.masks.fingerprintLen)
 
@@ -480,13 +491,9 @@ func (t *Teddy) findScalarCandidate(haystack []byte) (pos, bucket int) {
 		}
 
 		// If any bucket bits remain, this is a candidate
+		// Return the FULL mask - caller iterates through all set bits
 		if candidateMask != 0 {
-			// Find first set bucket bit
-			for bucketID := 0; bucketID < NumBucketsSlim; bucketID++ {
-				if candidateMask&(1<<bucketID) != 0 {
-					return i, bucketID
-				}
-			}
+			return i, int(candidateMask)
 		}
 	}
 
