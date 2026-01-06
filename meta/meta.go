@@ -48,7 +48,7 @@ type Engine struct {
 	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
 	reverseInnerSearcher     *ReverseInnerSearcher
 	digitPrefilter           *prefilter.DigitPrefilter // For digit-lead patterns like IP addresses
-	ahoCorasick              *ahocorasick.Automaton    // For large literal alternations (>8 patterns)
+	ahoCorasick              *ahocorasick.Automaton    // For large literal alternations (>32 patterns)
 	prefilter                prefilter.Prefilter
 	strategy                 Strategy
 	config                   Config
@@ -212,7 +212,7 @@ func buildStrategyEngines(
 ) strategyEngines {
 	result := strategyEngines{finalStrategy: strategy}
 
-	// Build Aho-Corasick automaton for large literal alternations (>8 patterns)
+	// Build Aho-Corasick automaton for large literal alternations (>32 patterns)
 	if strategy == UseAhoCorasick && literals != nil && !literals.IsEmpty() {
 		builder := ahocorasick.NewBuilder()
 		litCount := literals.Len()
@@ -2158,7 +2158,7 @@ func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int,
 }
 
 // findAhoCorasick searches using Aho-Corasick automaton for large literal alternations.
-// This is the "literal engine bypass" for patterns with >8 literals.
+// This is the "literal engine bypass" for patterns with >32 literals.
 // The automaton performs O(n) multi-pattern matching with ~1.6 GB/s throughput.
 func (e *Engine) findAhoCorasick(haystack []byte) *Match {
 	if e.ahoCorasick == nil {

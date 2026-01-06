@@ -10,7 +10,7 @@
 // extracted literals:
 //   - Single byte → MemchrPrefilter (SIMD byte search)
 //   - Single substring → MemmemPrefilter (SIMD substring search)
-//   - 2-8 literals (len ≥ 3) → TeddyPrefilter (SIMD multi-literal)
+//   - 2-32 literals (len ≥ 3) → TeddyPrefilter (SIMD multi-literal)
 //   - Many literals → AhoCorasickPrefilter (automaton, future)
 //
 // Example usage:
@@ -155,7 +155,7 @@ type MatchFinder interface {
 // Selection strategy (in order of preference):
 //  1. Single byte literal → MemchrPrefilter (fastest)
 //  2. Single substring literal → MemmemPrefilter (very fast)
-//  3. 2-8 literals, len≥3 → TeddyPrefilter (SIMD multi-pattern)
+//  3. 2-32 literals, len≥3 → TeddyPrefilter (SIMD multi-pattern)
 //  4. Many literals → AhoCorasickPrefilter (automaton, future)
 //  5. No suitable literals → nil (no prefilter)
 //
@@ -232,7 +232,7 @@ func (b *Builder) Build() Prefilter {
 //  3. If 1 literal:
 //     - len==1 → MemchrPrefilter (single byte search)
 //     - len>1 → MemmemPrefilter (substring search)
-//  4. If 2-8 literals and minLen≥3 → TeddyPrefilter (SIMD multi-pattern)
+//  4. If 2-32 literals and minLen≥3 → TeddyPrefilter (SIMD multi-pattern)
 //  5. If many/short literals → nil (TODO: AhoCorasickPrefilter)
 //
 // Returns nil if no effective prefilter can be constructed.
@@ -260,8 +260,8 @@ func selectPrefilter(prefixes, suffixes *literal.Seq) Prefilter {
 	}
 
 	// Multiple literals: use Teddy if suitable
-	if seq.Len() >= 2 && seq.Len() <= 8 && minLen(seq) >= 3 {
-		// Teddy is effective for 2-8 literals of length >= 3
+	if seq.Len() >= 2 && seq.Len() <= MaxTeddyPatterns && minLen(seq) >= 3 {
+		// Teddy is effective for 2-32 literals of length >= 3
 		// Provides 20-50x speedup using SSSE3 SIMD instructions
 		return newTeddy(seq)
 	}
