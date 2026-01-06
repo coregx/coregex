@@ -6,13 +6,11 @@ import (
 )
 
 // BenchmarkAhoCorasickVsStdlib compares Aho-Corasick strategy against stdlib
-// for patterns with many literals (>32).
+// for patterns with many literals (>8).
 func BenchmarkAhoCorasickVsStdlib(b *testing.B) {
-	// 35 patterns - above Teddy's 32 pattern limit, triggers Aho-Corasick
+	// 20 patterns - well above Teddy's 8 pattern limit
 	pattern := `alpha|bravo|charlie|delta|echo|foxtrot|golf|hotel|india|juliet|` +
-		`kilo|lima|mike|november|oscar|papa|quebec|romeo|sierra|tango|` +
-		`uniform|victor|whiskey|xray|yankee|zulu|one|two|three|four|` +
-		`five|six|seven|eight|nine`
+		`kilo|lima|mike|november|oscar|papa|quebec|romeo|sierra|tango`
 
 	// Create haystack with matches scattered throughout
 	haystack := []byte(`The quick brown fox jumped over the lazy dog.

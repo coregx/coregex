@@ -4,7 +4,7 @@
 // It uses vector shuffle instructions (PSHUFB) to perform parallel table lookups,
 // identifying candidate match positions that are then verified against actual patterns.
 //
-// The algorithm is particularly effective for 2-32 patterns with length >= 3 bytes,
+// The algorithm is particularly effective for 2-8 patterns with length >= 3 bytes,
 // providing 20-50x speedup over naive multi-pattern search.
 //
 // Algorithm Overview:
@@ -40,11 +40,8 @@ import (
 
 // Constants for Teddy configuration
 const (
-	// MaxTeddyPatterns is the maximum number of patterns Teddy can handle efficiently.
-	// Slim Teddy uses 8 buckets with modulo distribution, so patterns are spread across buckets.
-	// With 2-byte fingerprint (default), false positive rate is low enough for 32 patterns.
-	// Reference: Rust aho-corasick uses 32 patterns as threshold for Fat Teddy (AVX2).
-	MaxTeddyPatterns = 32
+	// MaxTeddyPatterns is the maximum number of patterns Teddy can handle efficiently
+	MaxTeddyPatterns = 8
 
 	// MinTeddyPatterns is the minimum number of patterns required for Teddy
 	MinTeddyPatterns = 2
@@ -54,7 +51,7 @@ const (
 	MinTeddyPatternLen = 3
 
 	// MaxFingerprintLen is the maximum fingerprint length (1-4 bytes).
-	// We use 2-byte fingerprint by default for better false positive rejection.
+	// We use 1-byte fingerprint for simplicity in v1.0.
 	MaxFingerprintLen = 4
 
 	// NumBucketsSlim is the number of buckets in Slim Teddy (8 buckets, 8 bits per mask byte)

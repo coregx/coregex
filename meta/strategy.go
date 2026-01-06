@@ -86,7 +86,7 @@ const (
 	// Selected for:
 	//   - Exact literal alternations like (foo|bar|baz)
 	//   - All literals are complete (no regex engine verification needed)
-	//   - 2-32 patterns, each >= 3 bytes
+	//   - 2-8 patterns, each >= 3 bytes
 	//   - Speedup: 50-250x over PikeVM by skipping all DFA/NFA overhead
 	//
 	// This implements the "literal engine bypass" optimization from Rust regex:
@@ -97,7 +97,7 @@ const (
 	// Selected for:
 	//   - Patterns like `.*\.(txt|log|md)` where suffix is an alternation
 	//   - No common suffix (LCS is empty), but multiple suffix literals available
-	//   - 2-32 suffix literals, each >= 3 bytes
+	//   - 2-8 suffix literals, each >= 3 bytes
 	//   - Speedup: 5-10x over UseBoth by using Teddy for suffix candidates
 	//
 	// Algorithm:
@@ -137,7 +137,7 @@ const (
 
 	// UseAhoCorasick uses Aho-Corasick automaton for large literal alternations.
 	// Selected for:
-	//   - Exact literal alternations with >32 patterns (beyond Teddy's limit)
+	//   - Exact literal alternations with >8 patterns (beyond Teddy's limit)
 	//   - All literals are complete (no regex engine verification needed)
 	//   - Each pattern >= 1 byte
 	//   - Speedup: 50-500x over PikeVM by using O(n) multi-pattern matching
@@ -460,8 +460,8 @@ func shouldUseReverseSuffixSet(prefixLiterals, suffixLiterals *literal.Seq) bool
 	}
 
 	litCount := suffixLiterals.Len()
-	if litCount < 2 || litCount > 32 {
-		return false // Teddy requires 2-32 patterns
+	if litCount < 2 || litCount > 8 {
+		return false // Teddy requires 2-8 patterns
 	}
 
 	// Check if all suffix literals are long enough for efficient Teddy
@@ -590,8 +590,8 @@ func isSimpleCharClass(re *syntax.Regexp) bool {
 // literalAnalysis contains the results of analyzing literals for strategy selection.
 type literalAnalysis struct {
 	hasGoodLiterals        bool // Good prefix literal (LCP >= MinLiteralLen)
-	hasTeddyLiterals       bool // Suitable for Teddy (2-32 patterns, each >= 3 bytes)
-	hasAhoCorasickLiterals bool // Suitable for Aho-Corasick (>32 patterns, each >= 1 byte)
+	hasTeddyLiterals       bool // Suitable for Teddy (2-8 patterns, each >= 3 bytes)
+	hasAhoCorasickLiterals bool // Suitable for Aho-Corasick (>8 patterns, each >= 1 byte)
 }
 
 // selectLiteralStrategy selects strategy based on literal analysis.
@@ -611,7 +611,7 @@ func selectLiteralStrategy(literals *literal.Seq, litAnalysis literalAnalysis) S
 	}
 
 	// Large literal alternations → use Aho-Corasick (extends literal engine bypass)
-	// Patterns with >32 literals exceed Teddy's capacity but Aho-Corasick handles
+	// Patterns with >8 literals exceed Teddy's capacity but Aho-Corasick handles
 	// thousands of patterns with O(n) matching time.
 	// Speedup: 50-500x by using dense array transitions (~1.6 GB/s throughput).
 	if litAnalysis.hasAhoCorasickLiterals && literals.AllComplete() {
@@ -636,13 +636,11 @@ func analyzeLiterals(literals *literal.Seq, config Config) literalAnalysis {
 		result.hasGoodLiterals = true
 	}
 
-	// Check for Teddy prefilter suitability (2-32 literals, each >= 3 bytes)
+	// Check for Teddy prefilter suitability (2-8 literals, each >= 3 bytes)
 	// Teddy doesn't need common prefix - it can search for multiple distinct literals.
 	// This enables fast alternation pattern matching: (foo|bar|baz|qux)
-	// Slim Teddy uses 8 buckets with modulo distribution - up to 32 patterns works well
-	// with 2-byte fingerprint (default). For >32 patterns, use Aho-Corasick.
 	litCount := literals.Len()
-	if litCount >= 2 && litCount <= 32 {
+	if litCount >= 2 && litCount <= 8 {
 		allLongEnough := true
 		for i := 0; i < litCount; i++ {
 			if len(literals.Get(i).Bytes) < 3 {
@@ -655,10 +653,10 @@ func analyzeLiterals(literals *literal.Seq, config Config) literalAnalysis {
 		}
 	}
 
-	// Check for Aho-Corasick suitability (>32 literals, each >= 1 byte)
+	// Check for Aho-Corasick suitability (>8 literals, each >= 1 byte)
 	// Aho-Corasick handles large pattern sets efficiently with O(n) matching.
-	// This extends the "literal engine bypass" optimization beyond Teddy's 32 pattern limit.
-	if litCount > 32 {
+	// This extends the "literal engine bypass" optimization beyond Teddy's 8 pattern limit.
+	if litCount > 8 {
 		allNonEmpty := true
 		for i := 0; i < litCount; i++ {
 			if len(literals.Get(i).Bytes) < 1 {
@@ -880,7 +878,7 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 		return "SIMD digit scanner for digit-lead alternation patterns (5-10x for IP address patterns)"
 
 	case UseAhoCorasick:
-		return "Aho-Corasick automaton for large literal alternations (50-500x for >32 pattern sets)"
+		return "Aho-Corasick automaton for large literal alternations (50-500x for >8 pattern sets)"
 
 	default:
 		return "unknown strategy"

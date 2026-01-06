@@ -62,7 +62,7 @@ func NewReverseSuffixSetSearcher(
 	}
 
 	litCount := suffixLiterals.Len()
-	if litCount < 2 || litCount > 32 {
+	if litCount < 2 || litCount > 8 {
 		return nil, ErrNoSuffixSet
 	}
 

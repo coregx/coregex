@@ -197,10 +197,10 @@ func Example_teddyNotSuitable() {
 	teddy2 := prefilter.NewTeddy([][]byte{[]byte("ab"), []byte("cd")}, nil)
 	fmt.Printf("Short patterns: %v\n", teddy2 != nil)
 
-	// Too many patterns (max 32)
-	manyPatterns := make([][]byte, 35)
+	// Too many patterns (max 8)
+	manyPatterns := make([][]byte, 10)
 	for i := range manyPatterns {
-		manyPatterns[i] = []byte(fmt.Sprintf("pat%02d", i))
+		manyPatterns[i] = []byte(fmt.Sprintf("pat%d", i))
 	}
 	teddy3 := prefilter.NewTeddy(manyPatterns, nil)
 	fmt.Printf("Too many patterns: %v\n", teddy3 != nil)
