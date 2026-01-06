@@ -73,7 +73,7 @@ Cross-language benchmarks on 6MB input ([source](https://github.com/kolkov/regex
 - IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — optimized DFA strategy
 - Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search optimization
 - Inner literals (`.*error.*`, `.*@example\.com`) — bidirectional DFA
-- Multi-pattern (`foo|bar|baz|...`) — Teddy (≤8) or Aho-Corasick (>8 patterns)
+- Multi-pattern (`foo|bar|baz|...`) — Slim Teddy (≤32), Fat Teddy (33-64), or Aho-Corasick (>64)
 
 ## Features
 
@@ -86,9 +86,10 @@ coregex automatically selects the optimal engine:
 | ReverseInner | `.*keyword.*` | 100-200x |
 | ReverseSuffix | `.*\.txt` | 100-220x |
 | LazyDFA | IP, complex patterns | 10-150x |
-| AhoCorasick | `a\|b\|c\|...\|z` (>8 patterns) | 75-113x |
+| AhoCorasick | `a\|b\|c\|...\|z` (>64 patterns) | 75-113x |
 | CharClassSearcher | `[\w]+`, `\d+` | 4-25x |
-| Teddy | `foo\|bar\|baz` (2-8 patterns) | 15-240x |
+| Slim Teddy | `foo\|bar\|baz` (2-32 patterns) | 15-240x |
+| Fat Teddy | 33-64 patterns | 60-73x |
 | OnePass | Anchored captures | 10x |
 | BoundedBacktracker | Small patterns | 2-5x |
 
@@ -168,7 +169,8 @@ Input → Prefilter (SIMD) → Engine → Match Result
 **SIMD Primitives** (AMD64):
 - `memchr` — single byte search (AVX2)
 - `memmem` — substring search (SSSE3)
-- `teddy` — multi-pattern search (SSSE3)
+- `Slim Teddy` — multi-pattern search, 2-32 patterns (SSSE3)
+- `Fat Teddy` — multi-pattern search, 33-64 patterns (AVX2, 9+ GB/s)
 
 Pure Go fallback on other architectures.
 

@@ -121,6 +121,8 @@ type fatTeddyMasks struct {
 //	if fatTeddy != nil {
 //	    pos := fatTeddy.Find(haystack, 0)
 //	}
+//
+//nolint:dupl // Intentional duplication - FatTeddy (16 buckets) vs Teddy (8 buckets) have similar constructors
 func NewFatTeddy(patterns [][]byte, config *FatTeddyConfig) *FatTeddy {
 	if config == nil {
 		config = DefaultFatTeddyConfig()
@@ -291,6 +293,8 @@ func (t *FatTeddy) Find(haystack []byte, start int) int {
 }
 
 // FindMatch returns the start and end positions of the first match.
+//
+//nolint:dupl // Intentional duplication - FatTeddy uses uint16 bucketMask, Teddy uses uint8
 func (t *FatTeddy) FindMatch(haystack []byte, start int) (int, int) {
 	// Bounds check
 	if start < 0 || start >= len(haystack) {

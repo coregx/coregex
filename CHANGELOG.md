@@ -15,6 +15,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-01-07
+
+### Added
+- **Fat Teddy 16-bucket SIMD prefilter for 33-64 patterns**
+  - New strategy tier: Slim Teddy (2-32 patterns) → Fat Teddy (33-64) → Aho-Corasick (>64)
+  - AVX2 assembly implementation with 9+ GB/s throughput
+  - 16 buckets (vs Slim Teddy's 8) = 2x pattern capacity
+  - Pure Go scalar fallback for non-AVX2 platforms
+  - Algorithm from Rust aho-corasick `generic.rs` Fat<V, 2> implementation
+
+### Technical Details
+- **fatTeddyMasks struct**: 32-byte SIMD masks (256-bit AVX2 vectors)
+  - Low lane (bytes 0-15): buckets 0-7
+  - High lane (bytes 16-31): buckets 8-15
+- **AVX2 algorithm**:
+  - VBROADCASTI128: Load 16 bytes, duplicate to both lanes
+  - VPSHUFB: Parallel nibble lookup in bucket masks
+  - VPALIGNR $15: Half-shift for 2-byte fingerprint alignment
+  - VPMOVMSKB: Extract 32-bit candidate mask
+
+### Performance
+| Patterns | Engine | Throughput | vs Aho-Corasick |
+|----------|--------|------------|-----------------|
+| 40 | Fat Teddy AVX2 | 9.1 GB/s | **73x faster** |
+| 40 | Fat Teddy scalar | 228 MB/s | **1.5x faster** |
+| 70 | Aho-Corasick | 152 MB/s | baseline |
+
+### Files
+- `prefilter/teddy_fat.go` - Fat Teddy core implementation
+- `prefilter/teddy_fat_amd64.go` - AVX2 dispatch
+- `prefilter/teddy_avx2_amd64.s` - AVX2 assembly (~300 lines)
+- `meta/strategy.go` - strategy selection update (32→Fat Teddy, >64→Aho-Corasick)
+
+---
+
 ## [0.9.5] - 2026-01-06
 
 ### Changed
@@ -1111,8 +1146,9 @@ v0.7.0 → OnePass DFA (DONE ✅)
 v0.8.0 → ReverseInner strategy (DONE ✅)
 v0.8.14-18 → GoAWK integration, Teddy, BoundedBacktracker (DONE ✅)
 v0.8.19 → FindAll ReverseSuffix optimization (DONE ✅)
-v0.8.20 → ReverseSuffixSet for multi-suffix patterns (DONE ✅) ← CURRENT
-v0.9.0 → Beta testing period
+v0.8.20 → ReverseSuffixSet for multi-suffix patterns (DONE ✅)
+v0.9.x → Performance tuning, Teddy 2-byte fingerprint (DONE ✅)
+v0.10.0 → Fat Teddy 33-64 patterns, AVX2 SIMD (DONE ✅) ← CURRENT
 v1.0.0 → Stable release (API frozen)
 ```
 
@@ -1142,7 +1178,13 @@ v1.0.0 → Stable release (API frozen)
 
 ---
 
-[Unreleased]: https://github.com/coregx/coregex/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/coregx/coregex/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/coregx/coregex/releases/tag/v0.10.0
+[0.9.5]: https://github.com/coregx/coregex/releases/tag/v0.9.5
+[0.9.4]: https://github.com/coregx/coregex/releases/tag/v0.9.4
+[0.9.3]: https://github.com/coregx/coregex/releases/tag/v0.9.3
+[0.9.2]: https://github.com/coregx/coregex/releases/tag/v0.9.2
+[0.9.1]: https://github.com/coregx/coregex/releases/tag/v0.9.1
 [0.9.0]: https://github.com/coregx/coregex/releases/tag/v0.9.0
 [0.8.24]: https://github.com/coregx/coregex/releases/tag/v0.8.24
 [0.8.23]: https://github.com/coregx/coregex/releases/tag/v0.8.23
