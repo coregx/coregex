@@ -14,7 +14,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 
 | Metric | Current (v0.10.0) | Target (v1.0.0) |
 |--------|-------------------|-----------------|
-| Inner literal speedup | **87-3154x** | ✅ Achieved |
+| Inner literal speedup | **280-3154x** | ✅ Achieved |
 | Case-insensitive speedup | **263x** | ✅ Achieved |
 | Alternation speedup | **242x** | ✅ Achieved |
 | Suffix alternation speedup | **34-385x** | ✅ Achieved |
@@ -25,7 +25,8 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 | Fat Teddy (33-64 patterns) | **Yes (AVX2, 9GB/s)** | ✅ Achieved |
 | Aho-Corasick (>64 patterns) | **Yes** | ✅ Achieved |
 | BoundedBacktracker | **Yes** | ✅ Achieved |
-| CharClassSearcher | **Yes (23x, 2x vs Rust)** | ✅ Achieved |
+| CharClassSearcher | **Yes (35% faster than Rust!)** | ✅ Achieved |
+| **Patterns faster than Rust** | **5 patterns** | ✅ Achieved |
 | ARM NEON SIMD | No | Planned |
 | Look-around | No | Planned |
 
@@ -59,7 +60,7 @@ v1.0.0 STABLE → Production release with API stability guarantee
 - ✅ **v0.8.21**: CharClassSearcher (23x faster, 2x faster than Rust!)
 - ✅ **v0.8.22**: Small string optimization (1.4-20x faster on ~44B inputs)
 - ✅ **v0.9.x**: DigitPrefilter, Aho-Corasick integration, Teddy 2-byte fingerprint
-- ✅ **v0.10.0**: Fat Teddy 16-bucket SIMD (33-64 patterns, 9+ GB/s)
+- ✅ **v0.10.0**: Fat Teddy 16-bucket SIMD (33-64 patterns, 9+ GB/s), **5 patterns faster than Rust!**
 
 ---
 
@@ -213,6 +214,23 @@ Reference implementations available locally:
 
 ---
 
+## v0.11.x - Performance Tuning (Next)
+
+**Goal**: Close remaining gaps vs Rust regex
+
+| Issue | Pattern | Gap vs Rust | Priority |
+|-------|---------|-------------|----------|
+| [#69](https://github.com/coregx/coregex/issues/69) | literal_alt | 5.9x slower | HIGH |
+| [#70](https://github.com/coregx/coregex/issues/70) | version | 3.2x slower | MEDIUM |
+| [#71](https://github.com/coregx/coregex/issues/71) | Documentation | — | HIGH |
+
+**Key tasks**:
+- [ ] AVX2 Slim Teddy (32 bytes/iter vs current 16 bytes/iter)
+- [ ] Version pattern strategy optimization
+- [ ] Document optimizations that beat Rust (don't regress!)
+
+---
+
 ## Out of Scope
 
 **Not planned**:
@@ -227,7 +245,7 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.10.0** | 2026-01-07 | Feature | **Fat Teddy 33-64 patterns (AVX2, 9+ GB/s)** |
+| **v0.10.0** | 2026-01-07 | Feature | **Fat Teddy AVX2, 5 patterns faster than Rust!** |
 | v0.9.5 | 2026-01-06 | Fix | Teddy limit 8→32, literal extraction fix |
 | v0.9.0-v0.9.4 | 2026-01-05 | Performance | DigitPrefilter, Aho-Corasick, 2-byte fingerprint |
 | v0.8.20 | 2025-12-12 | Performance | ReverseSuffixSet (34-385x faster) |
