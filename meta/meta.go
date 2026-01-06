@@ -53,6 +53,12 @@ type Engine struct {
 	strategy                 Strategy
 	config                   Config
 
+	// fatTeddyFallback is an Aho-Corasick automaton used as fallback for small haystacks
+	// when the main prefilter is Fat Teddy (33-64 patterns). Fat Teddy's AVX2 SIMD setup
+	// overhead makes it slower than Aho-Corasick for haystacks < 64 bytes.
+	// Reference: rust-aho-corasick/src/packed/teddy/builder.rs:585 (minimum_len fallback)
+	fatTeddyFallback *ahocorasick.Automaton
+
 	// OnePass DFA for anchored patterns with captures (optional optimization)
 	// This is independent of strategy - used by FindSubmatch when available
 	onepass      *onepass.DFA
@@ -429,6 +435,22 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// because its greedy semantics give wrong results for patterns like (?:|a)*
 	canMatchEmpty := pikevm.IsMatch(nil)
 
+	// Build Aho-Corasick fallback for Fat Teddy patterns.
+	// Fat Teddy's AVX2 SIMD has setup overhead that makes it slower than Aho-Corasick
+	// for small haystacks (< 64 bytes). This matches Rust regex's minimum_len() approach.
+	var fatTeddyFallback *ahocorasick.Automaton
+	if strategy == UseTeddy {
+		if fatTeddy, ok := pf.(*prefilter.FatTeddy); ok {
+			builder := ahocorasick.NewBuilder()
+			for _, pattern := range fatTeddy.Patterns() {
+				builder.AddPattern(pattern)
+			}
+			if auto, err := builder.Build(); err == nil {
+				fatTeddyFallback = auto
+			}
+		}
+	}
+
 	return &Engine{
 		nfa:                      nfaEngine,
 		dfa:                      engines.dfa,
@@ -447,6 +469,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		onepass:                  onePassRes.dfa,
 		onepassCache:             onePassRes.cache,
 		canMatchEmpty:            canMatchEmpty,
+		fatTeddyFallback:         fatTeddyFallback,
 		stats:                    Stats{},
 	}, nil
 }
@@ -1387,6 +1410,12 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 	return results
 }
 
+// fatTeddySmallHaystackThreshold is the minimum haystack size for Fat Teddy efficiency.
+// For smaller haystacks, Aho-Corasick is faster due to lower setup overhead.
+// Benchmarks show ~2x speedup with Aho-Corasick on 37-byte haystacks with 50 patterns.
+// Reference: rust-aho-corasick/src/packed/teddy/builder.rs (minimum_len fallback)
+const fatTeddySmallHaystackThreshold = 64
+
 // findTeddy searches using Teddy multi-pattern prefilter directly.
 // This is the "literal engine bypass" - for exact literal alternations like (foo|bar|baz),
 // Teddy.Find() returns complete matches without needing DFA/NFA verification.
@@ -1394,6 +1423,18 @@ func (e *Engine) findTeddy(haystack []byte) *Match {
 	if e.prefilter == nil {
 		return e.findNFA(haystack)
 	}
+
+	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
+	// Fat Teddy's AVX2 SIMD setup overhead exceeds benefit on small inputs.
+	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
+		e.stats.AhoCorasickSearches++
+		match := e.fatTeddyFallback.Find(haystack, 0)
+		if match == nil {
+			return nil
+		}
+		return NewMatch(match.Start, match.End, haystack)
+	}
+
 	e.stats.PrefilterHits++
 
 	// Use FindMatch which returns both start and end positions
@@ -1423,6 +1464,17 @@ func (e *Engine) findTeddyAt(haystack []byte, at int) *Match {
 	if e.prefilter == nil || at >= len(haystack) {
 		return e.findNFAAt(haystack, at)
 	}
+
+	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
+	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
+		e.stats.AhoCorasickSearches++
+		match := e.fatTeddyFallback.FindAt(haystack, at)
+		if match == nil {
+			return nil
+		}
+		return NewMatch(match.Start, match.End, haystack)
+	}
+
 	e.stats.PrefilterHits++
 
 	// Use FindMatch which returns both start and end positions
@@ -1451,6 +1503,13 @@ func (e *Engine) isMatchTeddy(haystack []byte) bool {
 	if e.prefilter == nil {
 		return e.isMatchNFA(haystack)
 	}
+
+	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
+	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
+		e.stats.AhoCorasickSearches++
+		return e.fatTeddyFallback.IsMatch(haystack)
+	}
+
 	e.stats.PrefilterHits++
 	return e.prefilter.Find(haystack, 0) != -1
 }
@@ -1460,6 +1519,17 @@ func (e *Engine) findIndicesTeddy(haystack []byte) (int, int, bool) {
 	if e.prefilter == nil {
 		return e.findIndicesNFA(haystack)
 	}
+
+	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
+	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
+		e.stats.AhoCorasickSearches++
+		match := e.fatTeddyFallback.Find(haystack, 0)
+		if match == nil {
+			return -1, -1, false
+		}
+		return match.Start, match.End, true
+	}
+
 	e.stats.PrefilterHits++
 
 	// Use FindMatch which returns both start and end positions
@@ -1488,6 +1558,17 @@ func (e *Engine) findIndicesTeddyAt(haystack []byte, at int) (int, int, bool) {
 	if e.prefilter == nil || at >= len(haystack) {
 		return e.findIndicesNFAAt(haystack, at)
 	}
+
+	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
+	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
+		e.stats.AhoCorasickSearches++
+		match := e.fatTeddyFallback.FindAt(haystack, at)
+		if match == nil {
+			return -1, -1, false
+		}
+		return match.Start, match.End, true
+	}
+
 	e.stats.PrefilterHits++
 
 	// Use FindMatch which returns both start and end positions

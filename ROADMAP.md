@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2025-12-13 | **Current Version**: v0.8.22 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-01-07 | **Current Version**: v0.10.0 | **Target**: v1.0.0 stable
 
 ---
 
@@ -12,7 +12,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 
 ### Current State vs Target
 
-| Metric | Current (v0.8.22) | Target (v1.0.0) |
+| Metric | Current (v0.10.0) | Target (v1.0.0) |
 |--------|-------------------|-----------------|
 | Inner literal speedup | **87-3154x** | ✅ Achieved |
 | Case-insensitive speedup | **263x** | ✅ Achieved |
@@ -21,7 +21,9 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 | Small string perf | **1.4-20x faster** | ✅ Achieved |
 | Reverse search | **Yes (4 strategies)** | ✅ Achieved |
 | OnePass DFA | **Yes** | ✅ Achieved |
-| Teddy SIMD prefilter | **Yes** | ✅ Achieved |
+| Slim Teddy (2-32 patterns) | **Yes (SSSE3)** | ✅ Achieved |
+| Fat Teddy (33-64 patterns) | **Yes (AVX2, 9GB/s)** | ✅ Achieved |
+| Aho-Corasick (>64 patterns) | **Yes** | ✅ Achieved |
 | BoundedBacktracker | **Yes** | ✅ Achieved |
 | CharClassSearcher | **Yes (23x, 2x vs Rust)** | ✅ Achieved |
 | ARM NEON SIMD | No | Planned |
@@ -32,9 +34,9 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 ## Release Strategy
 
 ```
-v0.8.22 (Current) ✅ → Small string optimization (1.4-20x faster)
+v0.10.0 (Current) ✅ → Fat Teddy 33-64 patterns (AVX2, 9GB/s)
          ↓
-v0.9.x → Beta testing, API stabilization
+v0.11.x → API stabilization, performance tuning
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
@@ -56,6 +58,8 @@ v1.0.0 STABLE → Production release with API stability guarantee
 - ✅ **v0.8.20**: ReverseSuffixSet for multi-suffix patterns (34-385x faster)
 - ✅ **v0.8.21**: CharClassSearcher (23x faster, 2x faster than Rust!)
 - ✅ **v0.8.22**: Small string optimization (1.4-20x faster on ~44B inputs)
+- ✅ **v0.9.x**: DigitPrefilter, Aho-Corasick integration, Teddy 2-byte fingerprint
+- ✅ **v0.10.0**: Fat Teddy 16-bucket SIMD (33-64 patterns, 9+ GB/s)
 
 ---
 
@@ -147,12 +151,13 @@ v1.0.0 STABLE → Production release with API stability guarantee
 
 ## Feature Comparison Matrix
 
-| Feature | RE2 | rust-regex | coregex v0.8.20 | coregex v1.0 |
+| Feature | RE2 | rust-regex | coregex v0.10.0 | coregex v1.0 |
 |---------|-----|------------|-----------------|--------------|
 | Lazy DFA | ✅ | ✅ | ✅ | ✅ |
 | Thompson NFA | ✅ | ✅ | ✅ | ✅ |
 | PikeVM | ✅ | ✅ | ✅ | ✅ |
-| Teddy SIMD | ❌ | ✅ | ✅ | ✅ |
+| Slim Teddy (≤32) | ❌ | ✅ | ✅ | ✅ |
+| Fat Teddy (33-64) | ❌ | ✅ | ✅ | ✅ |
 | Start State Cache | 8 | 6 | 6 | ✅ |
 | Reverse Search | ✅ | ✅ (3) | ✅ (4) | ✅ |
 | ReverseSuffixSet | ❌ | ❌ | ✅ | ✅ |
@@ -160,7 +165,7 @@ v1.0.0 STABLE → Production release with API stability guarantee
 | BoundedBacktracker | ✅ | ✅ | ✅ | ✅ |
 | Named Captures | ✅ | ✅ | ✅ | ✅ |
 | Prefilter Tracking | ✅ | ✅ | ✅ | ✅ |
-| Aho-Corasick | ❌ | ✅ | ❌ | Planned |
+| Aho-Corasick | ❌ | ✅ | ✅ | ✅ |
 | ARM NEON | ❌ | ✅ | ❌ | Planned |
 | Look-around | ✅ | ❌ | ❌ | Planned |
 
@@ -188,7 +193,6 @@ v1.0.0 STABLE → Production release with API stability guarantee
 |---------|--------|----------|
 | ARM NEON SIMD | Planned | Medium |
 | Look-around assertions | Planned | Medium |
-| Aho-Corasick for large sets | Planned | Low |
 | API stability guarantee | Required | High |
 
 ---
@@ -223,7 +227,10 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.8.20** | 2025-12-12 | Performance | **ReverseSuffixSet (34-385x faster) - NOT in rust-regex!** |
+| **v0.10.0** | 2026-01-07 | Feature | **Fat Teddy 33-64 patterns (AVX2, 9+ GB/s)** |
+| v0.9.5 | 2026-01-06 | Fix | Teddy limit 8→32, literal extraction fix |
+| v0.9.0-v0.9.4 | 2026-01-05 | Performance | DigitPrefilter, Aho-Corasick, 2-byte fingerprint |
+| v0.8.20 | 2025-12-12 | Performance | ReverseSuffixSet (34-385x faster) |
 | v0.8.19 | 2025-12-12 | Performance | FindAll ReverseSuffix (87x faster) |
 | v0.8.18 | 2025-12-12 | Performance | Teddy prefilter for alternations (242x faster) |
 | v0.8.17 | 2025-12-12 | Feature | BoundedBacktracker engine |
@@ -239,4 +246,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.8.20 | Next: v0.9.x (Beta) | Target: v1.0.0*
+*Current: v0.10.0 | Next: v0.11.x (API stabilization) | Target: v1.0.0*

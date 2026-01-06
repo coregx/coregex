@@ -636,13 +636,16 @@ func analyzeLiterals(literals *literal.Seq, config Config) literalAnalysis {
 		result.hasGoodLiterals = true
 	}
 
-	// Check for Teddy prefilter suitability (2-32 literals, each >= 3 bytes)
+	// Check for Teddy prefilter suitability (2-64 literals, each >= 3 bytes)
 	// Teddy doesn't need common prefix - it can search for multiple distinct literals.
 	// This enables fast alternation pattern matching: (foo|bar|baz|qux)
-	// Slim Teddy uses 8 buckets with modulo distribution - up to 32 patterns works well
-	// with 2-byte fingerprint (default). For >32 patterns, use Aho-Corasick.
+	//
+	// Slim Teddy (SSSE3, 8 buckets): 2-32 patterns - optimal, uses SIMD
+	// Fat Teddy (AVX2, 16 buckets): 33-64 patterns - uses SIMD or scalar fallback
+	//
+	// For >64 patterns, use Aho-Corasick.
 	litCount := literals.Len()
-	if litCount >= 2 && litCount <= 32 {
+	if litCount >= 2 && litCount <= 64 {
 		allLongEnough := true
 		for i := 0; i < litCount; i++ {
 			if len(literals.Get(i).Bytes) < 3 {
@@ -655,10 +658,10 @@ func analyzeLiterals(literals *literal.Seq, config Config) literalAnalysis {
 		}
 	}
 
-	// Check for Aho-Corasick suitability (>32 literals, each >= 1 byte)
+	// Check for Aho-Corasick suitability (>64 literals, each >= 1 byte)
 	// Aho-Corasick handles large pattern sets efficiently with O(n) matching.
-	// This extends the "literal engine bypass" optimization beyond Teddy's 32 pattern limit.
-	if litCount > 32 {
+	// This extends the "literal engine bypass" optimization beyond Teddy's 64 pattern limit.
+	if litCount > 64 {
 		allNonEmpty := true
 		for i := 0; i < litCount; i++ {
 			if len(literals.Get(i).Bytes) < 1 {

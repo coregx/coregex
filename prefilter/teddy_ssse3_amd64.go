@@ -8,8 +8,13 @@ import (
 
 // CPU feature detection
 var (
-	// hasSSSE3 indicates if CPU supports SSSE3 instruction set
+	// hasSSSE3 indicates if CPU supports SSSE3 instruction set (2006+)
+	// Required for Slim Teddy (8 buckets, 128-bit vectors)
 	hasSSSE3 = cpu.X86.HasSSSE3
+
+	// hasAVX2 indicates if CPU supports AVX2 instruction set (2013+)
+	// Required for Fat Teddy (16 buckets, 256-bit vectors)
+	hasAVX2 = cpu.X86.HasAVX2
 )
 
 // teddySlimSSSE3_1 is the SSSE3 assembly implementation for 1-byte fingerprint.
