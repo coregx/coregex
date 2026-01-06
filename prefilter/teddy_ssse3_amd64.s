@@ -2,7 +2,7 @@
 
 #include "textflag.h"
 
-// func teddySlimSSSE3_1(masks *teddyMasks, haystack []byte) (pos, bucketMask int)
+// func teddySlimSSSE3_1(masks *teddyMasks, haystack []byte) (pos int, bucketMask uint8)
 //
 // SSSE3 implementation of Teddy Slim with 1-byte fingerprint.
 // Searches for multiple patterns (2-8) simultaneously using SIMD shuffle instructions.
@@ -30,9 +30,9 @@
 //   haystack_len+16(FP)  - haystack length (8 bytes)
 //   haystack_cap+24(FP)  - haystack capacity (8 bytes, unused)
 //   pos+32(FP)           - return: candidate position or -1 (8 bytes)
-//   bucket+40(FP)        - return: bucket MASK (bits for all matching buckets) or -1 (8 bytes)
+//   bucketMask+40(FP)    - return: bucket MASK (bits for all matching buckets) or 0 (1 byte)
 //
-// Total argument frame size: 48 bytes (8+8+8+8+8+8)
+// Total argument frame size: 41 bytes (8+8+8+8+8+1)
 //
 // teddyMasks struct layout (offsets):
 //   +0:  fingerprintLen (uint32, 4 bytes)
@@ -45,7 +45,7 @@
 //   +168: hiMasks[1] (32 bytes, unused)
 //   +200: hiMasks[2] (32 bytes, unused)
 //   +232: hiMasks[3] (32 bytes, unused)
-TEXT ·teddySlimSSSE3_1(SB), NOSPLIT, $0-48
+TEXT ·teddySlimSSSE3_1(SB), NOSPLIT, $0-41
 	// Load parameters
 	MOVQ    masks+0(FP), R8             // R8 = pointer to teddyMasks
 	MOVQ    haystack_base+8(FP), SI     // SI = haystack pointer
@@ -177,8 +177,7 @@ not_found:
 	// No candidate found in entire haystack
 	MOVQ    $-1, AX
 	MOVQ    AX, pos+32(FP)
-	MOVQ    $-1, BX
-	MOVQ    BX, bucket+40(FP)
+	MOVB    $0, bucketMask+40(FP)
 	RET                                 // No VZEROUPPER needed (SSSE3 only uses XMM)
 
 found_candidate:
@@ -229,7 +228,7 @@ found_candidate:
 	// NOTE: We return the FULL bucket mask, not just first bucket.
 	// Caller iterates through all set bits (like Rust's verify64).
 	MOVQ    AX, pos+32(FP)              // Return position (absolute offset)
-	MOVQ    CX, bucket+40(FP)           // Return bucket MASK (bits set for all matching buckets)
+	MOVB    CL, bucketMask+40(FP)       // Return bucket MASK (bits set for all matching buckets)
 	RET                                 // No VZEROUPPER needed (SSSE3)
 
 found_scalar:
@@ -241,10 +240,10 @@ found_scalar:
 
 	// Return results (bucket mask, not bucket ID)
 	MOVQ    SI, pos+32(FP)
-	MOVQ    AX, bucket+40(FP)           // Return bucket MASK
+	MOVB    AL, bucketMask+40(FP)       // Return bucket MASK
 	RET                                 // No VZEROUPPER needed (SSSE3)
 
-// func teddySlimSSSE3_2(masks *teddyMasks, haystack []byte) (pos, bucketMask int)
+// func teddySlimSSSE3_2(masks *teddyMasks, haystack []byte) (pos int, bucketMask uint8)
 //
 // SSSE3 implementation of Teddy Slim with 2-byte fingerprint.
 // This reduces false positives by ~90% compared to 1-byte fingerprint.
@@ -271,7 +270,7 @@ found_scalar:
 //   +168: hiMasks[1] (32 bytes, we use first 16)
 //   +200: hiMasks[2] (32 bytes, unused)
 //   +232: hiMasks[3] (32 bytes, unused)
-TEXT ·teddySlimSSSE3_2(SB), NOSPLIT, $0-48
+TEXT ·teddySlimSSSE3_2(SB), NOSPLIT, $0-41
 	// Load parameters
 	MOVQ    masks+0(FP), R8             // R8 = pointer to teddyMasks
 	MOVQ    haystack_base+8(FP), SI     // SI = haystack pointer
@@ -423,8 +422,7 @@ tail_loop_2:
 not_found_2:
 	MOVQ    $-1, AX
 	MOVQ    AX, pos+32(FP)
-	MOVQ    $-1, BX
-	MOVQ    BX, bucket+40(FP)
+	MOVB    $0, bucketMask+40(FP)
 	RET
 
 found_candidate_2:
@@ -470,7 +468,7 @@ found_candidate_2:
 
 	// Return results (bucket mask, not bucket ID)
 	MOVQ    AX, pos+32(FP)
-	MOVQ    CX, bucket+40(FP)           // Return bucket MASK
+	MOVB    CL, bucketMask+40(FP)       // Return bucket MASK
 	RET
 
 found_scalar_2:
@@ -479,5 +477,5 @@ found_scalar_2:
 
 	// Return results (bucket mask, not bucket ID)
 	MOVQ    SI, pos+32(FP)
-	MOVQ    AX, bucket+40(FP)           // Return bucket MASK
+	MOVB    AL, bucketMask+40(FP)       // Return bucket MASK
 	RET

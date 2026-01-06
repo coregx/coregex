@@ -5,12 +5,19 @@ import (
 	"testing"
 )
 
-// TestAhoCorasickStrategySelection verifies that patterns with >8 literals
+// TestAhoCorasickStrategySelection verifies that patterns with >32 literals
 // select UseAhoCorasick strategy.
 func TestAhoCorasickStrategySelection(t *testing.T) {
-	// Pattern with exactly 9 literals (above Teddy's limit of 8)
-	// Each literal >= 1 byte, all complete (no regex meta-characters)
-	pattern := `alfa|bravo|charlie|delta|echo|foxtrot|golf|hotel|india`
+	// Pattern with 33 literals (above Teddy's limit of 32)
+	// Each literal >= 3 bytes, all complete (no regex meta-characters)
+	// IMPORTANT: No shared prefixes! Go's regex parser factors common prefixes,
+	// e.g., "two|three" becomes "t(wo|hree)", which extracts only "t" as incomplete.
+	// Using fruits/vegetables/colors with unique first letters.
+	pattern := `apple|banana|cherry|date|elderberry|fig|grape|honeydew|` +
+		`imbe|jackfruit|kiwi|lemon|mango|nectarine|orange|papaya|` +
+		`quince|raspberry|strawberry|tomato|ugli|vanilla|watermelon|` +
+		`ximenia|yuzu|zucchini|apricot|blueberry|coconut|dragonfruit|` +
+		`eggplant|feijoa|guava`
 
 	re, err := Compile(pattern)
 	if err != nil {
@@ -24,7 +31,8 @@ func TestAhoCorasickStrategySelection(t *testing.T) {
 
 // TestAhoCorasickIsMatch tests boolean matching with Aho-Corasick.
 func TestAhoCorasickIsMatch(t *testing.T) {
-	// 10 patterns - triggers Aho-Corasick
+	// 10 patterns - now uses Teddy (limit raised from 8 to 32)
+	// This test will skip if Teddy is selected instead of Aho-Corasick
 	pattern := `apple|banana|cherry|date|elderberry|fig|grape|honeydew|imbe|jackfruit`
 
 	re, err := Compile(pattern)
@@ -217,9 +225,12 @@ func TestAhoCorasickCount(t *testing.T) {
 
 // TestAhoCorasickLargePatternSet tests with many patterns.
 func TestAhoCorasickLargePatternSet(t *testing.T) {
-	// 20 patterns - well above Teddy's limit
+	// 35 patterns - above Teddy's limit of 32
+	// No shared prefixes to avoid Go's regex parser factoring (e.g., "two|three" → "t(wo|hree)")
 	pattern := `alpha|bravo|charlie|delta|echo|foxtrot|golf|hotel|india|juliet|` +
-		`kilo|lima|mike|november|oscar|papa|quebec|romeo|sierra|tango`
+		`kilo|lima|mike|november|oscar|papa|quebec|romeo|sierra|tango|` +
+		`uniform|victor|whiskey|xray|yankee|zulu|anise|basil|cilantro|dill|` +
+		`endive|fennel|ginger|hops|ivy`
 
 	re, err := Compile(pattern)
 	if err != nil {
@@ -227,7 +238,7 @@ func TestAhoCorasickLargePatternSet(t *testing.T) {
 	}
 
 	if re.Strategy() != UseAhoCorasick {
-		t.Errorf("Strategy() = %s, want UseAhoCorasick for 20 patterns", re.Strategy())
+		t.Errorf("Strategy() = %s, want UseAhoCorasick for 35 patterns", re.Strategy())
 	}
 
 	haystack := []byte("this is alpha and omega, with bravo and tango at the end")

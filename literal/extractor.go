@@ -119,8 +119,6 @@ func (e *Extractor) ExtractPrefixes(re *syntax.Regexp) *Seq {
 
 // extractPrefixes is the internal recursive implementation.
 // The depth parameter prevents infinite recursion on malformed patterns.
-//
-//nolint:cyclop // Complexity is inherent to handling all regex AST node types in switch
 func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 	// Guard against excessive recursion (malformed or deeply nested patterns)
 	if depth > 100 {
@@ -163,26 +161,12 @@ func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 		// Get prefixes from first non-anchor part
 		firstPrefixes := e.extractPrefixes(re.Sub[startIdx], depth+1)
 
-		// Special case: Literal + CharClass expansion
-		// When regex parser optimizes "bar|baz" to "ba[rz]", we need to expand it back
-		// to ["bar", "baz"] for Teddy prefilter to work effectively.
+		// Try to expand factored patterns (e.g., ba[rz] → bar, baz)
 		if firstPrefixes.Len() > 0 && startIdx+1 < len(re.Sub) {
-			nextSub := re.Sub[startIdx+1]
-			if nextSub.Op == syntax.OpCharClass {
-				// Try to expand Literal + CharClass into multiple complete literals
-				expanded := e.expandLiteralCharClass(firstPrefixes, nextSub, startIdx+2 < len(re.Sub))
-				if expanded != nil && !expanded.IsEmpty() {
-					return expanded
-				}
+			expanded := e.tryExpandConcatSuffix(firstPrefixes, re.Sub, startIdx, depth)
+			if expanded != nil {
+				return expanded
 			}
-
-			// Default: mark as incomplete since more follows
-			lits := make([]Literal, firstPrefixes.Len())
-			for i := 0; i < firstPrefixes.Len(); i++ {
-				lit := firstPrefixes.Get(i)
-				lits[i] = NewLiteral(lit.Bytes, false) // Mark as incomplete
-			}
-			return NewSeq(lits...)
 		}
 
 		return firstPrefixes
@@ -538,6 +522,108 @@ func (e *Extractor) expandLiteralCharClass(prefixes *Seq, charClass *syntax.Rege
 				if len(lits) >= e.config.MaxLiterals {
 					return NewSeq(lits...)
 				}
+			}
+		}
+	}
+
+	return NewSeq(lits...)
+}
+
+// tryExpandConcatSuffix attempts to expand factored patterns in a concatenation.
+// This handles cases where the regex parser factors common prefixes:
+//   - "bar|baz" → ba[rz] (CharClass suffix)
+//   - (Wanderlust|Weltanschauung) → W(anderlust|eltanschauung) (Alternation suffix)
+//
+// Returns expanded Seq or nil if expansion is not possible.
+func (e *Extractor) tryExpandConcatSuffix(prefixes *Seq, subs []*syntax.Regexp, startIdx int, depth int) *Seq {
+	nextSub := subs[startIdx+1]
+	hasMore := startIdx+2 < len(subs)
+
+	// Try CharClass expansion: ba[rz] → bar, baz
+	if nextSub.Op == syntax.OpCharClass {
+		expanded := e.expandLiteralCharClass(prefixes, nextSub, hasMore)
+		if expanded != nil && !expanded.IsEmpty() {
+			return expanded
+		}
+	}
+
+	// Try Alternation expansion: W(anderlust|eltanschauung) → Wanderlust, Weltanschauung
+	if nextSub.Op == syntax.OpAlternate {
+		expanded := e.expandLiteralAlternate(prefixes, nextSub, hasMore, depth)
+		if expanded != nil && !expanded.IsEmpty() {
+			return expanded
+		}
+	}
+
+	// Default: mark prefixes as incomplete since more elements follow
+	lits := make([]Literal, prefixes.Len())
+	for i := 0; i < prefixes.Len(); i++ {
+		lit := prefixes.Get(i)
+		lits[i] = NewLiteral(lit.Bytes, false) // Incomplete
+	}
+	return NewSeq(lits...)
+}
+
+// expandLiteralAlternate expands Literal + Alternation back into individual complete literals.
+// This handles the case where the regex parser factors common prefixes:
+//
+//	(Wanderlust|Weltanschauung) → W(anderlust|eltanschauung)
+//
+// We expand this back to ["Wanderlust", "Weltanschauung"] so that Teddy and Aho-Corasick
+// can efficiently search for the complete patterns.
+//
+// Parameters:
+//   - prefixes: the common prefix literals (e.g., ["W"])
+//   - alternate: the OpAlternate node containing suffixes
+//   - hasMore: true if more elements follow the alternation
+//   - depth: current recursion depth
+//
+// Returns nil if expansion is not possible or would exceed limits.
+func (e *Extractor) expandLiteralAlternate(prefixes *Seq, alternate *syntax.Regexp, hasMore bool, depth int) *Seq {
+	if alternate.Op != syntax.OpAlternate {
+		return nil
+	}
+
+	// Extract suffix literals from each alternative
+	var suffixLits []Literal
+	for _, sub := range alternate.Sub {
+		seq := e.extractPrefixes(sub, depth+1)
+		if seq.IsEmpty() {
+			// One branch has no extractable literal - can't expand
+			return nil
+		}
+		for i := 0; i < seq.Len(); i++ {
+			suffixLits = append(suffixLits, seq.Get(i))
+		}
+	}
+
+	// Calculate total expanded literals
+	totalLits := prefixes.Len() * len(suffixLits)
+	if totalLits > e.config.MaxLiterals {
+		return nil // Would exceed limit
+	}
+
+	// Expand: each prefix combined with each suffix
+	var lits []Literal
+	for i := 0; i < prefixes.Len(); i++ {
+		prefix := prefixes.Get(i)
+		for _, suffix := range suffixLits {
+			// Combine prefix + suffix
+			combined := make([]byte, len(prefix.Bytes)+len(suffix.Bytes))
+			copy(combined, prefix.Bytes)
+			copy(combined[len(prefix.Bytes):], suffix.Bytes)
+
+			// Truncate if needed
+			if len(combined) > e.config.MaxLiteralLen {
+				combined = combined[:e.config.MaxLiteralLen]
+			}
+
+			// Mark as complete only if: no more elements follow AND suffix was complete
+			complete := !hasMore && suffix.Complete
+			lits = append(lits, NewLiteral(combined, complete))
+
+			if len(lits) >= e.config.MaxLiterals {
+				return NewSeq(lits...)
 			}
 		}
 	}
