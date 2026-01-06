@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+- Look-around assertions
+- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
+- UTF-8 Automata optimization
+- SIMD sparse search for CharClassSearcher (#64)
+
+---
+
+## [0.9.5] - 2026-01-06
+
 ### Changed
 - **Teddy pattern limit expanded from 8 to 32** (#67)
   - Slim Teddy now handles up to 32 patterns (was 8)
@@ -20,12 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Caused wrong strategy selection: UseReverseSuffixSet instead of UseTeddy
   - New function: `expandLiteralAlternate()` expands factored patterns back
   - Benchmark fix: 376µs → 1.7µs (**220x faster**)
-
-### Planned
-- Look-around assertions
-- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
-- UTF-8 Automata optimization
-- SIMD sparse search for CharClassSearcher (#64)
 
 ---
 
