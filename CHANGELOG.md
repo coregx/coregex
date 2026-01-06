@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
 - UTF-8 Automata optimization
+- SIMD sparse search for CharClassSearcher (#64)
+
+---
+
+## [0.9.4] - 2026-01-06
+
+### Changed
+- **Streaming state machine for CharClassSearcher** - single-pass FindAll/Count
+  - New methods: `FindAllIndices()`, `Count()` with streaming state machine
+  - Eliminates per-match function call overhead
+  - Based on Rust regex approach: SEARCHING/MATCHING states
+  - Integrated into public API: `FindAll()`, `FindAllIndex()` use streaming path
+
+### Performance
+- **CharClassFindAll: 15-30% faster** (1500ns → 1100-1400ns on 1KB)
+- **char_class gap vs Rust**: reduced from 2.6x to ~1.9x
+- No regressions on other patterns (+0.05% geomean)
 
 ---
 
