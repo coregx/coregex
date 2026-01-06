@@ -1884,49 +1884,30 @@ func (e *Engine) FindAllSubmatch(haystack []byte, n int) []*MatchWithCaptures {
 	return matches
 }
 
-// digitPrefilterAdaptiveThreshold is the number of consecutive false positives
-// (digit positions that don't lead to matches) before switching to DFA-only mode.
-// This implements runtime adaptive switching based on Rust regex's insight:
-// "if a prefilter has a high false positive rate and produces lots of candidates,
-// then a prefilter can overall make a regex search slower."
-//
-// Value rationale:
-//   - Too low (e.g., 8): May switch prematurely on sparse data
-//   - Too high (e.g., 256): Wastes time on dense data with many FPs
-//   - 64: Good balance - gives prefilter fair chance while limiting overhead
-const digitPrefilterAdaptiveThreshold = 64
-
 // findDigitPrefilter searches using SIMD digit scanning + DFA verification.
-// Used for digit-lead patterns like IP addresses where literal extraction fails
+// Used for simple digit-lead patterns where literal extraction fails
 // but all alternation branches must start with a digit.
+//
+// Note: Complex digit-lead patterns (like IP addresses with 74 NFA states) are
+// handled by UseBoth/UseDFA strategies instead. See digitPrefilterMaxNFAStates.
 //
 // Algorithm:
 //  1. Use SIMD to find next digit position in haystack
 //  2. Verify match at digit position using lazy DFA + PikeVM
 //  3. If no match, continue from digit position + 1
-//  4. ADAPTIVE: If too many consecutive FPs, switch to DFA-only mode
 //
 // Performance:
-//   - Sparse data: Skips non-digit regions with SIMD (15-20x faster)
-//   - Dense data: Adaptively switches to DFA when FP rate is high
+//   - Skips non-digit regions with SIMD (15-20x faster for sparse data)
 //   - Total: O(n) for scan + O(k*m) for k digit candidates
 func (e *Engine) findDigitPrefilter(haystack []byte) *Match {
 	if e.digitPrefilter == nil {
 		return e.findNFA(haystack)
 	}
 
-	e.stats.PrefilterHits++ // Count prefilter usage
+	e.stats.PrefilterHits++
 	pos := 0
-	consecutiveFPs := 0 // Track consecutive false positives
 
 	for pos < len(haystack) {
-		// ADAPTIVE: If too many consecutive FPs, abandon prefilter and use DFA directly
-		// This prevents pathological slowdown on dense digit data (like IP-heavy text)
-		if consecutiveFPs >= digitPrefilterAdaptiveThreshold {
-			e.stats.PrefilterAbandoned++
-			return e.findAdaptiveAt(haystack, pos)
-		}
-
 		// Use SIMD to find next digit position
 		digitPos := e.digitPrefilter.Find(haystack, pos)
 		if digitPos < 0 {
@@ -1944,8 +1925,6 @@ func (e *Engine) findDigitPrefilter(haystack []byte) *Match {
 					return NewMatch(start, end, haystack)
 				}
 			}
-			// DFA rejected - count as false positive
-			consecutiveFPs++
 		} else {
 			// No DFA - use PikeVM directly
 			e.stats.NFASearches++
@@ -1953,8 +1932,6 @@ func (e *Engine) findDigitPrefilter(haystack []byte) *Match {
 			if found {
 				return NewMatch(start, end, haystack)
 			}
-			// NFA rejected - count as false positive
-			consecutiveFPs++
 		}
 
 		// No match at this digit position, continue searching
@@ -1965,7 +1942,6 @@ func (e *Engine) findDigitPrefilter(haystack []byte) *Match {
 }
 
 // findDigitPrefilterAt searches using digit prefilter starting at position 'at'.
-// Uses adaptive switching like findDigitPrefilter.
 func (e *Engine) findDigitPrefilterAt(haystack []byte, at int) *Match {
 	if e.digitPrefilter == nil || at >= len(haystack) {
 		return e.findNFAAt(haystack, at)
@@ -1973,15 +1949,8 @@ func (e *Engine) findDigitPrefilterAt(haystack []byte, at int) *Match {
 
 	e.stats.PrefilterHits++
 	pos := at
-	consecutiveFPs := 0
 
 	for pos < len(haystack) {
-		// ADAPTIVE: Switch to DFA if too many consecutive FPs
-		if consecutiveFPs >= digitPrefilterAdaptiveThreshold {
-			e.stats.PrefilterAbandoned++
-			return e.findAdaptiveAt(haystack, pos)
-		}
-
 		digitPos := e.digitPrefilter.Find(haystack, pos)
 		if digitPos < 0 {
 			return nil
@@ -1996,14 +1965,12 @@ func (e *Engine) findDigitPrefilterAt(haystack []byte, at int) *Match {
 					return NewMatch(start, end, haystack)
 				}
 			}
-			consecutiveFPs++
 		} else {
 			e.stats.NFASearches++
 			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
 			if found {
 				return NewMatch(start, end, haystack)
 			}
-			consecutiveFPs++
 		}
 
 		pos = digitPos + 1
@@ -2014,7 +1981,6 @@ func (e *Engine) findDigitPrefilterAt(haystack []byte, at int) *Match {
 
 // isMatchDigitPrefilter checks for match using digit prefilter.
 // Optimized for boolean matching with early termination.
-// Uses adaptive switching like findDigitPrefilter.
 func (e *Engine) isMatchDigitPrefilter(haystack []byte) bool {
 	if e.digitPrefilter == nil {
 		return e.isMatchNFA(haystack)
@@ -2022,15 +1988,8 @@ func (e *Engine) isMatchDigitPrefilter(haystack []byte) bool {
 
 	e.stats.PrefilterHits++
 	pos := 0
-	consecutiveFPs := 0
 
 	for pos < len(haystack) {
-		// ADAPTIVE: Switch to DFA if too many consecutive FPs
-		if consecutiveFPs >= digitPrefilterAdaptiveThreshold {
-			e.stats.PrefilterAbandoned++
-			return e.isMatchAdaptive(haystack[pos:])
-		}
-
 		digitPos := e.digitPrefilter.Find(haystack, pos)
 		if digitPos < 0 {
 			return false // No more digits
@@ -2039,18 +1998,15 @@ func (e *Engine) isMatchDigitPrefilter(haystack []byte) bool {
 		// Use DFA for fast boolean check if available
 		if e.dfa != nil {
 			e.stats.DFASearches++
-			// DFA.FindAt returns end position if match, -1 otherwise
 			if e.dfa.FindAt(haystack, digitPos) != -1 {
 				return true
 			}
-			consecutiveFPs++
 		} else {
 			e.stats.NFASearches++
 			_, _, found := e.pikevm.SearchAt(haystack, digitPos)
 			if found {
 				return true
 			}
-			consecutiveFPs++
 		}
 
 		pos = digitPos + 1
@@ -2060,7 +2016,6 @@ func (e *Engine) isMatchDigitPrefilter(haystack []byte) bool {
 }
 
 // findIndicesDigitPrefilter returns indices using digit prefilter - zero alloc.
-// Uses adaptive switching like findDigitPrefilter.
 func (e *Engine) findIndicesDigitPrefilter(haystack []byte) (int, int, bool) {
 	if e.digitPrefilter == nil {
 		return e.findIndicesNFA(haystack)
@@ -2068,15 +2023,8 @@ func (e *Engine) findIndicesDigitPrefilter(haystack []byte) (int, int, bool) {
 
 	e.stats.PrefilterHits++
 	pos := 0
-	consecutiveFPs := 0
 
 	for pos < len(haystack) {
-		// ADAPTIVE: Switch to DFA if too many consecutive FPs
-		if consecutiveFPs >= digitPrefilterAdaptiveThreshold {
-			e.stats.PrefilterAbandoned++
-			return e.findIndicesAdaptiveAt(haystack, pos)
-		}
-
 		digitPos := e.digitPrefilter.Find(haystack, pos)
 		if digitPos < 0 {
 			return -1, -1, false
@@ -2084,21 +2032,18 @@ func (e *Engine) findIndicesDigitPrefilter(haystack []byte) (int, int, bool) {
 
 		if e.dfa != nil {
 			e.stats.DFASearches++
-			endPos := e.dfa.FindAt(haystack, digitPos)
+			// Use anchored search - pattern MUST start at digitPos
+			// This is much faster than PikeVM for patterns that require digit start
+			endPos := e.dfa.SearchAtAnchored(haystack, digitPos)
 			if endPos != -1 {
-				start, end, found := e.pikevm.SearchAt(haystack, digitPos)
-				if found {
-					return start, end, true
-				}
+				return digitPos, endPos, true
 			}
-			consecutiveFPs++
 		} else {
 			e.stats.NFASearches++
 			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
 			if found {
 				return start, end, true
 			}
-			consecutiveFPs++
 		}
 
 		pos = digitPos + 1
@@ -2108,7 +2053,6 @@ func (e *Engine) findIndicesDigitPrefilter(haystack []byte) (int, int, bool) {
 }
 
 // findIndicesDigitPrefilterAt returns indices starting at position 'at' - zero alloc.
-// Uses adaptive switching like findDigitPrefilter.
 func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int, bool) {
 	if e.digitPrefilter == nil || at >= len(haystack) {
 		return e.findIndicesNFAAt(haystack, at)
@@ -2116,15 +2060,8 @@ func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int,
 
 	e.stats.PrefilterHits++
 	pos := at
-	consecutiveFPs := 0
 
 	for pos < len(haystack) {
-		// ADAPTIVE: Switch to DFA if too many consecutive FPs
-		if consecutiveFPs >= digitPrefilterAdaptiveThreshold {
-			e.stats.PrefilterAbandoned++
-			return e.findIndicesAdaptiveAt(haystack, pos)
-		}
-
 		digitPos := e.digitPrefilter.Find(haystack, pos)
 		if digitPos < 0 {
 			return -1, -1, false
@@ -2132,21 +2069,18 @@ func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int,
 
 		if e.dfa != nil {
 			e.stats.DFASearches++
-			endPos := e.dfa.FindAt(haystack, digitPos)
+			// Use anchored search - pattern MUST start at digitPos
+			// This is much faster than PikeVM for patterns that require digit start
+			endPos := e.dfa.SearchAtAnchored(haystack, digitPos)
 			if endPos != -1 {
-				start, end, found := e.pikevm.SearchAt(haystack, digitPos)
-				if found {
-					return start, end, true
-				}
+				return digitPos, endPos, true
 			}
-			consecutiveFPs++
 		} else {
 			e.stats.NFASearches++
 			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
 			if found {
 				return start, end, true
 			}
-			consecutiveFPs++
 		}
 
 		pos = digitPos + 1
