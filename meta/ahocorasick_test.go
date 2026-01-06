@@ -5,19 +5,23 @@ import (
 	"testing"
 )
 
-// TestAhoCorasickStrategySelection verifies that patterns with >32 literals
+// TestAhoCorasickStrategySelection verifies that patterns with >64 literals
 // select UseAhoCorasick strategy.
 func TestAhoCorasickStrategySelection(t *testing.T) {
-	// Pattern with 33 literals (above Teddy's limit of 32)
+	// Pattern with 65 literals (above Teddy's limit of 64)
+	// Teddy supports up to 64 patterns via Slim (2-32) and Fat (33-64) variants.
+	// For >64 patterns, Aho-Corasick is selected.
 	// Each literal >= 3 bytes, all complete (no regex meta-characters)
 	// IMPORTANT: No shared prefixes! Go's regex parser factors common prefixes,
 	// e.g., "two|three" becomes "t(wo|hree)", which extracts only "t" as incomplete.
-	// Using fruits/vegetables/colors with unique first letters.
-	pattern := `apple|banana|cherry|date|elderberry|fig|grape|honeydew|` +
-		`imbe|jackfruit|kiwi|lemon|mango|nectarine|orange|papaya|` +
-		`quince|raspberry|strawberry|tomato|ugli|vanilla|watermelon|` +
-		`ximenia|yuzu|zucchini|apricot|blueberry|coconut|dragonfruit|` +
-		`eggplant|feijoa|guava`
+	// Using unique words with different first characters.
+	pattern := `alpha|bravo|charlie|delta|echo|foxtrot|golf|hotel|india|juliet|` + // 10
+		`kilo|lima|mike|november|oscar|papa|quebec|romeo|sierra|tango|` + // 20
+		`uniform|victor|whiskey|xray|yankee|zulu|anise|basil|cilantro|dill|` + // 30
+		`endive|fennel|ginger|hops|ivory|jasmine|kelp|lavender|mint|nutmeg|` + // 40
+		`oregano|parsley|quassia|rosemary|sage|thyme|urtica|verbena|wasabi|xylose|` + // 50
+		`yarrow|zinnia|acacia|bamboo|cactus|dahlia|ebony|fern|grass|holly|` + // 60
+		`iris|juniper|kudzu|lotus|moss|nettle|oak` // 67
 
 	re, err := Compile(pattern)
 	if err != nil {
@@ -25,7 +29,7 @@ func TestAhoCorasickStrategySelection(t *testing.T) {
 	}
 
 	if re.Strategy() != UseAhoCorasick {
-		t.Errorf("Strategy() = %s, want UseAhoCorasick", re.Strategy())
+		t.Errorf("Strategy() = %s, want UseAhoCorasick for 67 patterns", re.Strategy())
 	}
 }
 
@@ -223,14 +227,17 @@ func TestAhoCorasickCount(t *testing.T) {
 	}
 }
 
-// TestAhoCorasickLargePatternSet tests with many patterns.
+// TestAhoCorasickLargePatternSet tests with many patterns (>64 triggers Aho-Corasick).
 func TestAhoCorasickLargePatternSet(t *testing.T) {
-	// 35 patterns - above Teddy's limit of 32
+	// 70 patterns - above Teddy's limit of 64 (Fat Teddy handles up to 64)
 	// No shared prefixes to avoid Go's regex parser factoring (e.g., "two|three" → "t(wo|hree)")
-	pattern := `alpha|bravo|charlie|delta|echo|foxtrot|golf|hotel|india|juliet|` +
-		`kilo|lima|mike|november|oscar|papa|quebec|romeo|sierra|tango|` +
-		`uniform|victor|whiskey|xray|yankee|zulu|anise|basil|cilantro|dill|` +
-		`endive|fennel|ginger|hops|ivy`
+	pattern := `alpha|bravo|charlie|delta|echo|foxtrot|golf|hotel|india|juliet|` + // 10
+		`kilo|lima|mike|november|oscar|papa|quebec|romeo|sierra|tango|` + // 20
+		`uniform|victor|whiskey|xray|yankee|zulu|anise|basil|cilantro|dill|` + // 30
+		`endive|fennel|ginger|hops|ivory|jasmine|kelp|lavender|mint|nutmeg|` + // 40
+		`oregano|parsley|quassia|rosemary|sage|thyme|urtica|verbena|wasabi|xylose|` + // 50
+		`yarrow|zinnia|acacia|bamboo|cactus|dahlia|ebony|fern|grass|holly|` + // 60
+		`iris|juniper|kudzu|lotus|moss|nettle|oak|plum|reed|sorrel` // 70
 
 	re, err := Compile(pattern)
 	if err != nil {
@@ -238,7 +245,7 @@ func TestAhoCorasickLargePatternSet(t *testing.T) {
 	}
 
 	if re.Strategy() != UseAhoCorasick {
-		t.Errorf("Strategy() = %s, want UseAhoCorasick for 35 patterns", re.Strategy())
+		t.Errorf("Strategy() = %s, want UseAhoCorasick for 70 patterns", re.Strategy())
 	}
 
 	haystack := []byte("this is alpha and omega, with bravo and tango at the end")

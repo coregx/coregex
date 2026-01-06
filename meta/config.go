@@ -55,7 +55,8 @@ type Config struct {
 	MinLiteralLen int
 
 	// MaxLiterals limits the number of literals to extract for prefiltering.
-	// Default: 64
+	// Must be > 64 to properly detect patterns that exceed Teddy's capacity.
+	// Default: 256 (allows detecting patterns with >64 literals for Aho-Corasick)
 	MaxLiterals int
 
 	// MaxRecursionDepth limits recursion during NFA compilation.
@@ -83,8 +84,8 @@ func DefaultConfig() Config {
 		EnablePrefilter:      true,
 		MaxDFAStates:         10000,
 		DeterminizationLimit: 1000,
-		MinLiteralLen:        1, // Allow single-byte prefilters (memchr) like Rust
-		MaxLiterals:          64,
+		MinLiteralLen:        1,   // Allow single-byte prefilters (memchr) like Rust
+		MaxLiterals:          256, // Allow detecting >64 literals for Aho-Corasick
 		MaxRecursionDepth:    100,
 	}
 }

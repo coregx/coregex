@@ -40,11 +40,19 @@ import (
 
 // Constants for Teddy configuration
 const (
-	// MaxTeddyPatterns is the maximum number of patterns Teddy can handle efficiently.
-	// Slim Teddy uses 8 buckets with modulo distribution, so patterns are spread across buckets.
-	// With 2-byte fingerprint (default), false positive rate is low enough for 32 patterns.
-	// Reference: Rust aho-corasick uses 32 patterns as threshold for Fat Teddy (AVX2).
-	MaxTeddyPatterns = 32
+	// MaxSlimTeddyPatterns is the maximum number of patterns Slim Teddy (SSSE3) can handle.
+	// Slim Teddy uses 8 buckets with modulo distribution.
+	// Reference: Rust aho-corasick uses 32 patterns as threshold for Fat Teddy.
+	MaxSlimTeddyPatterns = 32
+
+	// MaxFatTeddyPatterns is the maximum number of patterns Fat Teddy (AVX2) can handle.
+	// Fat Teddy uses 16 buckets and requires AVX2 (256-bit vectors).
+	// Reference: Rust aho-corasick supports up to 64 patterns with Fat Teddy.
+	MaxFatTeddyPatterns = 64
+
+	// MaxTeddyPatterns is the maximum patterns for auto-selection.
+	// If AVX2 available: 64 (Fat Teddy), otherwise: 32 (Slim Teddy)
+	MaxTeddyPatterns = MaxFatTeddyPatterns
 
 	// MinTeddyPatterns is the minimum number of patterns required for Teddy
 	MinTeddyPatterns = 2
@@ -59,6 +67,10 @@ const (
 
 	// NumBucketsSlim is the number of buckets in Slim Teddy (8 buckets, 8 bits per mask byte)
 	NumBucketsSlim = 8
+
+	// NumBucketsFat is the number of buckets in Fat Teddy (16 buckets, requires AVX2)
+	// Low 128-bit lane = buckets 0-7, High 128-bit lane = buckets 8-15
+	NumBucketsFat = 16
 )
 
 // TeddyConfig configures Teddy construction.
@@ -77,11 +89,12 @@ type TeddyConfig struct {
 	FingerprintLen int
 }
 
-// DefaultTeddyConfig returns the default Teddy configuration.
+// DefaultTeddyConfig returns the default Slim Teddy configuration.
+// For Fat Teddy (33-64 patterns), use NewFatTeddy with DefaultFatTeddyConfig.
 func DefaultTeddyConfig() *TeddyConfig {
 	return &TeddyConfig{
 		MinPatterns:    MinTeddyPatterns,
-		MaxPatterns:    MaxTeddyPatterns,
+		MaxPatterns:    MaxSlimTeddyPatterns, // Slim Teddy: 8 buckets, max 32 patterns
 		MinPatternLen:  MinTeddyPatternLen,
 		FingerprintLen: 2, // 2-byte fingerprint reduces false positives by ~90%
 	}
@@ -586,6 +599,11 @@ func (t *Teddy) HeapBytes() int {
 // This is called by selectPrefilter when multiple literals are detected.
 // It extracts pattern bytes from the literal sequence and constructs Teddy.
 //
+// Selection logic:
+//   - 2-32 patterns: Slim Teddy (8 buckets, SSSE3)
+//   - 33-64 patterns: Fat Teddy (16 buckets, AVX2/scalar)
+//   - >64 patterns: Returns nil (use Aho-Corasick instead)
+//
 // Returns nil if literals are not suitable for Teddy.
 func newTeddy(seq *literal.Seq) Prefilter {
 	// Extract pattern bytes from literal sequence
@@ -594,6 +612,19 @@ func newTeddy(seq *literal.Seq) Prefilter {
 		patterns[i] = seq.Get(i).Bytes
 	}
 
-	// Build Teddy with default config
-	return NewTeddy(patterns, nil)
+	n := len(patterns)
+
+	// Choose between Slim Teddy (2-32) and Fat Teddy (33-64)
+	if n <= MaxSlimTeddyPatterns {
+		// Slim Teddy: 8 buckets, SSSE3 - optimal for 2-32 patterns
+		return NewTeddy(patterns, nil)
+	}
+
+	if n <= MaxFatTeddyPatterns {
+		// Fat Teddy: 16 buckets, AVX2 - handles 33-64 patterns
+		return NewFatTeddy(patterns, nil)
+	}
+
+	// >64 patterns: Teddy not suitable, caller should use Aho-Corasick
+	return nil
 }
