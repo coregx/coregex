@@ -466,6 +466,37 @@ func BenchmarkFindAllIndex(b *testing.B) {
 	}
 }
 
+// BenchmarkFindAllIndex_CharClass benchmarks CharClassSearcher pattern vs stdlib
+func BenchmarkFindAllIndex_CharClass(b *testing.B) {
+	// Generate 1KB input with ~100 word matches
+	input := make([]byte, 1024)
+	for i := range input {
+		if i%10 < 5 {
+			input[i] = 'a' + byte(i%26)
+		} else {
+			input[i] = ' '
+		}
+	}
+
+	b.Run("coregex/1KB", func(b *testing.B) {
+		re := MustCompile(`\w+`)
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			re.FindAllIndex(input, -1)
+		}
+	})
+
+	b.Run("stdlib/1KB", func(b *testing.B) {
+		re := regexp.MustCompile(`\w+`)
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			re.FindAllIndex(input, -1)
+		}
+	})
+}
+
 // BenchmarkFindSubmatch benchmarks capture group extraction
 func BenchmarkFindSubmatch(b *testing.B) {
 	tests := []struct {

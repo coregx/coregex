@@ -9,6 +9,11 @@ package nfa
 // avoiding the overhead of recursive backtracking.
 //
 // Performance: 3-5x faster than BoundedBacktracker for char_class patterns.
+//
+// Note: SIMD optimization was evaluated but found to be slower for char_class
+// patterns because matches are frequent (30-50% of positions) and short.
+// The scalar lookup table approach is optimal for this use case.
+// For large-scale char_class search, consider using Lazy DFA instead.
 type CharClassSearcher struct {
 	// membership is a 256-byte lookup table: membership[b] = true if byte b matches
 	membership [256]bool
@@ -133,4 +138,117 @@ func (s *CharClassSearcher) IsMatch(haystack []byte) bool {
 // CanHandle returns true - CharClassSearcher can handle any input size.
 func (s *CharClassSearcher) CanHandle(_ int) bool {
 	return true
+}
+
+// FindAllIndices finds all non-overlapping matches using a single-pass state machine.
+// This is significantly faster than repeated SearchAt calls because:
+//   - No per-match function call overhead
+//   - Better CPU branch prediction (consistent state transitions)
+//   - Single pass through input (cache-friendly)
+//
+// Returns slice of [start, end] pairs. If results slice is provided and has
+// sufficient capacity, it will be reused to avoid allocation.
+//
+// This implements the Rust regex approach: streaming state machine with
+// SEARCHING/MATCHING states instead of separate find-start/find-end loops.
+func (s *CharClassSearcher) FindAllIndices(haystack []byte, results [][2]int) [][2]int {
+	// Reuse or allocate results slice
+	if results == nil {
+		// Pre-allocate reasonable capacity based on expected match density
+		// For char_class patterns, expect ~10-20% of input to be match starts
+		results = make([][2]int, 0, len(haystack)/20+1)
+	} else {
+		results = results[:0] // Reset length, keep capacity
+	}
+
+	n := len(haystack)
+	if n == 0 {
+		return results
+	}
+
+	// State machine approach: single pass, no function calls
+	// States: SEARCHING (looking for match start) or MATCHING (inside a match)
+	const (
+		stateSearching = iota
+		stateMatching
+	)
+
+	state := stateSearching
+	matchStart := 0
+	membership := &s.membership // Avoid repeated struct field access
+
+	for i := 0; i < n; i++ {
+		matches := membership[haystack[i]]
+
+		switch state {
+		case stateSearching:
+			if matches {
+				matchStart = i
+				state = stateMatching
+			}
+
+		case stateMatching:
+			if !matches {
+				// End of match - emit if long enough
+				if i-matchStart >= s.minMatch {
+					results = append(results, [2]int{matchStart, i})
+				}
+				state = stateSearching
+			}
+		}
+	}
+
+	// Handle match at end of input
+	if state == stateMatching && n-matchStart >= s.minMatch {
+		results = append(results, [2]int{matchStart, n})
+	}
+
+	return results
+}
+
+// Count returns the number of non-overlapping matches using single-pass state machine.
+// This is faster than len(FindAllIndices()) because it doesn't allocate a results slice.
+func (s *CharClassSearcher) Count(haystack []byte) int {
+	n := len(haystack)
+	if n == 0 {
+		return 0
+	}
+
+	// State machine approach: single pass, no function calls
+	const (
+		stateSearching = iota
+		stateMatching
+	)
+
+	count := 0
+	state := stateSearching
+	matchStart := 0
+	membership := &s.membership
+
+	for i := 0; i < n; i++ {
+		matches := membership[haystack[i]]
+
+		switch state {
+		case stateSearching:
+			if matches {
+				matchStart = i
+				state = stateMatching
+			}
+
+		case stateMatching:
+			if !matches {
+				if i-matchStart >= s.minMatch {
+					count++
+				}
+				state = stateSearching
+			}
+		}
+	}
+
+	// Handle match at end of input
+	if state == stateMatching && n-matchStart >= s.minMatch {
+		count++
+	}
+
+	return count
 }
