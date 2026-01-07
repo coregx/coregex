@@ -527,14 +527,17 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 	innerInfo := extractor.ExtractInnerForReverseSearch(re)
 	if innerInfo != nil {
 		lcp := innerInfo.Literals.LongestCommonPrefix()
-		// Single-character inner literals like "@" or "." can be effective because:
-		// (1) Match() is fast with memchr prefilter
-		// (2) Find() uses early return optimization
-		// (3) ReverseInner detects quadratic behavior and falls back to Core when needed
+		// Single-character inner literals like "@" can be effective for email patterns
+		// because: (1) Match() is fast with memchr prefilter, (2) Find() uses
+		// early return optimization. ReverseInner detects quadratic behavior
+		// and falls back to Core when needed.
 		//
-		// Issue #70: Version patterns like `\d+\.\d+\.\d+` benefit from ReverseInner
-		// with "." as inner literal (~0.5% frequency) rather than DigitPrefilter
-		// (digits are ~10% frequency). Rust regex uses the same approach.
+		// EXCEPTION: For digit-lead patterns like `\d+\.\d+\.\d+`, single-byte
+		// inner literals (like ".") have high frequency in typical text.
+		// DigitPrefilter is 3.8x faster for these patterns (Issue #75).
+		if len(lcp) == 1 && isDigitLeadPattern(re) {
+			return 0 // Let DigitPrefilter handle digit-lead patterns
+		}
 		if len(lcp) >= 1 {
 			return UseReverseInner // Inner literal available - use ReverseInner
 		}
