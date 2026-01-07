@@ -8,10 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
+- CompositeSearcher for concatenated char classes (#72)
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
 - UTF-8 Automata optimization
-- SIMD sparse search for CharClassSearcher (#64)
+
+---
+
+## [0.10.1] - 2026-01-07
+
+### Added
+- **AVX2 Slim Teddy** - 32 bytes/iteration (2x throughput vs SSSE3) (#69)
+  - New files: `prefilter/teddy_slim_avx2_amd64.go`, `prefilter/teddy_slim_avx2_amd64.s`
+  - Automatic fallback to SSSE3 on non-AVX2 CPUs
+  - 14.9 GB/s throughput on 64KB input
+
+- **Public optimization documentation** - `docs/OPTIMIZATIONS.md` (#71)
+  - Documents 5 optimizations that beat Rust regex
+  - DO NOT REGRESS comments in critical source files
+  - Benchmark verification procedures
+
+### Fixed
+- **Version pattern strategy selection** (#70)
+  - Patterns like `\d+\.\d+\.\d+` now use `UseReverseInner` with "." as inner literal
+  - Removed incorrect digit-lead special case in `strategy.go`
+  - Performance: 3.2x slower → ~1.2x slower vs Rust
+
+### Performance
+| Pattern | Before | After | Improvement |
+|---------|--------|-------|-------------|
+| literal_alt (foo\|bar) | SSSE3 16B/iter | AVX2 32B/iter | **2x throughput** |
+| version (\d+\.\d+) | 3.2x vs Rust | ~1.2x vs Rust | **~2.7x faster** |
 
 ---
 
