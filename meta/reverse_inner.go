@@ -1,5 +1,10 @@
 package meta
 
+// DO NOT REGRESS: ReverseInner is 16% faster than Rust regex on email/inner-literal patterns.
+// This optimization uses bidirectional DFA search from inner literal positions.
+// Key: AST splitting builds separate NFAs for prefix/suffix, enabling true bidirectional search.
+// See docs/OPTIMIZATIONS.md for algorithm details and benchmark data.
+
 import (
 	"errors"
 	"regexp/syntax"

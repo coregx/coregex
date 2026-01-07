@@ -1,5 +1,9 @@
 // Package prefilter provides fast candidate filtering for regex search.
 //
+// DO NOT REGRESS: DigitPrefilter is 3.3x faster than Rust regex on IP address patterns.
+// This optimization uses SIMD-accelerated digit scanning to skip non-digit regions.
+// See docs/OPTIMIZATIONS.md for algorithm details and benchmark data.
+//
 // This file implements DigitPrefilter, a specialized prefilter for patterns
 // that must start with an ASCII digit [0-9]. Used for IP address patterns
 // and other digit-lead alternations where literal extraction fails.
