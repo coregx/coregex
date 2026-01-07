@@ -74,16 +74,18 @@ func (t *Teddy) findSIMD(haystack []byte) (pos int, bucketMask uint8) {
 	// Check fingerprint length
 	fpLen := int(t.masks.fingerprintLen)
 
-	// Prefer AVX2 for 2x throughput (32 bytes/iteration vs 16 bytes)
-	if hasAVX2 {
-		switch fpLen {
-		case 1:
-			return teddySlimAVX2_1(t.masks, haystack)
-		case 2:
-			return teddySlimAVX2_2(t.masks, haystack)
-		}
-		// 3-4 byte fingerprints: fall through to SSSE3 or scalar
-	}
+	// NOTE: AVX2 Slim Teddy (teddySlimAVX2_1/2) is available and faster for
+	// throughput benchmarks on large inputs with few matches. However, in
+	// real-world usage with the verification loop (many false positives),
+	// SSSE3 performs better due to:
+	// - Lower per-call overhead (128-bit vs 256-bit registers)
+	// - No AVX-SSE transition penalty (VZEROUPPER)
+	// - Better performance with frequent restarts after verification
+	//
+	// We keep SSSE3 for the integrated Teddy prefilter. AVX2 functions
+	// are available for direct use in specialized benchmarks.
+	//
+	// See: https://github.com/rust-lang/regex/pull/456
 
 	// Fall back to SSSE3 (16 bytes/iteration)
 	if hasSSSE3 {
