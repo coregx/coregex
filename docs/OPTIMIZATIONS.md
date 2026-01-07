@@ -274,11 +274,14 @@ Speedup:    2x faster
 
 ---
 
-## 6. AVX2 Slim Teddy with Shift Algorithm (2.93x faster than SSSE3)
+## 6. AVX2 Slim Teddy with Shift Algorithm (2x faster than SSSE3 in direct benchmarks)
 
 **File**: `prefilter/teddy_slim_avx2_amd64.s`
 
 **Pattern types**: Multi-pattern literal alternations like `foo|bar|baz` (2-32 patterns)
+
+**Status**: Available for direct use. NOT enabled in integrated prefilter due to
+regression in high false-positive workloads (see issue #74).
 
 ### Algorithm
 

@@ -21,7 +21,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 | Small string perf | **1.4-20x faster** | ✅ Achieved |
 | Reverse search | **Yes (4 strategies)** | ✅ Achieved |
 | OnePass DFA | **Yes** | ✅ Achieved |
-| Slim Teddy (2-32 patterns) | **Yes (AVX2, 15GB/s)** | ✅ Achieved |
+| Slim Teddy (2-32 patterns) | **Yes (SSSE3, 9GB/s)** | ✅ Achieved |
 | Fat Teddy (33-64 patterns) | **Yes (AVX2, 9GB/s)** | ✅ Achieved |
 | Aho-Corasick (>64 patterns) | **Yes** | ✅ Achieved |
 | BoundedBacktracker | **Yes** | ✅ Achieved |
@@ -37,7 +37,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 ```
 v0.10.0 ✅ → Fat Teddy 33-64 patterns (AVX2, 9GB/s)
          ↓
-v0.10.1 (Current) ✅ → AVX2 Slim Teddy, version pattern fix, documentation
+v0.10.1 (Current) ✅ → Version pattern fix, optimization documentation
          ↓
 v0.11.0 → CompositeSearcher (#72) - 5.3x faster on \w+\s+\w+ patterns
          ↓
@@ -232,8 +232,8 @@ Reference implementations available locally:
 **Reference**: uawk implementation (MIT licensed)
 
 ### Completed in v0.10.1
-- [x] AVX2 Slim Teddy (32 bytes/iter, 2x throughput) — #69
-- [x] AVX2 Slim Teddy shift algorithm fix (2.93x vs SSSE3, was 6x slower on AMD EPYC) — #73
+- [x] AVX2 Slim Teddy implementation (not enabled in integrated prefilter, see #74) — #69
+- [ ] AVX2 Slim Teddy integration (blocked by high false-positive regression) — #74
 - [x] Version pattern uses ReverseInner — #70
 - [x] Document optimizations beating Rust — #71
 
@@ -253,7 +253,7 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.10.1** | 2026-01-07 | Performance | AVX2 Slim Teddy shift algorithm (15GB/s, 2.93x vs SSSE3), AMD EPYC regression fix |
+| **v0.10.1** | 2026-01-07 | Fix | Version pattern ReverseInner (#70), optimization docs (#71) |
 | **v0.10.0** | 2026-01-07 | Feature | **Fat Teddy AVX2, 5 patterns faster than Rust!** |
 | v0.9.5 | 2026-01-06 | Fix | Teddy limit 8→32, literal extraction fix |
 | v0.9.0-v0.9.4 | 2026-01-05 | Performance | DigitPrefilter, Aho-Corasick, 2-byte fingerprint |
