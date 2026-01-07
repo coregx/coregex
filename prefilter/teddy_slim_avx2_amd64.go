@@ -31,7 +31,6 @@ package prefilter
 //	bucketMask - bitmask of matching buckets (bits 0-7), or 0 if not found
 //
 //go:noescape
-//nolint:unused // Available for direct use; not enabled in integrated prefilter (see #74)
 func teddySlimAVX2_1(masks *teddyMasks, haystack []byte) (pos int, bucketMask uint8)
 
 // teddySlimAVX2_2 is the AVX2 assembly implementation for 2-byte fingerprint.

@@ -231,6 +231,11 @@ linters:
           - gocritic     # Platform-specific patterns
         text: "ifElseChain"
 
+      # SIMD functions may be used only in tests/benchmarks (not production)
+      - path: .*_amd64\.go
+        linters:
+          - unused       # e.g., AVX2 not enabled in integrated prefilter (#74)
+
 issues:
   # Show all issues
   max-issues-per-linter: 0
