@@ -169,7 +169,7 @@ Input → Prefilter (SIMD) → Engine → Match Result
 **SIMD Primitives** (AMD64):
 - `memchr` — single byte search (AVX2)
 - `memmem` — substring search (SSSE3)
-- `Slim Teddy` — multi-pattern search, 2-32 patterns (SSSE3)
+- `Slim Teddy` — multi-pattern search, 2-32 patterns (AVX2, 15+ GB/s)
 - `Fat Teddy` — multi-pattern search, 33-64 patterns (AVX2, 9+ GB/s)
 
 Pure Go fallback on other architectures.

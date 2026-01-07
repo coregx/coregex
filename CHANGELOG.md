@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Benchmark verification procedures
 
 ### Fixed
+- **AVX2 Slim Teddy regression on AMD EPYC** (#73)
+  - Problem: 6x slowdown on AMD EPYC 7763 (Zen 3) vs SSSE3
+  - Root cause: Two overlapping 32-byte loads crossed cache lines, triggering AMD's 32-byte boundary penalty
+  - Solution: Shift algorithm from Rust aho-corasick crate
+    - Single load per iteration + `VPERM2I128`/`VPALIGNR` for cross-lane byte shift
+    - Save `res0` in register (`prev0`) between iterations
+    - Fix scalar_tail_2 boundary position check
+  - Result: AVX2 now **2.93x faster** than SSSE3 (was 6x slower)
+  - Reference: `docs/dev/reference/aho-corasick/src/packed/teddy/generic.rs`
+
 - **Version pattern strategy selection** (#70)
   - Patterns like `\d+\.\d+\.\d+` now use `UseReverseInner` with "." as inner literal
   - Removed incorrect digit-lead special case in `strategy.go`
@@ -37,8 +47,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 | Pattern | Before | After | Improvement |
 |---------|--------|-------|-------------|
-| literal_alt (foo\|bar) | SSSE3 16B/iter | AVX2 32B/iter | **2x throughput** |
+| literal_alt (foo\|bar) | SSSE3 16B/iter | AVX2 32B/iter | **2.93x faster** |
 | version (\d+\.\d+) | 3.2x vs Rust | ~1.2x vs Rust | **~2.7x faster** |
+| AVX2 Teddy (AMD EPYC) | 6x slower than SSSE3 | 2.93x faster than SSSE3 | **17x improvement** |
+
+### Technical Details
+- **Shift algorithm** (from Rust `aho-corasick::packed::vector`):
+  ```
+  shift_in_one_byte(self, prev0):
+    result[0] = prev0[31]           // Bring in last byte from previous chunk
+    result[1..31] = self[0..30]     // Shift current results right by 1
+  Implementation:
+    VPERM2I128 $0x21, prev0, self, tmp  // tmp = [self.lo | prev0.hi]
+    VPALIGNR $15, tmp, self, result     // Byte-align across lanes
+  ```
+- First chunk uses two-load approach for correctness at position 0
+- Subsequent chunks use shift algorithm with `prev0` register
 
 ---
 

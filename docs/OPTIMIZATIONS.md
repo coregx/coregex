@@ -1,6 +1,6 @@
 # coregex Optimizations that Beat Rust regex
 
-This document describes the 5 key optimizations in coregex that outperform the Rust regex crate.
+This document describes the 6 key optimizations in coregex that outperform the Rust regex crate.
 These algorithms are critical to coregex's competitive advantage and **MUST NOT REGRESS**.
 
 ## Summary
@@ -12,8 +12,9 @@ These algorithms are critical to coregex's competitive advantage and **MUST NOT 
 | ReverseSuffixSet | `meta/reverse_suffix_set.go` | `.*\.(txt\|log\|md)` | **27% faster** | suffix |
 | ReverseInner | `meta/reverse_inner.go` | `.*email@.*` | **16% faster** | email |
 | NFA for small patterns | `meta/strategy.go` | `^pattern$` | **2x faster** | anchored |
+| AVX2 Slim Teddy | `prefilter/teddy_slim_avx2_amd64.s` | `foo\|bar\|baz` | **2.93x vs SSSE3** | literal_alt |
 
-**Benchmark source**: regex-bench v0.10.0 on AMD Ryzen 9 5900X
+**Benchmark source**: regex-bench v0.10.1 on AMD Ryzen 9 5900X
 
 ---
 
@@ -273,6 +274,87 @@ Speedup:    2x faster
 
 ---
 
+## 6. AVX2 Slim Teddy with Shift Algorithm (2.93x faster than SSSE3)
+
+**File**: `prefilter/teddy_slim_avx2_amd64.s`
+
+**Pattern types**: Multi-pattern literal alternations like `foo|bar|baz` (2-32 patterns)
+
+### Algorithm
+
+AVX2 Slim Teddy processes 32 bytes per iteration using the **shift algorithm** from Rust aho-corasick.
+
+Key insight: For 2-byte fingerprint matching, we need `mask0(byte_P) & mask1(byte_{P+1})` at each position P.
+
+**Naive approach** (caused 6x regression on AMD EPYC):
+```asm
+VMOVDQU (SI), Y3       // Load 32 bytes at position 0
+VMOVDQU 1(SI), Y10     // Load 32 bytes at position 1 (OVERLAPPING!)
+// Two loads cross 32-byte cache line boundary = AMD penalty
+```
+
+**Shift algorithm** (from Rust):
+```asm
+// Single load per iteration
+VMOVDQU (SI), Y3                      // Load 32 bytes ONCE
+
+// Compute res0, res1 via nibble lookups
+VPSHUFB Y4, Y0, Y6                    // res0 = mask0 lookup
+VPSHUFB Y4, Y8, Y11                   // res1 = mask1 lookup
+
+// Shift res0 right by 1, bringing in prev0[31]
+VPERM2I128 $0x21, Y6, Y10, Y13        // tmp = [prev0.hi | res0.lo]
+VPALIGNR $15, Y13, Y6, Y15            // res0_shifted = byte-align
+
+// Combine and save prev0
+VPAND Y11, Y15, Y7                    // result = res0_shifted & res1
+VMOVDQA Y6, Y10                       // prev0 = res0 for next iteration
+```
+
+### Why faster than naive AVX2
+
+1. **Single load vs two loads**: Halves memory bandwidth
+2. **No cache line crossing**: AMD Zen 3 penalizes 32-byte boundary crossings
+3. **Register-based prev0**: No additional memory access between iterations
+
+### Cross-lane shift implementation
+
+AVX2's `VPALIGNR` operates on 128-bit lanes independently. Cross-lane shift requires:
+
+```
+VPERM2I128 $0x21, prev0, self, tmp
+  → tmp.lo = prev0.hi (bytes 16-31 of previous result)
+  → tmp.hi = self.lo  (bytes 0-15 of current result)
+
+VPALIGNR $15, tmp, self, result
+  → For each 128-bit lane: shift right 15 bytes
+  → result[0] = prev0[31] (the cross-lane byte!)
+  → result[1..31] = self[0..30]
+```
+
+### Benchmark data
+
+```
+Pattern: error|warning|critical|fatal|debug|info|trace|... (15 patterns)
+Input: 64KB log file
+
+SSSE3 (16 bytes/iter):  12,252 ns/op = 5,348 MB/s
+AVX2 naive (2 loads):   ~36,000 ns/op = 1,800 MB/s (6x slower!)
+AVX2 shift (1 load):    4,174 ns/op = 15,699 MB/s (2.93x faster than SSSE3)
+```
+
+### AMD EPYC regression root cause
+
+AMD EPYC 7763 (Zen 3) characteristics:
+- 256-bit AVX2 operations split into two 128-bit µops
+- 32-byte aligned loads: 1 cycle latency
+- Unaligned 32-byte loads crossing cache line: 2+ cycles penalty
+- Two overlapping loads at offset 0 and 1 = worst case
+
+Intel processors (tested on i7-1255U) also benefit from shift algorithm but the penalty was less severe.
+
+---
+
 ## Maintaining Performance
 
 ### DO NOT REGRESS Policy
@@ -309,18 +391,20 @@ bash scripts/bench.sh --compare baseline current
 | ReverseSuffixSet | `BenchmarkSuffix` | <1.1 ms/MB |
 | ReverseInner | `BenchmarkEmail` | <1.3 ms/MB |
 | NFA small | `BenchmarkAnchored` | <0.025 ms/op |
+| AVX2 Slim Teddy | `BenchmarkSlimTeddyDirect/AVX2` | >15 GB/s |
 
 ---
 
 ## References
 
 - **Rust regex crate**: Architecture inspiration for multi-engine design
+- **Rust aho-corasick**: Teddy shift algorithm (`packed/teddy/generic.rs`, `packed/vector.rs`)
 - **RE2**: O(n) performance guarantees
 - **Hyperscan**: Teddy algorithm for SIMD multi-pattern matching
 - **regex-bench**: Cross-language regex benchmark suite
 
 ---
 
-*Document version: 1.0.0*
+*Document version: 1.1.0*
 *Last updated: 2026-01-07*
-*Benchmark data: regex-bench v0.10.0*
+*Benchmark data: regex-bench v0.10.1*
