@@ -57,12 +57,13 @@ func teddySlimSSSE3_2(masks *teddyMasks, haystack []byte) (pos int, bucketMask u
 
 // findSIMD performs SIMD search for candidate positions.
 //
-// This method overrides the generic implementation in teddy.go when SSSE3 is available.
+// This method overrides the generic implementation in teddy.go when SIMD is available.
 // It dispatches to the appropriate SIMD implementation based on fingerprint length
 // and CPU capabilities.
 //
-// Platform support:
-//   - x86-64 with SSSE3: use teddySlimSSSE3_1 (16 bytes/iteration)
+// Platform support (in order of preference):
+//   - x86-64 with AVX2: use teddySlimAVX2_1/2 (32 bytes/iteration, 2x throughput)
+//   - x86-64 with SSSE3: use teddySlimSSSE3_1/2 (16 bytes/iteration)
 //   - x86-64 without SSSE3: fallback to findScalarCandidate
 //   - Other platforms: fallback (via build tags)
 //
@@ -70,28 +71,33 @@ func teddySlimSSSE3_2(masks *teddyMasks, haystack []byte) (pos int, bucketMask u
 // bucketMask contains bits for ALL matching buckets (not just first).
 // Caller should iterate through all set bits using bits.TrailingZeros8.
 func (t *Teddy) findSIMD(haystack []byte) (pos int, bucketMask uint8) {
-	// Check CPU support
-	if !hasSSSE3 {
-		// CPU doesn't support SSSE3, use scalar fallback
-		return t.findScalarCandidate(haystack)
-	}
-
 	// Check fingerprint length
 	fpLen := int(t.masks.fingerprintLen)
 
-	switch fpLen {
-	case 1:
-		// Use SSSE3 implementation for 1-byte fingerprint
-		return teddySlimSSSE3_1(t.masks, haystack)
+	// NOTE: AVX2 Slim Teddy (teddySlimAVX2_1/2) is available and faster for
+	// throughput benchmarks on large inputs with few matches. However, in
+	// real-world usage with the verification loop (many false positives),
+	// SSSE3 performs better due to:
+	// - Lower per-call overhead (128-bit vs 256-bit registers)
+	// - No AVX-SSE transition penalty (VZEROUPPER)
+	// - Better performance with frequent restarts after verification
+	//
+	// We keep SSSE3 for the integrated Teddy prefilter. AVX2 functions
+	// are available for direct use in specialized benchmarks.
+	//
+	// See: https://github.com/rust-lang/regex/pull/456
 
-	case 2:
-		// Use SSSE3 implementation for 2-byte fingerprint
-		// This reduces false positives by ~90% compared to 1-byte
-		return teddySlimSSSE3_2(t.masks, haystack)
-
-	default:
-		// 3-4 byte fingerprints not yet implemented in SSSE3
-		// Fall back to scalar
-		return t.findScalarCandidate(haystack)
+	// Fall back to SSSE3 (16 bytes/iteration)
+	if hasSSSE3 {
+		switch fpLen {
+		case 1:
+			return teddySlimSSSE3_1(t.masks, haystack)
+		case 2:
+			return teddySlimSSSE3_2(t.masks, haystack)
+		}
+		// 3-4 byte fingerprints: fall through to scalar
 	}
+
+	// No SIMD support, use scalar fallback
+	return t.findScalarCandidate(haystack)
 }

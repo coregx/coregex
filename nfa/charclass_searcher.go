@@ -1,5 +1,9 @@
 package nfa
 
+// DO NOT REGRESS: CharClassSearcher is 35% faster than Rust regex on char_class patterns.
+// This optimization uses a 256-byte lookup table for O(1) membership testing.
+// See docs/OPTIMIZATIONS.md for algorithm details and benchmark data.
+
 // CharClassSearcher provides optimized search for simple character class patterns.
 // For patterns like [\w]+, [a-z]+, \d+ where:
 //   - Pattern is just a repeated character class (no alternation, no anchors)

@@ -1,5 +1,10 @@
 package meta
 
+// DO NOT REGRESS: ReverseSuffixSet is 27% faster than Rust regex on multi-suffix patterns.
+// This optimization is UNIQUE TO COREGEX - Rust regex falls back to Core strategy.
+// Uses Teddy multi-pattern prefilter + reverse DFA for patterns like .*\.(txt|log|md).
+// See docs/OPTIMIZATIONS.md for algorithm details and benchmark data.
+
 import (
 	"errors"
 

@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-01-07 | **Current Version**: v0.10.0 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-01-07 | **Current Version**: v0.10.1 | **Target**: v1.0.0 stable
 
 ---
 
@@ -21,7 +21,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 | Small string perf | **1.4-20x faster** | ✅ Achieved |
 | Reverse search | **Yes (4 strategies)** | ✅ Achieved |
 | OnePass DFA | **Yes** | ✅ Achieved |
-| Slim Teddy (2-32 patterns) | **Yes (SSSE3)** | ✅ Achieved |
+| Slim Teddy (2-32 patterns) | **Yes (SSSE3, 9GB/s)** | ✅ Achieved |
 | Fat Teddy (33-64 patterns) | **Yes (AVX2, 9GB/s)** | ✅ Achieved |
 | Aho-Corasick (>64 patterns) | **Yes** | ✅ Achieved |
 | BoundedBacktracker | **Yes** | ✅ Achieved |
@@ -35,9 +35,11 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 ## Release Strategy
 
 ```
-v0.10.0 (Current) ✅ → Fat Teddy 33-64 patterns (AVX2, 9GB/s)
+v0.10.0 ✅ → Fat Teddy 33-64 patterns (AVX2, 9GB/s)
          ↓
-v0.11.x → API stabilization, performance tuning
+v0.10.1 (Current) ✅ → Version pattern fix, optimization documentation
+         ↓
+v0.11.0 → CompositeSearcher (#72) - 5.3x faster on \w+\s+\w+ patterns
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
@@ -214,20 +216,26 @@ Reference implementations available locally:
 
 ---
 
-## v0.11.x - Performance Tuning (Next)
+## v0.11.0 - CompositeSearcher (Next)
 
-**Goal**: Close remaining gaps vs Rust regex
+**Goal**: Optimize concatenated character class patterns
 
-| Issue | Pattern | Gap vs Rust | Priority |
-|-------|---------|-------------|----------|
-| [#69](https://github.com/coregx/coregex/issues/69) | literal_alt | 5.9x slower | HIGH |
-| [#70](https://github.com/coregx/coregex/issues/70) | version | 3.2x slower | MEDIUM |
-| [#71](https://github.com/coregx/coregex/issues/71) | Documentation | — | HIGH |
+| Issue | Pattern | Current | Target | Improvement |
+|-------|---------|---------|--------|-------------|
+| [#72](https://github.com/coregx/coregex/issues/72) | `\w+\s+\w+` | 691 ns/op | 131 ns/op | **5.3x faster** |
 
 **Key tasks**:
-- [ ] AVX2 Slim Teddy (32 bytes/iter vs current 16 bytes/iter)
-- [ ] Version pattern strategy optimization
-- [ ] Document optimizations that beat Rust (don't regress!)
+- [ ] `UseCompositeSearcher` strategy
+- [ ] `meta/composite_searcher.go` implementation
+- [ ] Strategy selection integration
+
+**Reference**: uawk implementation (MIT licensed)
+
+### Completed in v0.10.1
+- [x] AVX2 Slim Teddy implementation (not enabled in integrated prefilter, see #74) — #69
+- [ ] AVX2 Slim Teddy integration (blocked by high false-positive regression) — #74
+- [x] Version pattern uses ReverseInner — #70
+- [x] Document optimizations beating Rust — #71
 
 ---
 
@@ -245,6 +253,7 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
+| **v0.10.1** | 2026-01-07 | Fix | Version pattern ReverseInner (#70), optimization docs (#71) |
 | **v0.10.0** | 2026-01-07 | Feature | **Fat Teddy AVX2, 5 patterns faster than Rust!** |
 | v0.9.5 | 2026-01-06 | Fix | Teddy limit 8→32, literal extraction fix |
 | v0.9.0-v0.9.4 | 2026-01-05 | Performance | DigitPrefilter, Aho-Corasick, 2-byte fingerprint |
@@ -264,4 +273,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.10.0 | Next: v0.11.x (API stabilization) | Target: v1.0.0*
+*Current: v0.10.1 | Next: v0.11.0 (CompositeSearcher #72) | Target: v1.0.0*

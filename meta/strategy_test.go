@@ -387,3 +387,46 @@ func TestEmailPatternStrategy(t *testing.T) {
 		})
 	}
 }
+
+// TestVersionPatternStrategy verifies version patterns use ReverseInner.
+// Issue #70: Version patterns like `\d+\.\d+\.\d+` should use ReverseInner
+// with "." as inner literal (~0.5% frequency), not DigitPrefilter (~10% digits).
+// Rust regex uses the same approach - no special case for digit-lead patterns.
+//
+// IMPORTANT: This is a REGRESSION test. Do not add special cases that redirect
+// version patterns to DigitPrefilter. The "." character is rare enough to be
+// an effective prefilter.
+func TestVersionPatternStrategy(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    Strategy
+		desc    string
+	}{
+		// Version patterns MUST use ReverseInner (via "." inner literal)
+		{`\d+\.\d+\.\d+`, UseReverseInner, "semver pattern uses ReverseInner"},
+		{`\d+\.\d+`, UseReverseInner, "version pair uses ReverseInner"},
+		{`v?\d+\.\d+\.\d+`, UseReverseInner, "optional v prefix uses ReverseInner"},
+		{`\d+\.\d+\.\d+(-\w+)?`, UseReverseInner, "semver with optional prerelease"},
+		{`\d+:\d+:\d+`, UseReverseInner, "time pattern uses ReverseInner (colon inner)"},
+
+		// IP patterns should still use DigitPrefilter (no extractable inner literal)
+		{`25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9]`, UseDigitPrefilter, "IP octet uses DigitPrefilter"},
+	}
+
+	config := DefaultConfig()
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			engine, err := CompileWithConfig(tt.pattern, config)
+			if err != nil {
+				t.Fatalf("failed to compile %q: %v", tt.pattern, err)
+			}
+
+			if engine.Strategy() != tt.want {
+				t.Errorf("REGRESSION Issue #70: pattern %q: got strategy %v, want %v\n"+
+					"Version patterns should use ReverseInner with '.' as inner literal!",
+					tt.pattern, engine.Strategy(), tt.want)
+			}
+		})
+	}
+}

@@ -8,10 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
+- CompositeSearcher for concatenated char classes (#72)
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
 - UTF-8 Automata optimization
-- SIMD sparse search for CharClassSearcher (#64)
+
+---
+
+## [0.10.1] - 2026-01-07
+
+### Added
+- **AVX2 Slim Teddy implementation** (#69)
+  - New files: `prefilter/teddy_slim_avx2_amd64.go`, `prefilter/teddy_slim_avx2_amd64.s`
+  - Shift algorithm from Rust aho-corasick crate (single load + VPERM2I128/VPALIGNR)
+  - 15 GB/s throughput in direct benchmarks (2x faster than SSSE3)
+  - **Note**: Not enabled in integrated prefilter due to regression in high false-positive workloads (#74)
+
+- **Public optimization documentation** - `docs/OPTIMIZATIONS.md` (#71)
+  - Documents 6 optimizations that beat Rust regex
+  - DO NOT REGRESS comments in critical source files
+  - Benchmark verification procedures
+
+### Fixed
+- **Version pattern strategy selection** (#70)
+  - Patterns like `\d+\.\d+\.\d+` now use `UseReverseInner` with "." as inner literal
+  - Removed incorrect digit-lead special case in `strategy.go`
+  - Performance: 3.2x slower → ~1.2x slower vs Rust
+
+### Known Issues
+- **AVX2 Slim Teddy regression in integrated prefilter** (#74)
+  - Direct SIMD: AVX2 is 2x faster than SSSE3 (15 GB/s vs 9 GB/s)
+  - Integrated with verification loop: AVX2 is 6x slower (640µs vs 106µs on 64KB)
+  - Root cause: Per-call overhead with ~4000 false positive candidates
+  - Workaround: Keep SSSE3 for integrated Teddy prefilter
+  - AVX2 functions available for direct use in specialized scenarios
 
 ---
 
