@@ -275,33 +275,54 @@ found_scalar_1:
 // func teddySlimAVX2_2(masks *teddyMasks, haystack []byte) (pos int, bucketMask uint8)
 //
 // AVX2 implementation of Teddy Slim with 2-byte fingerprint.
-// Processes 32 bytes per iteration (2x throughput vs SSSE3).
-// Reduces false positives by ~90% compared to 1-byte fingerprint.
+// Processes 32 bytes per iteration using shift algorithm (like Rust regex).
 //
-// Algorithm:
-//  1. Load nibble masks for positions 0 and 1 (32 bytes each)
+// KEY OPTIMIZATION (fixes AMD EPYC 6x slowdown):
+// Instead of two overlapping loads per iteration, we use:
+//   1. ONE load per iteration
+//   2. VPERM2I128 + VPALIGNR for cross-lane byte shift
+//   3. Save res0 between iterations in register (prev0)
+//
+// This halves memory bandwidth and avoids cache line crossing penalties.
+//
+// Algorithm (from Rust aho-corasick):
+//  1. Start at position 1 in haystack
 //  2. Main loop: process 32 bytes per iteration
-//     a. Load haystack[i:i+32] for position 0
-//     b. Load haystack[i+1:i+33] for position 1 (overlapping)
-//     c. For each position: extract nibbles, VPSHUFB lookup, VPAND lo/hi
-//     d. VPAND results from both positions
-//     e. Non-zero result = candidate
+//     a. Load haystack[cur:cur+32]
+//     b. Compute res0 = nibble_lookup(chunk, mask0)
+//     c. Compute res1 = nibble_lookup(chunk, mask1)
+//     d. res0_shifted = shift_in_one_byte(res0, prev0)
+//     e. result = res0_shifted & res1
+//     f. prev0 = res0 (save for next iteration)
+//  3. Non-zero result = candidate at cur-1
+//
+// shift_in_one_byte(self, prev):
+//   result[0] = prev[31]
+//   result[1:31] = self[0:30]
+//   Implementation: VPERM2I128 + VPALIGNR
 //
 // Returns bucket MASK (not bucket ID) - caller iterates through all set bits.
 //
 // CRITICAL: VZEROUPPER before every RET.
 //
-// teddyMasks struct layout:
-//   +0:   fingerprintLen (4 bytes)
-//   +4:   padding (4 bytes)
-//   +8:   loMasks[0] (32 bytes)
-//   +40:  loMasks[1] (32 bytes)
-//   +72:  loMasks[2] (32 bytes, unused)
-//   +104: loMasks[3] (32 bytes, unused)
-//   +136: hiMasks[0] (32 bytes)
-//   +168: hiMasks[1] (32 bytes)
-//   +200: hiMasks[2] (32 bytes, unused)
-//   +232: hiMasks[3] (32 bytes, unused)
+// Register allocation:
+//   Y0  = loMasks[0]
+//   Y1  = hiMasks[0]
+//   Y2  = 0x0F nibble mask
+//   Y3  = current chunk
+//   Y4  = temp (low nibbles)
+//   Y5  = temp (high nibbles)
+//   Y6  = res0 (position 0 result)
+//   Y7  = temp
+//   Y8  = loMasks[1]
+//   Y9  = hiMasks[1]
+//   Y10 = prev0 (saved res0 from previous iteration)
+//   Y11 = res1 (position 1 result)
+//   Y12 = temp
+//   Y13 = temp (intermediate for shift)
+//   Y14 = zero vector
+//   Y15 = res0_shifted
+//
 TEXT ·teddySlimAVX2_2(SB), NOSPLIT, $0-41
 	// Load parameters
 	MOVQ    masks+0(FP), R8             // R8 = pointer to teddyMasks
@@ -312,13 +333,12 @@ TEXT ·teddySlimAVX2_2(SB), NOSPLIT, $0-41
 	TESTQ   DX, DX
 	JZ      not_found_2
 
-	// Check minimum length (need at least 2 bytes for 2-byte fingerprint)
-	CMPQ    DX, $2
-	JB      not_found_2
+	// Check minimum length (need at least 33 bytes for AVX2 loop)
+	// minimum_len = V::BYTES + (BYTES - 1) = 32 + 1 = 33
+	CMPQ    DX, $33
+	JB      short_haystack_2
 
 	// Load nibble masks for positions 0 and 1 (32 bytes each for AVX2)
-	// Position 0: loMasks[0] at +8, hiMasks[0] at +136
-	// Position 1: loMasks[1] at +40, hiMasks[1] at +168
 	VMOVDQU 8(R8), Y0                   // Y0 = loMasks[0]
 	VMOVDQU 136(R8), Y1                 // Y1 = hiMasks[0]
 	VMOVDQU 40(R8), Y8                  // Y8 = loMasks[1]
@@ -329,57 +349,141 @@ TEXT ·teddySlimAVX2_2(SB), NOSPLIT, $0-41
 	MOVQ    AX, X2
 	VPBROADCASTQ X2, Y2                 // Y2 = [0x0F x 32]
 
+	// Create zero vector for comparison
+	VPXOR   Y14, Y14, Y14               // Y14 = zero vector
+
 	// Save original haystack pointer for offset calculation
 	MOVQ    SI, DI                      // DI = haystack start (preserved)
 
-	// Calculate end pointer (need 1 extra byte for overlapping load)
-	LEAQ    (SI)(DX*1), R9              // R9 = SI + length (end pointer)
-	SUBQ    $1, R9                      // Adjust for 2-byte fingerprint overlap
+	// Calculate end pointer
+	LEAQ    (DI)(DX*1), R9              // R9 = haystack + length (end pointer)
 
-loop32_2:
-	// Check if we have at least 32 bytes remaining
-	LEAQ    32(SI), R10                 // R10 = SI + 32
-	CMPQ    R10, R9                     // Compare with adjusted end pointer
-	JA      handle_tail_2               // If R10 > R9, less than 32 bytes left
+	// Initialize prev0 by computing mask0(byte_0)
+	// This is needed because the shift algorithm requires the mask0 result
+	// for the byte before the current chunk. For the first iteration,
+	// that's byte 0 of the haystack.
+	//
+	// Compute: mask0_result = loMasks[0][byte0 & 0x0F] & hiMasks[0][byte0 >> 4]
+	// Store in prev0[31] (the last byte), zeros elsewhere.
+	//
+	MOVBLZX (DI), AX                    // AX = haystack[0]
+	MOVL    AX, BX
+	ANDL    $0x0F, BX                   // BX = low nibble
+	SHRL    $4, AX                      // AX = high nibble
+	MOVBLZX 8(R8)(BX*1), BX             // BX = loMasks[0][lowNibble]
+	MOVBLZX 136(R8)(AX*1), AX           // AX = hiMasks[0][highNibble]
+	ANDL    AX, BX                      // BX = mask0(byte_0)
 
-	// Load 32 bytes from haystack for position 0
-	VMOVDQU (SI), Y3                    // Y3 = haystack[SI:SI+32]
-	// Load 32 bytes from haystack for position 1 (offset by 1)
-	VMOVDQU 1(SI), Y10                  // Y10 = haystack[SI+1:SI+33]
+	// Create prev0 = [0, 0, ..., 0, mask0(byte_0)] (only byte 31 is set)
+	// Method: broadcast the value to all bytes, then AND with a mask that
+	// has only byte 31 set. But we don't have such a mask readily available.
+	//
+	// Alternative: use scalar stores. Initialize to zeros, then store to byte 31.
+	// We'll use stack space for this.
+	//
+	// Simpler approach: use VPXOR + PINSRB + VINSERTI128
+	// But PINSRB is SSE4.1 and works on XMM, not YMM.
+	//
+	// Simplest approach for now: use the original two-load algorithm for the
+	// first 32 bytes, then switch to shift algorithm for the rest.
+	// This is what we'll implement.
+	//
+	// For correctness, let's use a different approach:
+	// Instead of shift, we'll process the first chunk with two loads,
+	// then use shift for subsequent chunks.
 
-	// === Process position 0 ===
-	// Extract low nibbles
+	// Start at position 1 (like Rust)
+	ADDQ    $1, SI                      // SI = haystack + 1
+
+	// First iteration: use two-load approach for correctness at position 0
+	// Load 32 bytes from haystack for position 0 (bytes [0:32])
+	VMOVDQU -1(SI), Y3                  // Y3 = haystack[SI-1:SI+31] = bytes [0:32]
+	// Load 32 bytes from haystack for position 1 (bytes [1:33])
+	VMOVDQU (SI), Y15                   // Y15 = haystack[SI:SI+32] = bytes [1:33]
+
+	// === Process position 0 from Y3 (bytes 0-31) ===
 	VPAND   Y2, Y3, Y4                  // Y4 = low nibbles
-
-	// Extract high nibbles
 	VPSRLW  $4, Y3, Y5                  // Shift right 4 bits
 	VPAND   Y2, Y5, Y5                  // Y5 = high nibbles
+	VPSHUFB Y4, Y0, Y6                  // Y6 = loMasks[0] lookup for bytes 0-31
+	VPSHUFB Y5, Y1, Y7                  // Y7 = hiMasks[0] lookup
+	VPAND   Y7, Y6, Y6                  // Y6 = res0 for bytes 0-31
 
-	// VPSHUFB lookups for position 0
+	// === Process position 1 from Y15 (bytes 1-32) ===
+	VPAND   Y2, Y15, Y4                 // Y4 = low nibbles
+	VPSRLW  $4, Y15, Y5                 // Shift right 4 bits
+	VPAND   Y2, Y5, Y5                  // Y5 = high nibbles
+	VPSHUFB Y4, Y8, Y11                 // Y11 = loMasks[1] lookup for bytes 1-32
+	VPSHUFB Y5, Y9, Y12                 // Y12 = hiMasks[1] lookup
+	VPAND   Y12, Y11, Y11               // Y11 = res1 for bytes 1-32
+
+	// === Also compute res0 for bytes 1-32 (for prev0) ===
+	// We need prev0 to contain mask0 results for bytes 1-32, so that
+	// prev0[31] = mask0(byte_32), which is needed for position 32 match
+	VPSHUFB Y4, Y0, Y13                 // Y13 = loMasks[0] lookup for bytes 1-32
+	VPSRLW  $4, Y15, Y5                 // (already computed above, but need again)
+	VPAND   Y2, Y5, Y5
+	VPSHUFB Y5, Y1, Y7                  // Y7 = hiMasks[0] lookup for bytes 1-32
+	VPAND   Y7, Y13, Y10                // Y10 = res0 for bytes 1-32 = prev0 for next iteration
+
+	// === Combine first chunk ===
+	// For 2-byte fingerprint at position P: mask0(byte_P) & mask1(byte_{P+1})
+	// Y6 = mask0 results for bytes 0-31 (positions 0-31 in mask0 terms)
+	// Y11 = mask1 results for bytes 1-32 (positions 1-32 in mask1 terms)
+	// For position P, we need: Y6[P] & Y11[P] = mask0(byte_P) & mask1(byte_{P+1})
+	VPAND   Y11, Y6, Y7                 // Y7 = final result for positions 0-31
+
+	// Check for candidates in first chunk
+	VPCMPEQB Y14, Y7, Y12               // Y12[i] = 0xFF if zero, else 0x00
+	VPMOVMSKB Y12, CX                   // CX = bitmask where bytes were ZERO
+	NOTL    CX                          // Invert: CX = bitmask where bytes were NON-ZERO
+
+	TESTL   CX, CX
+	JNZ     found_candidate_2_first     // Found in first chunk
+
+	// Advance to next chunk (32 bytes after position 1)
+	ADDQ    $32, SI
+
+loop32_2:
+	// Check if we have at least 32 bytes remaining from current position
+	LEAQ    32(SI), R10                 // R10 = SI + 32
+	CMPQ    R10, R9                     // Compare with end pointer
+	JA      handle_tail_2               // If R10 > R9, less than 32 bytes left
+
+	// Load 32 bytes from haystack (ONLY ONE LOAD!)
+	VMOVDQU (SI), Y3                    // Y3 = haystack[SI:SI+32]
+
+	// === Compute res0: nibble lookup for mask0 ===
+	VPAND   Y2, Y3, Y4                  // Y4 = low nibbles
+	VPSRLW  $4, Y3, Y5                  // Shift right 4 bits
+	VPAND   Y2, Y5, Y5                  // Y5 = high nibbles
 	VPSHUFB Y4, Y0, Y6                  // Y6 = loMasks[0] lookup
 	VPSHUFB Y5, Y1, Y7                  // Y7 = hiMasks[0] lookup
-	VPAND   Y7, Y6, Y6                  // Y6 = position 0 result
+	VPAND   Y7, Y6, Y6                  // Y6 = res0 (position 0 result)
 
-	// === Process position 1 ===
-	// Extract low nibbles
-	VPAND   Y2, Y10, Y4                 // Y4 = low nibbles
-
-	// Extract high nibbles
-	VPSRLW  $4, Y10, Y5                 // Shift right 4 bits
-	VPAND   Y2, Y5, Y5                  // Y5 = high nibbles
-
-	// VPSHUFB lookups for position 1
+	// === Compute res1: nibble lookup for mask1 ===
 	VPSHUFB Y4, Y8, Y11                 // Y11 = loMasks[1] lookup
 	VPSHUFB Y5, Y9, Y12                 // Y12 = hiMasks[1] lookup
-	VPAND   Y12, Y11, Y11               // Y11 = position 1 result
+	VPAND   Y12, Y11, Y11               // Y11 = res1 (position 1 result)
 
-	// === Combine both positions ===
-	VPAND   Y11, Y6, Y6                 // Y6 = pos0 & pos1 (final result)
+	// === shift_in_one_byte(res0, prev0) ===
+	// result[0] = prev0[31], result[1:31] = res0[0:30]
+	// Step 1: VPERM2I128 to create intermediate
+	//   Y13 = [prev0.high_128 | res0.low_128]
+	VPERM2I128 $0x21, Y6, Y10, Y13      // Y13 = [Y10.hi | Y6.lo]
+	// Step 2: VPALIGNR to shift
+	//   Each 128-bit lane: (res0_lane : Y13_lane) >> 15 bytes
+	VPALIGNR $15, Y13, Y6, Y15          // Y15 = res0_shifted
+
+	// === Combine: res0_shifted & res1 ===
+	VPAND   Y11, Y15, Y7                // Y7 = final result
+
+	// === Save res0 as prev0 for next iteration ===
+	VMOVDQA Y6, Y10                     // prev0 = res0
 
 	// Detect non-zero bytes
-	VPXOR   Y13, Y13, Y13               // Y13 = zero vector
-	VPCMPEQB Y13, Y6, Y7                // Y7[i] = 0xFF if zero, else 0x00
-	VPMOVMSKB Y7, CX                    // CX = bitmask where bytes were ZERO
+	VPCMPEQB Y14, Y7, Y12               // Y12[i] = 0xFF if zero, else 0x00
+	VPMOVMSKB Y12, CX                   // CX = bitmask where bytes were ZERO
 	NOTL    CX                          // Invert: CX = bitmask where bytes were NON-ZERO
 
 	// Check if any candidates found
@@ -391,30 +495,28 @@ loop32_2:
 	JMP     loop32_2
 
 handle_tail_2:
-	// Add back the 1 we subtracted for overlap check
-	ADDQ    $1, R9
-
-	// Check if we have at least 17 bytes for 16-byte SIMD processing
-	// (16 bytes + 1 for overlapping load)
-	LEAQ    17(SI), R10
+	// Process remaining bytes
+	// Check if we have at least 16 bytes remaining
+	LEAQ    16(SI), R10
 	CMPQ    R10, R9
-	JA      scalar_tail_2               // Less than 17 bytes, use scalar
+	JA      scalar_tail_2               // Less than 16 bytes, use scalar
 
-	// 17-32 bytes remaining: process 16 bytes with AVX2
-	VBROADCASTI128 (SI), Y3             // Load 16 bytes, duplicate to both lanes
-	VBROADCASTI128 1(SI), Y10           // Load 16 bytes at +1
+	// 16-31 bytes remaining: process 16 bytes with SSSE3-style approach
+	// For tail, we use the simpler two-load approach since it's only once
+	VBROADCASTI128 (SI), Y3             // Load 16 bytes, duplicate
+	VBROADCASTI128 -1(SI), Y12          // Load 16 bytes at SI-1 for position 0
 
-	// Process position 0
-	VPAND   Y2, Y3, Y4
-	VPSRLW  $4, Y3, Y5
+	// Process position 0 (from SI-1)
+	VPAND   Y2, Y12, Y4
+	VPSRLW  $4, Y12, Y5
 	VPAND   Y2, Y5, Y5
 	VPSHUFB Y4, Y0, Y6
 	VPSHUFB Y5, Y1, Y7
 	VPAND   Y7, Y6, Y6
 
-	// Process position 1
-	VPAND   Y2, Y10, Y4
-	VPSRLW  $4, Y10, Y5
+	// Process position 1 (from SI)
+	VPAND   Y2, Y3, Y4
+	VPSRLW  $4, Y3, Y5
 	VPAND   Y2, Y5, Y5
 	VPSHUFB Y4, Y8, Y11
 	VPSHUFB Y5, Y9, Y12
@@ -424,20 +526,24 @@ handle_tail_2:
 	VPAND   Y11, Y6, Y6
 
 	// Check non-zero (only care about low 16 bits)
-	VPXOR   Y13, Y13, Y13
-	VPCMPEQB Y13, Y6, Y7
+	VPCMPEQB Y14, Y6, Y7
 	VPMOVMSKB Y7, CX
 	NOTL    CX
 	ANDL    $0xFFFF, CX                 // Only low 16 bits are valid
 
 	TESTL   CX, CX
-	JNZ     found_candidate_16_2
+	JNZ     found_candidate_16_2_tail
 
-	// Advance
+	// Advance past processed bytes
 	ADDQ    $16, SI
 
 scalar_tail_2:
 	// Process remaining bytes with scalar loop
+	// IMPORTANT: Start from SI-1 to cover position (SI-1) which wasn't checked
+	// in the previous iteration (either main loop or 16-byte tail).
+	// The shift algorithm leaves one position unchecked at chunk boundaries.
+	DECQ    SI                          // SI = SI - 1 (check position SI-1)
+
 	CMPQ    SI, R9
 	JAE     not_found_2
 
@@ -493,24 +599,69 @@ not_found_2:
 	VZEROUPPER
 	RET
 
+// short_haystack_2: Handle haystacks < 33 bytes with scalar fallback
+short_haystack_2:
+	// For short haystacks, use simple scalar approach
+	// Check minimum length (need at least 2 bytes)
+	CMPQ    DX, $2
+	JB      not_found_2
+
+	// Set up for scalar loop
+	MOVQ    SI, DI                      // DI = haystack start
+	LEAQ    (SI)(DX*1), R9              // R9 = end pointer
+	JMP     scalar_tail_2
+
+found_candidate_2_first:
+	// Candidate found in first 32-byte chunk (processed with two-load approach)
+	// For first chunk, SI points to position 1, and we processed bytes [0:32]
+	// Match position = bit_pos (0-31) directly, no -1 adjustment needed
+	BSFL    CX, AX                      // AX = bit_pos (0-31) = match position
+
+	// Load bytes at match position
+	LEAQ    (DI)(AX*1), R10             // R10 = haystack + match_position
+	MOVBLZX (R10), BX                   // BX = byte at match_pos
+	MOVBLZX 1(R10), R12                 // R12 = byte at match_pos+1
+
+	// Position 0 nibble lookup
+	MOVL    BX, CX
+	ANDL    $0x0F, CX
+	SHRL    $4, BX
+	MOVBLZX 8(R8)(CX*1), CX
+	MOVBLZX 136(R8)(BX*1), BX
+	ANDL    BX, CX
+
+	// Position 1 nibble lookup
+	MOVL    R12, BX
+	ANDL    $0x0F, BX
+	MOVL    R12, R13
+	SHRL    $4, R13
+	MOVBLZX 40(R8)(BX*1), BX
+	MOVBLZX 168(R8)(R13*1), R13
+	ANDL    R13, BX
+
+	ANDL    BX, CX
+
+	MOVQ    AX, pos+32(FP)
+	MOVB    CL, bucketMask+40(FP)
+	VZEROUPPER
+	RET
+
 found_candidate_2:
-	// Find first set bit in 32-bit mask
-	BSFL    CX, AX                      // AX = position of first set bit (0-31)
+	// Candidate found in subsequent 32-byte AVX2 loop (using shift algorithm)
+	// The match is at position (SI - 1) + bit_pos relative to haystack start (DI)
+	// Because we use shift algorithm where res0_shifted[i] = mask0 result at position SI-1+i
+	BSFL    CX, AX                      // AX = bit_pos (0-31)
 
-	// Save chunk start
-	MOVQ    SI, R10
+	// Calculate absolute position: (SI - DI) + bit_pos - 1
+	// SI points to current chunk start, match is at (SI - 1) + bit_pos
+	MOVQ    SI, R10                     // Save chunk pointer
+	SUBQ    DI, SI                      // SI = SI - DI (offset from haystack start)
+	LEAQ    -1(SI)(AX*1), AX            // AX = (SI - DI) - 1 + bit_pos = match position
 
-	// Calculate absolute position
-	SUBQ    DI, SI                      // SI = offset from haystack start
-	ADDQ    SI, AX                      // AX = absolute position
-
-	// Get chunk offset for byte lookup
-	MOVQ    AX, R11
-	SUBQ    SI, R11                     // R11 = chunk offset (0-31)
-
-	// Load two consecutive bytes at candidate position
-	MOVBLZX (R10)(R11*1), BX            // BX = byte at pos0
-	MOVBLZX 1(R10)(R11*1), R12          // R12 = byte at pos1
+	// Load bytes at match position
+	LEAQ    (DI)(AX*1), R10             // R10 = haystack + match_position
+	MOVBLZX (R10), BX                   // BX = byte at match_pos (position 0)
+	MOVBLZX 1(R10), R12                 // R12 = byte at match_pos+1 (position 1)
 
 	// === Position 0 nibble lookup ===
 	MOVL    BX, CX
@@ -540,23 +691,25 @@ found_candidate_2:
 	VZEROUPPER
 	RET
 
-found_candidate_16_2:
+found_candidate_16_2_tail:
 	// Candidate found in 16-byte tail portion
-	BSFL    CX, AX                      // AX = position of first set bit (0-15)
+	// In tail, we processed bytes at SI-1 to SI+14 for position 0
+	// and SI to SI+15 for position 1
+	// Match is at position (SI - 1) + bit_pos relative to DI
+	BSFL    CX, AX                      // AX = bit_pos (0-15)
 
 	// Calculate absolute position
-	MOVQ    SI, R10
-	SUBQ    DI, SI
-	ADDQ    SI, AX
+	MOVQ    SI, R10                     // Save chunk pointer
+	SUBQ    DI, SI                      // SI = offset from haystack start
+	ADDQ    SI, AX                      // AX = (SI - DI) + bit_pos
+	DECQ    AX                          // AX = (SI - DI) - 1 + bit_pos = match position
 
-	// Get chunk offset
-	MOVQ    AX, R11
-	SUBQ    SI, R11
+	// Load bytes at match position
+	LEAQ    (DI)(AX*1), R10             // R10 = haystack + match_position
+	MOVBLZX (R10), BX                   // BX = byte at match_pos
+	MOVBLZX 1(R10), R12                 // R12 = byte at match_pos+1
 
-	// Load two bytes and lookup
-	MOVBLZX (R10)(R11*1), BX
-	MOVBLZX 1(R10)(R11*1), R12
-
+	// Position 0 nibble lookup
 	MOVL    BX, CX
 	ANDL    $0x0F, CX
 	SHRL    $4, BX
@@ -564,6 +717,7 @@ found_candidate_16_2:
 	MOVBLZX 136(R8)(BX*1), BX
 	ANDL    BX, CX
 
+	// Position 1 nibble lookup
 	MOVL    R12, BX
 	ANDL    $0x0F, BX
 	MOVL    R12, R13
