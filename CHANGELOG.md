@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.2] - 2026-01-07
+
+### Fixed
+- **Version pattern regression hotfix** (#75)
+  - Restored DigitPrefilter for digit-lead patterns like `\d+\.\d+\.\d+`
+  - v0.10.1 incorrectly chose ReverseInner with "." as inner literal
+  - Performance restored: 8.2ms → 2.15ms (3.8x speedup)
+
+### Changed
+- **Lint config**: Added exclusion for unused AVX2 functions in `_amd64.go` files
+  - These functions are tested but not integrated into production prefilter (#74)
+
+---
+
 ## [0.10.1] - 2026-01-07
 
 ### Added
