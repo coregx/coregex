@@ -1049,7 +1049,10 @@ func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 		}
 		if right != InvalidState {
 			rightPriority, rightTookLeft := p.calcRightBranchPriority(t, left, isQuantifier, leftLookSucceeds)
-			p.addThread(thread{state: right, startPos: t.startPos, captures: t.captures, priority: rightPriority, tookLeft: rightTookLeft}, haystack, pos)
+			// Clone captures for right branch to ensure COW works properly.
+			// Without clone, both branches share captures with refs=1, so updates
+			// modify in-place and corrupt the other branch's captures.
+			p.addThread(thread{state: right, startPos: t.startPos, captures: t.captures.clone(), priority: rightPriority, tookLeft: rightTookLeft}, haystack, pos)
 		}
 
 	case StateCapture:
@@ -1181,7 +1184,10 @@ func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 		}
 		if right != InvalidState {
 			rightPriority, rightTookLeft := p.calcRightBranchPriority(t, left, isQuantifier, leftLookSucceeds)
-			p.addThreadToNext(thread{state: right, startPos: t.startPos, captures: t.captures, priority: rightPriority, tookLeft: rightTookLeft}, haystack, pos)
+			// Clone captures for right branch to ensure COW works properly.
+			// Without clone, both branches share captures with refs=1, so updates
+			// modify in-place and corrupt the other branch's captures.
+			p.addThreadToNext(thread{state: right, startPos: t.startPos, captures: t.captures.clone(), priority: rightPriority, tookLeft: rightTookLeft}, haystack, pos)
 		}
 		return
 
