@@ -15,6 +15,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.3] - 2026-01-08
+
+### Fixed
+- **Critical: FindStringSubmatch returned incorrect capture groups for `.+` patterns** (#77)
+  - Bug: `^(.+)-(\d+)$` on "hello-123" returned `matches[1]="hello-123"` instead of `"hello"`
+  - Root cause: `StateSplit` in PikeVM passed captures to both branches without cloning
+  - COW (Copy-on-Write) mechanism failed because `refs=1`, causing in-place modifications
+  - Fix: Clone captures for right branch to ensure proper COW semantics
+  - Affected patterns: `.+`, `.+?`, `.*`, `.*?` in capture groups
+  - Not affected: Explicit character classes (`[a-z]+`, `\w+`)
+
+### Added
+- **Comprehensive regression tests for capture groups**
+  - `TestFindStringSubmatch_DotPlusCapture` - 16 test cases
+  - `TestFindStringSubmatch_DotPlusCapture_StdlibCompatibility` - stdlib verification
+  - `TestFindSubmatchIndex_DotPlusCapture` - index boundary tests
+
+---
+
 ## [0.10.2] - 2026-01-07
 
 ### Fixed

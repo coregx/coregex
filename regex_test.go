@@ -783,6 +783,199 @@ func TestFindAllSubmatchIndex(t *testing.T) {
 	}
 }
 
+// TestFindStringSubmatch_DotPlusCapture tests capture groups with .+ (any character) patterns.
+// This is a regression test for a bug where .+ in capture groups returned incorrect values.
+// The bug was caused by StateSplit not cloning captures, breaking COW semantics.
+// See: docs/dev/BUG_REPORT_CAPTURE_GROUPS.md
+func TestFindStringSubmatch_DotPlusCapture(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+		want    []string
+	}{
+		// Basic .+ capture group tests (the bug scenario)
+		{
+			name:    "dot_plus_basic",
+			pattern: `^(.+)-(\d+)$`,
+			input:   "hello-123",
+			want:    []string{"hello-123", "hello", "123"},
+		},
+		{
+			name:    "dot_plus_multiple_dashes",
+			pattern: `^(.+)-(\d+)$`,
+			input:   "a-b-c-123",
+			want:    []string{"a-b-c-123", "a-b-c", "123"},
+		},
+		{
+			name:    "dot_plus_path_like",
+			pattern: `^(.+)-(\d+)$`,
+			input:   "dev-java/pkg-17",
+			want:    []string{"dev-java/pkg-17", "dev-java/pkg", "17"},
+		},
+		// Non-greedy .+? tests
+		{
+			name:    "dot_plus_nongreedy",
+			pattern: `^(.+?)-(\d+)$`,
+			input:   "hello-123",
+			want:    []string{"hello-123", "hello", "123"},
+		},
+		// .* tests (zero or more)
+		{
+			name:    "dot_star_basic",
+			pattern: `^(.*)x(\d+)$`,
+			input:   "abcx123",
+			want:    []string{"abcx123", "abc", "123"},
+		},
+		{
+			name:    "dot_star_empty",
+			pattern: `^(.*)x(\d+)$`,
+			input:   "x123",
+			want:    []string{"x123", "", "123"},
+		},
+		// Unanchored patterns
+		{
+			name:    "unanchored_dot_plus",
+			pattern: `(.+)-(\d+)`,
+			input:   "test-456",
+			want:    []string{"test-456", "test", "456"},
+		},
+		{
+			name:    "unanchored_with_prefix",
+			pattern: `(.+)-(\d+)`,
+			input:   "prefix: foo-789 suffix",
+			want:    []string{"prefix: foo-789", "prefix: foo", "789"},
+		},
+		// Different separators (not just dash)
+		{
+			name:    "dot_plus_colon_separator",
+			pattern: `^(.+):(\d+)$`,
+			input:   "localhost:8080",
+			want:    []string{"localhost:8080", "localhost", "8080"},
+		},
+		{
+			name:    "dot_plus_equals_separator",
+			pattern: `^(.+)=(\d+)$`,
+			input:   "count=42",
+			want:    []string{"count=42", "count", "42"},
+		},
+		// Complex patterns with multiple .+ groups
+		{
+			name:    "two_dot_plus_groups",
+			pattern: `^(.+)-(.+)-(\d+)$`,
+			input:   "a-b-123",
+			want:    []string{"a-b-123", "a", "b", "123"},
+		},
+		// Explicit character classes (these always worked - control test)
+		{
+			name:    "char_class_works",
+			pattern: `^([a-z]+)-(\d+)$`,
+			input:   "hello-123",
+			want:    []string{"hello-123", "hello", "123"},
+		},
+		// \w+ (should also work)
+		{
+			name:    "word_class_pattern",
+			pattern: `^(\w+)-(\d+)$`,
+			input:   "hello-123",
+			want:    []string{"hello-123", "hello", "123"},
+		},
+		// Edge case: single character before separator
+		{
+			name:    "single_char_before_sep",
+			pattern: `^(.+)-(\d+)$`,
+			input:   "a-1",
+			want:    []string{"a-1", "a", "1"},
+		},
+		// Real-world: version stripping pattern (from GRPM project)
+		{
+			name:    "version_strip",
+			pattern: `^(.+)-(\d.*)$`,
+			input:   "dev-java/openjdk-17.0.1",
+			want:    []string{"dev-java/openjdk-17.0.1", "dev-java/openjdk", "17.0.1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+			got := re.FindStringSubmatch(tt.input)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("FindStringSubmatch(%q, %q):\n  got:  %v\n  want: %v",
+					tt.pattern, tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFindStringSubmatch_DotPlusCapture_StdlibCompatibility verifies that
+// FindStringSubmatch matches stdlib regexp behavior for .+ patterns.
+func TestFindStringSubmatch_DotPlusCapture_StdlibCompatibility(t *testing.T) {
+	patterns := []string{
+		`^(.+)-(\d+)$`,
+		`^(.+?)-(\d+)$`,
+		`^(.*)x(\d+)$`,
+		`(.+)-(\d+)`,
+		`^(.+):(\d+)$`,
+		`^(.+)-(.+)-(\d+)$`,
+		`^(.+)-(\d.*)$`,
+	}
+
+	inputs := []string{
+		"hello-123",
+		"a-b-c-456",
+		"abcx789",
+		"test-999",
+		"host:8080",
+		"a-b-123",
+		"pkg-1.2.3",
+	}
+
+	for _, pattern := range patterns {
+		stdRe := regexp.MustCompile(pattern)
+		cgRe := MustCompile(pattern)
+
+		for _, input := range inputs {
+			stdMatch := stdRe.FindStringSubmatch(input)
+			cgMatch := cgRe.FindStringSubmatch(input)
+
+			if !reflect.DeepEqual(stdMatch, cgMatch) {
+				t.Errorf("Pattern %q, Input %q:\n  stdlib: %v\n  coregex: %v",
+					pattern, input, stdMatch, cgMatch)
+			}
+		}
+	}
+}
+
+// TestFindSubmatchIndex_DotPlusCapture tests capture group indices with .+ patterns.
+func TestFindSubmatchIndex_DotPlusCapture(t *testing.T) {
+	re := MustCompile(`^(.+)-(\d+)$`)
+	input := []byte("hello-123")
+
+	indices := re.FindSubmatchIndex(input)
+
+	// Expected: [0, 9, 0, 5, 6, 9]
+	// Group 0 (full match): 0-9 "hello-123"
+	// Group 1 (.+):         0-5 "hello"
+	// Group 2 (\d+):        6-9 "123"
+
+	want := []int{0, 9, 0, 5, 6, 9}
+	if !reflect.DeepEqual(indices, want) {
+		t.Errorf("FindSubmatchIndex():\n  got:  %v\n  want: %v", indices, want)
+	}
+
+	// Verify slices match expected strings
+	if string(input[indices[0]:indices[1]]) != "hello-123" {
+		t.Errorf("Group 0: got %q, want %q", string(input[indices[0]:indices[1]]), "hello-123")
+	}
+	if string(input[indices[2]:indices[3]]) != "hello" {
+		t.Errorf("Group 1: got %q, want %q", string(input[indices[2]:indices[3]]), "hello")
+	}
+	if string(input[indices[4]:indices[5]]) != "123" {
+		t.Errorf("Group 2: got %q, want %q", string(input[indices[4]:indices[5]]), "123")
+	}
+}
+
 // TestLongest tests leftmost-longest (POSIX) matching semantics.
 // Verifies that Longest() changes alternation behavior from
 // leftmost-first (Perl) to leftmost-longest (POSIX).
