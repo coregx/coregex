@@ -192,8 +192,11 @@ func TestFindAll(t *testing.T) {
 			// Test FindAll
 			got := re.FindAll([]byte(tt.input), tt.n)
 			var gotStr []string
-			for _, m := range got {
-				gotStr = append(gotStr, string(m))
+			if len(got) > 0 {
+				gotStr = make([]string, 0, len(got))
+				for _, m := range got {
+					gotStr = append(gotStr, string(m))
+				}
 			}
 			if !reflect.DeepEqual(gotStr, tt.want) {
 				t.Errorf("FindAll() = %v, want %v", gotStr, tt.want)
