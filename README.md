@@ -10,7 +10,9 @@
 [![GitHub Issues](https://img.shields.io/github/issues/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/issues)
 [![GitHub Discussions](https://img.shields.io/github/discussions/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/discussions)
 
-High-performance regex engine for Go. Drop-in replacement for `regexp` with **3-3000x speedup**.
+High-performance regex engine for Go. Drop-in replacement for `regexp` with **3-3000x speedup**.\*
+
+<sub>\* Typical speedup 15-240x on real-world patterns. 1000x+ achieved on [specific edge cases](https://github.com/kolkov/regex-bench#extreme-speedups-1000-3000x) where prefilters skip entire input (e.g., IP pattern on text with no digits).</sub>
 
 ## Why coregex?
 
