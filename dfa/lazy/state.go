@@ -321,80 +321,121 @@ func sortStateIDs(states []nfa.StateID) {
 
 // StateSet represents a set of NFA states used during determinization.
 //
-// This is a helper type for epsilon-closure computation and state transitions.
-// It uses a map for fast membership testing and automatic deduplication.
+// Uses a sparse set internally for O(1) clear, membership testing, and insertion.
+// This is a major performance improvement over map-based implementation where
+// Clear() was O(n) - now it's O(1) by simply resetting the size counter.
+//
+// The sparse set also preserves insertion order, which enables deterministic
+// DFA construction and consistent state keys.
 type StateSet struct {
-	states map[nfa.StateID]struct{}
+	sparse []uint32     // Maps state -> index in dense
+	dense  []nfa.StateID // Stores states in insertion order
+	size   int          // Number of elements
 }
+
+// defaultStateSetCapacity is the initial capacity for state sets.
+// Most NFA patterns have < 256 states, so this is a reasonable default.
+const defaultStateSetCapacity = 256
 
 // NewStateSet creates a new empty state set
 func NewStateSet() *StateSet {
-	return &StateSet{
-		states: make(map[nfa.StateID]struct{}),
-	}
+	return NewStateSetWithCapacity(defaultStateSetCapacity)
 }
 
 // NewStateSetWithCapacity creates a new state set with pre-allocated capacity
 func NewStateSetWithCapacity(capacity int) *StateSet {
+	if capacity <= 0 {
+		capacity = defaultStateSetCapacity
+	}
 	return &StateSet{
-		states: make(map[nfa.StateID]struct{}, capacity),
+		sparse: make([]uint32, capacity),
+		dense:  make([]nfa.StateID, capacity),
+		size:   0,
 	}
 }
 
 // Add adds an NFA state to the set
 func (ss *StateSet) Add(state nfa.StateID) {
-	ss.states[state] = struct{}{}
+	// Grow if needed
+	if int(state) >= len(ss.sparse) {
+		ss.grow(int(state) + 1)
+	}
+	if ss.Contains(state) {
+		return
+	}
+	// Direct assignment (O(1))
+	ss.dense[ss.size] = state
+	ss.sparse[state] = uint32(ss.size)
+	ss.size++
+}
+
+// grow expands the capacity to at least newCap
+func (ss *StateSet) grow(newCap int) {
+	if newCap <= len(ss.sparse) {
+		return
+	}
+	// Double the capacity or use newCap, whichever is larger
+	targetCap := len(ss.sparse) * 2
+	if targetCap < newCap {
+		targetCap = newCap
+	}
+	// Reallocate arrays
+	newSparse := make([]uint32, targetCap)
+	newDense := make([]nfa.StateID, targetCap)
+	copy(newSparse, ss.sparse)
+	copy(newDense[:ss.size], ss.dense[:ss.size])
+	ss.sparse = newSparse
+	ss.dense = newDense
 }
 
 // Contains returns true if the state is in the set
 func (ss *StateSet) Contains(state nfa.StateID) bool {
-	_, ok := ss.states[state]
-	return ok
+	if int(state) >= len(ss.sparse) {
+		return false
+	}
+	idx := ss.sparse[state]
+	// Cross-validation: sparse[state] must point to valid dense index
+	// AND dense[idx] must equal state (handles garbage in sparse)
+	return int(idx) < ss.size && ss.dense[idx] == state
 }
 
 // Len returns the number of states in the set
 func (ss *StateSet) Len() int {
-	return len(ss.states)
+	return ss.size
 }
 
-// Clear removes all states from the set (reuses map capacity)
+// Clear removes all states from the set in O(1) time.
+// This is the key advantage of sparse sets over maps.
 func (ss *StateSet) Clear() {
-	for k := range ss.states {
-		delete(ss.states, k)
-	}
+	ss.size = 0
 }
 
 // ToSlice returns the states as a sorted slice for consistent ordering
 func (ss *StateSet) ToSlice() []nfa.StateID {
-	if len(ss.states) == 0 {
+	if ss.size == 0 {
 		return nil
 	}
-
-	slice := make([]nfa.StateID, 0, len(ss.states))
-	for state := range ss.states {
-		slice = append(slice, state)
-	}
-
+	// Copy to new slice (dense[:size] is valid)
+	slice := make([]nfa.StateID, ss.size)
+	copy(slice, ss.dense[:ss.size])
 	sortStateIDs(slice)
 	return slice
 }
 
 // Clone creates a deep copy of the state set
 func (ss *StateSet) Clone() *StateSet {
-	clone := NewStateSetWithCapacity(len(ss.states))
-	for state := range ss.states {
-		clone.Add(state)
-	}
+	clone := NewStateSetWithCapacity(len(ss.sparse))
+	copy(clone.sparse, ss.sparse)
+	copy(clone.dense[:ss.size], ss.dense[:ss.size])
+	clone.size = ss.size
 	return clone
 }
 
 // stateSetPool is a pool of reusable StateSet objects to reduce allocations.
-// This follows the Go stdlib pattern (like regexp's bitState pool).
+// With sparse sets, Clear() is O(1), so pooling is even more effective.
 var stateSetPool = sync.Pool{
 	New: func() interface{} {
-		return &StateSet{
-			states: make(map[nfa.StateID]struct{}, 64),
-		}
+		return NewStateSetWithCapacity(defaultStateSetCapacity)
 	},
 }
 
@@ -402,12 +443,12 @@ var stateSetPool = sync.Pool{
 // The returned StateSet should be released back to the pool via releaseStateSet.
 func acquireStateSet() *StateSet {
 	ss := stateSetPool.Get().(*StateSet)
-	ss.Clear()
+	ss.Clear() // O(1) with sparse set!
 	return ss
 }
 
 // acquireStateSetWithCapacity gets a StateSet from the pool.
-// Note: The capacity hint is ignored since pooled objects have pre-allocated maps.
+// Note: The capacity hint is ignored since pooled objects have pre-allocated arrays.
 // This function exists for API compatibility with NewStateSetWithCapacity.
 func acquireStateSetWithCapacity(_ int) *StateSet {
 	return acquireStateSet()
@@ -419,8 +460,8 @@ func releaseStateSet(ss *StateSet) {
 	if ss == nil {
 		return
 	}
-	// Don't pool very large maps to avoid memory bloat
-	if len(ss.states) > 1024 {
+	// Don't pool very large sets to avoid memory bloat
+	if len(ss.sparse) > 4096 {
 		return
 	}
 	stateSetPool.Put(ss)
