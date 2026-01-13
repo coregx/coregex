@@ -118,6 +118,9 @@ func (b *Builder) Build() (*DFA, error) {
 	// Check if the NFA contains word boundary assertions
 	hasWordBoundary := b.checkHasWordBoundary()
 
+	// Check if the pattern is always anchored (has ^ prefix)
+	isAlwaysAnchored := b.nfa.IsAlwaysAnchored()
+
 	// Create DFA
 	dfa := &DFA{
 		nfa:              b.nfa,
@@ -131,6 +134,7 @@ func (b *Builder) Build() (*DFA, error) {
 		freshStartStates: freshStartStates,
 		unanchoredStart:  b.nfa.StartUnanchored(),
 		hasWordBoundary:  hasWordBoundary,
+		isAlwaysAnchored: isAlwaysAnchored,
 	}
 
 	// Register start state in ID lookup map

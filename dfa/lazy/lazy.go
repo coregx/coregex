@@ -85,6 +85,10 @@ type DFA struct {
 	// hasWordBoundary is true if the pattern contains \b or \B assertions.
 	// When false, we can skip expensive word boundary checks in the search loop.
 	hasWordBoundary bool
+
+	// isAlwaysAnchored is true if the pattern is inherently anchored (has ^ prefix).
+	// When true, we only need to try matching from position 0.
+	isAlwaysAnchored bool
 }
 
 // hasInProgressPattern checks if any pattern threads are still active (could extend the match).
@@ -348,6 +352,12 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 		return false
 	}
 
+	// Fast path: for anchored patterns (^...), only try from position 0.
+	// Patterns like ^foo can never match at position > 0.
+	if d.isAlwaysAnchored && startPos > 0 {
+		return false
+	}
+
 	// Get context-aware start state
 	currentState := d.getStartStateForUnanchored(haystack, startPos)
 	if currentState == nil {
@@ -587,6 +597,11 @@ func (d *DFA) findWithPrefilterAt(haystack []byte, startAt int) int {
 // Uses leftmost-longest semantics: find the earliest match start, then extend greedily.
 func (d *DFA) searchAt(haystack []byte, startPos int) int {
 	if startPos > len(haystack) {
+		return -1
+	}
+
+	// Fast path: for anchored patterns (^...), only try from position 0.
+	if d.isAlwaysAnchored && startPos > 0 {
 		return -1
 	}
 
