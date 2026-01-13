@@ -3,6 +3,7 @@ package lazy
 import (
 	"fmt"
 	"hash/fnv"
+	"sync"
 
 	"github.com/coregx/coregex/nfa"
 )
@@ -385,4 +386,42 @@ func (ss *StateSet) Clone() *StateSet {
 		clone.Add(state)
 	}
 	return clone
+}
+
+// stateSetPool is a pool of reusable StateSet objects to reduce allocations.
+// This follows the Go stdlib pattern (like regexp's bitState pool).
+var stateSetPool = sync.Pool{
+	New: func() interface{} {
+		return &StateSet{
+			states: make(map[nfa.StateID]struct{}, 64),
+		}
+	},
+}
+
+// acquireStateSet gets a StateSet from the pool, cleared and ready for use.
+// The returned StateSet should be released back to the pool via releaseStateSet.
+func acquireStateSet() *StateSet {
+	ss := stateSetPool.Get().(*StateSet)
+	ss.Clear()
+	return ss
+}
+
+// acquireStateSetWithCapacity gets a StateSet from the pool.
+// Note: The capacity hint is ignored since pooled objects have pre-allocated maps.
+// This function exists for API compatibility with NewStateSetWithCapacity.
+func acquireStateSetWithCapacity(_ int) *StateSet {
+	return acquireStateSet()
+}
+
+// releaseStateSet returns a StateSet to the pool for reuse.
+// The StateSet should not be used after calling this function.
+func releaseStateSet(ss *StateSet) {
+	if ss == nil {
+		return
+	}
+	// Don't pool very large maps to avoid memory bloat
+	if len(ss.states) > 1024 {
+		return
+	}
+	stateSetPool.Put(ss)
 }
