@@ -136,6 +136,27 @@ config.EnablePrefilter = true    // SIMD acceleration
 re, err := coregex.CompileWithConfig(pattern, config)
 ```
 
+### Thread Safety
+
+A compiled `*Regexp` is safe for concurrent use by multiple goroutines:
+
+```go
+re := coregex.MustCompile(`\d+`)
+
+// Safe: multiple goroutines sharing one compiled pattern
+var wg sync.WaitGroup
+for i := 0; i < 100; i++ {
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        re.FindString("test 123 data")  // thread-safe
+    }()
+}
+wg.Wait()
+```
+
+Internally uses `sync.Pool` (same pattern as Go stdlib `regexp`) for per-search state management.
+
 ## Syntax Support
 
 Uses Go's `regexp/syntax` parser:

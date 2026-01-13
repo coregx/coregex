@@ -13,27 +13,48 @@ import (
 //
 // The Pike VM is slower than DFA-based approaches but handles all
 // regex features including backreferences (future) and capturing groups.
+//
+// Thread safety: PikeVM configuration (nfa) is immutable after creation.
+// For thread-safe concurrent usage, use *WithState methods with external PikeVMState.
+// The legacy methods without state use internal state and are NOT thread-safe.
 type PikeVM struct {
 	nfa *NFA
 
+	// internalState is used by legacy non-thread-safe methods.
+	// For concurrent usage, use *WithState methods with external PikeVMState.
+	internalState PikeVMState
+}
+
+// PikeVMState holds mutable per-search state for PikeVM.
+// This struct should be pooled (via sync.Pool) for concurrent usage.
+// Each goroutine must use its own PikeVMState instance.
+type PikeVMState struct {
 	// Thread queues for current and next generation
 	// Pre-allocated to avoid allocations during search
-	queue     []thread
-	nextQueue []thread
+	Queue     []thread
+	NextQueue []thread
 
 	// Sparse set for tracking visited states in current generation
 	// This prevents processing the same state multiple times
-	visited *sparse.SparseSet
+	Visited *sparse.SparseSet
 
-	// longest enables leftmost-longest (POSIX) matching semantics.
+	// Longest enables leftmost-longest (POSIX) matching semantics.
 	// By default (false), uses leftmost-first (Perl) semantics where
 	// the first alternative wins. When true, the longest match wins.
-	longest bool
+	Longest bool
 }
 
 // isBetterMatch returns true if the candidate match is better than the current best.
 // This implements both leftmost-first and leftmost-longest match semantics.
+// Uses internal state for the longest flag.
 func (p *PikeVM) isBetterMatch(bestStart, bestEnd int, bestPriority uint32,
+	candStart, candEnd int, candPriority uint32) bool {
+	return isBetterMatchWithLongest(p.internalState.Longest, bestStart, bestEnd, bestPriority,
+		candStart, candEnd, candPriority)
+}
+
+// isBetterMatchWithLongest is the stateless version of isBetterMatch.
+func isBetterMatchWithLongest(longest bool, bestStart, bestEnd int, bestPriority uint32,
 	candStart, candEnd int, candPriority uint32) bool {
 	// No current best - candidate always wins
 	if bestStart == -1 {
@@ -47,7 +68,7 @@ func (p *PikeVM) isBetterMatch(bestStart, bestEnd int, bestPriority uint32,
 		return false
 	}
 	// Same start position - apply semantics
-	if p.longest {
+	if longest {
 		// Leftmost-longest (POSIX): longer match wins (ignore priority)
 		return candEnd > bestEnd
 	}
@@ -148,25 +169,52 @@ type MatchWithCaptures struct {
 
 // NewPikeVM creates a new PikeVM for executing the given NFA
 func NewPikeVM(nfa *NFA) *PikeVM {
+	p := &PikeVM{
+		nfa: nfa,
+	}
+	// Initialize internal state
+	p.initState(&p.internalState)
+	return p
+}
+
+// initState initializes a PikeVMState for use with this PikeVM.
+// Call this to prepare a state before using it with *WithState methods.
+func (p *PikeVM) initState(state *PikeVMState) {
 	// Pre-allocate thread queues with capacity based on NFA size
-	capacity := nfa.States()
+	capacity := p.nfa.States()
 	if capacity < 16 {
 		capacity = 16
 	}
 
-	return &PikeVM{
-		nfa:       nfa,
-		queue:     make([]thread, 0, capacity),
-		nextQueue: make([]thread, 0, capacity),
-		visited:   sparse.NewSparseSet(conv.IntToUint32(capacity)),
-	}
+	state.Queue = make([]thread, 0, capacity)
+	state.NextQueue = make([]thread, 0, capacity)
+	state.Visited = sparse.NewSparseSet(conv.IntToUint32(capacity))
+}
+
+// NewPikeVMState creates a new mutable state for use with PikeVM.
+// The state must be initialized by calling PikeVM.InitState before use.
+// This should be pooled via sync.Pool for concurrent usage.
+func NewPikeVMState() *PikeVMState {
+	return &PikeVMState{}
+}
+
+// InitState initializes this state for use with the given PikeVM.
+// Must be called before using the state with *WithState methods.
+func (p *PikeVM) InitState(state *PikeVMState) {
+	p.initState(state)
+}
+
+// NumStates returns the number of NFA states (for state allocation).
+func (p *PikeVM) NumStates() int {
+	return p.nfa.States()
 }
 
 // SetLongest enables or disables leftmost-longest (POSIX) matching semantics.
 // By default, uses leftmost-first (Perl) semantics where first alternative wins.
 // When longest=true, the longest match at the same start position wins.
+// Note: This modifies internal state. For thread-safe usage, set Longest directly on PikeVMState.
 func (p *PikeVM) SetLongest(longest bool) {
-	p.longest = longest
+	p.internalState.Longest = longest
 }
 
 // newCaptures creates a new COW capture slots initialized to -1 (unset)
@@ -201,6 +249,9 @@ func updateCapture(caps cowCaptures, groupIndex uint32, isStart bool, pos int) c
 //
 // The search is unanchored by default (matches anywhere in haystack)
 // unless the NFA was compiled with anchored mode.
+//
+// This method uses internal state and is NOT thread-safe.
+// For concurrent usage, use SearchWithState.
 func (p *PikeVM) Search(haystack []byte) (int, int, bool) {
 	return p.SearchAt(haystack, 0)
 }
@@ -228,18 +279,18 @@ func (p *PikeVM) IsMatch(haystack []byte) bool {
 // true as soon as any match state is reached.
 func (p *PikeVM) isMatchUnanchored(haystack []byte) bool {
 	// Reset state
-	p.queue = p.queue[:0]
-	p.nextQueue = p.nextQueue[:0]
-	p.visited.Clear()
+	p.internalState.Queue = p.internalState.Queue[:0]
+	p.internalState.NextQueue = p.internalState.NextQueue[:0]
+	p.internalState.Visited.Clear()
 
 	// Process each byte position
 	for pos := 0; pos <= len(haystack); pos++ {
 		// Add new start thread at current position
-		p.visited.Clear()
+		p.internalState.Visited.Clear()
 		p.addThreadForMatch(p.nfa.StartAnchored(), haystack, pos)
 
 		// Check for matches in current generation - return immediately on first match
-		for _, t := range p.queue {
+		for _, t := range p.internalState.Queue {
 			if p.nfa.IsMatch(t.state) {
 				return true // FAST EXIT - no position tracking needed
 			}
@@ -250,16 +301,16 @@ func (p *PikeVM) isMatchUnanchored(haystack []byte) bool {
 		}
 
 		// Process current byte for all active threads
-		if len(p.queue) > 0 {
+		if len(p.internalState.Queue) > 0 {
 			b := haystack[pos]
-			p.visited.Clear()
-			for _, t := range p.queue {
+			p.internalState.Visited.Clear()
+			for _, t := range p.internalState.Queue {
 				p.stepForMatch(t, b, haystack, pos+1)
 			}
 		}
 
 		// Swap queues
-		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+		p.internalState.Queue, p.internalState.NextQueue = p.internalState.NextQueue, p.internalState.Queue[:0]
 	}
 
 	return false
@@ -268,9 +319,9 @@ func (p *PikeVM) isMatchUnanchored(haystack []byte) bool {
 // isMatchAnchored implements fast boolean-only matching for anchored patterns.
 func (p *PikeVM) isMatchAnchored(haystack []byte) bool {
 	// Reset state
-	p.queue = p.queue[:0]
-	p.nextQueue = p.nextQueue[:0]
-	p.visited.Clear()
+	p.internalState.Queue = p.internalState.Queue[:0]
+	p.internalState.NextQueue = p.internalState.NextQueue[:0]
+	p.internalState.Visited.Clear()
 
 	// Initialize with start state
 	p.addThreadForMatch(p.nfa.StartAnchored(), haystack, 0)
@@ -278,24 +329,24 @@ func (p *PikeVM) isMatchAnchored(haystack []byte) bool {
 	// Process each byte position
 	for pos := 0; pos <= len(haystack); pos++ {
 		// Check for match - return immediately
-		for _, t := range p.queue {
+		for _, t := range p.internalState.Queue {
 			if p.nfa.IsMatch(t.state) {
 				return true
 			}
 		}
 
-		if len(p.queue) == 0 || pos >= len(haystack) {
+		if len(p.internalState.Queue) == 0 || pos >= len(haystack) {
 			break
 		}
 
 		b := haystack[pos]
-		p.visited.Clear()
+		p.internalState.Visited.Clear()
 
-		for _, t := range p.queue {
+		for _, t := range p.internalState.Queue {
 			p.stepForMatch(t, b, haystack, pos+1)
 		}
 
-		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+		p.internalState.Queue, p.internalState.NextQueue = p.internalState.NextQueue, p.internalState.Queue[:0]
 	}
 
 	return false
@@ -303,10 +354,10 @@ func (p *PikeVM) isMatchAnchored(haystack []byte) bool {
 
 // addThreadForMatch adds thread for IsMatch - simplified without captures/priority
 func (p *PikeVM) addThreadForMatch(id StateID, haystack []byte, pos int) {
-	if p.visited.Contains(uint32(id)) {
+	if p.internalState.Visited.Contains(uint32(id)) {
 		return
 	}
-	p.visited.Insert(uint32(id))
+	p.internalState.Visited.Insert(uint32(id))
 
 	state := p.nfa.State(id)
 	if state == nil {
@@ -315,10 +366,10 @@ func (p *PikeVM) addThreadForMatch(id StateID, haystack []byte, pos int) {
 
 	switch state.Kind() {
 	case StateMatch:
-		p.queue = append(p.queue, thread{state: id})
+		p.internalState.Queue = append(p.internalState.Queue, thread{state: id})
 
 	case StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
-		p.queue = append(p.queue, thread{state: id})
+		p.internalState.Queue = append(p.internalState.Queue, thread{state: id})
 
 	case StateEpsilon:
 		next := state.Epsilon()
@@ -375,7 +426,7 @@ func (p *PikeVM) stepForMatch(t thread, b byte, haystack []byte, nextPos int) {
 
 	case StateRuneAny:
 		if b >= 0x80 && b <= 0xBF {
-			p.nextQueue = append(p.nextQueue, t)
+			p.internalState.NextQueue = append(p.internalState.NextQueue, t)
 			return
 		}
 		runePos := nextPos - 1
@@ -390,7 +441,7 @@ func (p *PikeVM) stepForMatch(t thread, b byte, haystack []byte, nextPos int) {
 
 	case StateRuneAnyNotNL:
 		if b >= 0x80 && b <= 0xBF {
-			p.nextQueue = append(p.nextQueue, t)
+			p.internalState.NextQueue = append(p.internalState.NextQueue, t)
 			return
 		}
 		runePos := nextPos - 1
@@ -407,10 +458,10 @@ func (p *PikeVM) stepForMatch(t thread, b byte, haystack []byte, nextPos int) {
 
 // addThreadToNextForMatch adds to next queue for IsMatch - simplified
 func (p *PikeVM) addThreadToNextForMatch(id StateID, haystack []byte, pos int) {
-	if p.visited.Contains(uint32(id)) {
+	if p.internalState.Visited.Contains(uint32(id)) {
 		return
 	}
-	p.visited.Insert(uint32(id))
+	p.internalState.Visited.Insert(uint32(id))
 
 	state := p.nfa.State(id)
 	if state == nil {
@@ -450,7 +501,7 @@ func (p *PikeVM) addThreadToNextForMatch(id StateID, haystack []byte, pos int) {
 		return
 	}
 
-	p.nextQueue = append(p.nextQueue, thread{state: id})
+	p.internalState.NextQueue = append(p.internalState.NextQueue, thread{state: id})
 }
 
 // SearchAt finds the first match in the haystack starting from position 'at'.
@@ -496,9 +547,9 @@ func (p *PikeVM) SearchAt(haystack []byte, at int) (int, int, bool) {
 // This is used by SearchAt to correctly handle anchors when searching from non-zero positions.
 func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, bool) {
 	// Reset state
-	p.queue = p.queue[:0]
-	p.nextQueue = p.nextQueue[:0]
-	p.visited.Clear()
+	p.internalState.Queue = p.internalState.Queue[:0]
+	p.internalState.NextQueue = p.internalState.NextQueue[:0]
+	p.internalState.Visited.Clear()
 
 	// Track leftmost-first match (with priority for alternation)
 	bestStart := -1
@@ -517,13 +568,13 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 		// Stop adding new starts once we've found a match (non-greedy behavior)
 		// For anchored NFA, only try at position 0 (like ^ anchor behavior)
 		if bestStart == -1 && (!isAnchored || pos == 0) {
-			p.visited.Clear()
+			p.internalState.Visited.Clear()
 			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, priority: 0}, haystack, pos)
 		}
 
 		// Check for matches in current generation
 		// We check AFTER adding threads to ensure we capture all potential matches
-		for _, t := range p.queue {
+		for _, t := range p.internalState.Queue {
 			if p.nfa.IsMatch(t.state) && p.isBetterMatch(bestStart, bestEnd, bestPriority, t.startPos, pos, t.priority) {
 				bestStart = t.startPos
 				bestEnd = pos
@@ -540,7 +591,7 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 		// A thread can only produce a leftmost match if its startPos <= current best
 		if bestStart != -1 {
 			hasLeftmostCandidate := false
-			for _, t := range p.queue {
+			for _, t := range p.internalState.Queue {
 				if t.startPos <= bestStart {
 					hasLeftmostCandidate = true
 					break
@@ -554,16 +605,16 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 		// Process current byte for all active threads
 		// Note: We continue even if queue is empty because we might add
 		// new start threads at the next position (unanchored search)
-		if len(p.queue) > 0 {
+		if len(p.internalState.Queue) > 0 {
 			b := haystack[pos]
-			p.visited.Clear() // Clear before processing to track visited states for epsilon closures
-			for _, t := range p.queue {
+			p.internalState.Visited.Clear() // Clear before processing to track visited states for epsilon closures
+			for _, t := range p.internalState.Queue {
 				p.step(t, b, haystack, pos+1)
 			}
 		}
 
 		// Swap queues for next iteration
-		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+		p.internalState.Queue, p.internalState.NextQueue = p.internalState.NextQueue, p.internalState.Queue[:0]
 	}
 
 	if bestStart != -1 {
@@ -608,9 +659,9 @@ func (p *PikeVM) SearchBetween(haystack []byte, startAt, maxEnd int) (int, int, 
 // It's identical to searchUnanchoredAt but stops at maxEnd instead of len(haystack).
 func (p *PikeVM) searchUnanchoredBetween(haystack []byte, startAt, maxEnd int) (int, int, bool) {
 	// Reset state
-	p.queue = p.queue[:0]
-	p.nextQueue = p.nextQueue[:0]
-	p.visited.Clear()
+	p.internalState.Queue = p.internalState.Queue[:0]
+	p.internalState.NextQueue = p.internalState.NextQueue[:0]
+	p.internalState.Visited.Clear()
 
 	// Track leftmost-first match (with priority for alternation)
 	bestStart := -1
@@ -624,12 +675,12 @@ func (p *PikeVM) searchUnanchoredBetween(haystack []byte, startAt, maxEnd int) (
 	for pos := startAt; pos <= maxEnd; pos++ {
 		// Add new start thread at current position (simulates .*? prefix)
 		if bestStart == -1 && (!isAnchored || pos == 0) {
-			p.visited.Clear()
+			p.internalState.Visited.Clear()
 			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, priority: 0}, haystack, pos)
 		}
 
 		// Check for matches in current generation
-		for _, t := range p.queue {
+		for _, t := range p.internalState.Queue {
 			if p.nfa.IsMatch(t.state) && p.isBetterMatch(bestStart, bestEnd, bestPriority, t.startPos, pos, t.priority) {
 				bestStart = t.startPos
 				bestEnd = pos
@@ -645,7 +696,7 @@ func (p *PikeVM) searchUnanchoredBetween(haystack []byte, startAt, maxEnd int) (
 		// If we have a match and no threads could produce a leftmost match, stop early
 		if bestStart != -1 {
 			hasLeftmostCandidate := false
-			for _, t := range p.queue {
+			for _, t := range p.internalState.Queue {
 				if t.startPos <= bestStart {
 					hasLeftmostCandidate = true
 					break
@@ -657,16 +708,16 @@ func (p *PikeVM) searchUnanchoredBetween(haystack []byte, startAt, maxEnd int) (
 		}
 
 		// Process current byte for all active threads
-		if len(p.queue) > 0 {
+		if len(p.internalState.Queue) > 0 {
 			b := haystack[pos]
-			p.visited.Clear()
-			for _, t := range p.queue {
+			p.internalState.Visited.Clear()
+			for _, t := range p.internalState.Queue {
 				p.step(t, b, haystack, pos+1)
 			}
 		}
 
 		// Swap queues for next iteration
-		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+		p.internalState.Queue, p.internalState.NextQueue = p.internalState.NextQueue, p.internalState.Queue[:0]
 	}
 
 	if bestStart != -1 {
@@ -726,9 +777,9 @@ func (p *PikeVM) SearchWithCapturesAt(haystack []byte, at int) *MatchWithCapture
 // searchUnanchoredWithCapturesAt implements Thompson's parallel NFA simulation with capture groups.
 func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *MatchWithCaptures {
 	// Reset state
-	p.queue = p.queue[:0]
-	p.nextQueue = p.nextQueue[:0]
-	p.visited.Clear()
+	p.internalState.Queue = p.internalState.Queue[:0]
+	p.internalState.NextQueue = p.internalState.NextQueue[:0]
+	p.internalState.Visited.Clear()
 
 	// Track leftmost-first match (with priority for alternation)
 	bestStart := -1
@@ -741,13 +792,13 @@ func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *M
 		// Add new start thread at current position (simulates .*? prefix)
 		// Use StartAnchored() to ensure correct startPos tracking
 		if bestStart == -1 {
-			p.visited.Clear()
+			p.internalState.Visited.Clear()
 			caps := p.newCaptures()
 			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, captures: caps, priority: 0}, haystack, pos)
 		}
 
 		// Check for matches in current generation
-		for _, t := range p.queue {
+		for _, t := range p.internalState.Queue {
 			if p.nfa.IsMatch(t.state) && p.isBetterMatch(bestStart, bestEnd, bestPriority, t.startPos, pos, t.priority) {
 				bestStart = t.startPos
 				bestEnd = pos
@@ -763,7 +814,7 @@ func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *M
 		// Early termination check
 		if bestStart != -1 {
 			hasLeftmostCandidate := false
-			for _, t := range p.queue {
+			for _, t := range p.internalState.Queue {
 				if t.startPos <= bestStart {
 					hasLeftmostCandidate = true
 					break
@@ -776,15 +827,15 @@ func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *M
 
 		// Process current byte for all active threads
 		// Continue even if queue is empty (unanchored search may add new starts)
-		if len(p.queue) > 0 {
+		if len(p.internalState.Queue) > 0 {
 			b := haystack[pos]
-			p.visited.Clear()
-			for _, t := range p.queue {
+			p.internalState.Visited.Clear()
+			for _, t := range p.internalState.Queue {
 				p.step(t, b, haystack, pos+1)
 			}
 		}
 
-		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+		p.internalState.Queue, p.internalState.NextQueue = p.internalState.NextQueue, p.internalState.Queue[:0]
 	}
 
 	if bestStart != -1 {
@@ -800,9 +851,9 @@ func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *M
 // searchAtWithCaptures is like searchAt but returns captures
 func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithCaptures {
 	// Reset state
-	p.queue = p.queue[:0]
-	p.nextQueue = p.nextQueue[:0]
-	p.visited.Clear()
+	p.internalState.Queue = p.internalState.Queue[:0]
+	p.internalState.NextQueue = p.internalState.NextQueue[:0]
+	p.internalState.Visited.Clear()
 
 	caps := p.newCaptures()
 	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos, captures: caps, priority: 0}, haystack, startPos)
@@ -813,13 +864,13 @@ func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithC
 	var lastMatchCaptures []int
 
 	for pos := startPos; pos <= len(haystack); pos++ {
-		for _, t := range p.queue {
+		for _, t := range p.internalState.Queue {
 			if !p.nfa.IsMatch(t.state) {
 				continue
 			}
 			// Determine if this match is better than current best
 			shouldUpdate := false
-			if p.longest {
+			if p.internalState.Longest {
 				// Leftmost-longest: always prefer longer match
 				shouldUpdate = pos > lastMatchPos
 			} else {
@@ -831,12 +882,12 @@ func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithC
 				lastMatchPriority = t.priority
 				lastMatchCaptures = t.captures.copyData()
 			}
-			if !p.longest {
+			if !p.internalState.Longest {
 				break // Found a match at this position (leftmost-first)
 			}
 		}
 
-		if len(p.queue) == 0 {
+		if len(p.internalState.Queue) == 0 {
 			break
 		}
 
@@ -847,13 +898,13 @@ func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithC
 		b := haystack[pos]
 
 		// Clear visited BEFORE step loop for next-gen state tracking
-		p.visited.Clear()
+		p.internalState.Visited.Clear()
 
-		for _, t := range p.queue {
+		for _, t := range p.internalState.Queue {
 			p.step(t, b, haystack, pos+1)
 		}
 
-		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+		p.internalState.Queue, p.internalState.NextQueue = p.internalState.NextQueue, p.internalState.Queue[:0]
 	}
 
 	if lastMatchPos != -1 {
@@ -924,12 +975,12 @@ func (p *PikeVM) SearchAll(haystack []byte) []Match {
 }
 
 // searchAt attempts to find a match starting at the given position.
-// Uses leftmost-first (Perl) or leftmost-longest (POSIX) semantics based on p.longest flag.
+// Uses leftmost-first (Perl) or leftmost-longest (POSIX) semantics based on p.internalState.Longest flag.
 func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 	// Reset state
-	p.queue = p.queue[:0]
-	p.nextQueue = p.nextQueue[:0]
-	p.visited.Clear()
+	p.internalState.Queue = p.internalState.Queue[:0]
+	p.internalState.NextQueue = p.internalState.NextQueue[:0]
+	p.internalState.Visited.Clear()
 
 	// Initialize with start state
 	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos, priority: 0}, haystack, startPos)
@@ -941,13 +992,13 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 	// Process each byte position
 	for pos := startPos; pos <= len(haystack); pos++ {
 		// Check if any current threads are in a match state
-		for _, t := range p.queue {
+		for _, t := range p.internalState.Queue {
 			if !p.nfa.IsMatch(t.state) {
 				continue
 			}
 			// Determine if this match is better than current best
 			shouldUpdate := false
-			if p.longest {
+			if p.internalState.Longest {
 				// Leftmost-longest: always prefer longer match
 				shouldUpdate = pos > lastMatchPos
 			} else {
@@ -958,12 +1009,12 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 				lastMatchPos = pos
 				lastMatchPriority = t.priority
 			}
-			if !p.longest {
+			if !p.internalState.Longest {
 				break // Found a match at this position (leftmost-first)
 			}
 		}
 
-		if len(p.queue) == 0 {
+		if len(p.internalState.Queue) == 0 {
 			// No active threads - search complete
 			break
 		}
@@ -979,15 +1030,15 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 		// Clear visited BEFORE step loop so addThreadToNext can track next-gen states
 		// This is critical: visited was used by addThread for current gen,
 		// we need fresh tracking for next gen to allow +/* quantifiers to work
-		p.visited.Clear()
+		p.internalState.Visited.Clear()
 
 		// Process all active threads
-		for _, t := range p.queue {
+		for _, t := range p.internalState.Queue {
 			p.step(t, b, haystack, pos+1)
 		}
 
 		// Swap queues for next iteration
-		p.queue, p.nextQueue = p.nextQueue, p.queue[:0]
+		p.internalState.Queue, p.internalState.NextQueue = p.internalState.NextQueue, p.internalState.Queue[:0]
 	}
 
 	// Return the match found
@@ -1001,10 +1052,10 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 // addThread adds a new thread to the current queue, following epsilon transitions
 func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 	// Check if we've already visited this state in this generation
-	if p.visited.Contains(uint32(t.state)) {
+	if p.internalState.Visited.Contains(uint32(t.state)) {
 		return
 	}
-	p.visited.Insert(uint32(t.state))
+	p.internalState.Visited.Insert(uint32(t.state))
 
 	state := p.nfa.State(t.state)
 	if state == nil {
@@ -1014,11 +1065,11 @@ func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 	switch state.Kind() {
 	case StateMatch:
 		// Match state - add to queue
-		p.queue = append(p.queue, t)
+		p.internalState.Queue = append(p.internalState.Queue, t)
 
 	case StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
 		// Input-consuming states - add to queue
-		p.queue = append(p.queue, t)
+		p.internalState.Queue = append(p.internalState.Queue, t)
 
 	case StateEpsilon:
 		// Follow epsilon transition immediately, preserving startPos, captures, priority, and tookLeft
@@ -1147,10 +1198,10 @@ func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 	// Without this check, patterns with multiple character classes like
 	// A[AB]B[BC]C[CD]... can cause exponential thread explosion (2^N duplicates)
 	// Reference: rust-regex pikevm.rs line 1683: "if !next.set.insert(sid) { return; }"
-	if p.visited.Contains(uint32(t.state)) {
+	if p.internalState.Visited.Contains(uint32(t.state)) {
 		return
 	}
-	p.visited.Insert(uint32(t.state))
+	p.internalState.Visited.Insert(uint32(t.state))
 
 	state := p.nfa.State(t.state)
 	if state == nil {
@@ -1210,7 +1261,7 @@ func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 	}
 
 	// Add to next queue
-	p.nextQueue = append(p.nextQueue, t)
+	p.internalState.NextQueue = append(p.internalState.NextQueue, t)
 }
 
 // matchesEmpty checks if the NFA matches an empty string at position 0
@@ -1222,13 +1273,13 @@ func (p *PikeVM) matchesEmpty() bool {
 // This is needed for correctly evaluating look assertions like ^ and $ in multiline mode.
 func (p *PikeVM) matchesEmptyAt(haystack []byte, pos int) bool {
 	// Reset state
-	p.queue = p.queue[:0]
-	p.visited.Clear()
+	p.internalState.Queue = p.internalState.Queue[:0]
+	p.internalState.Visited.Clear()
 
 	// Check if we can reach a match state via epsilon transitions only
 	var stack []StateID
 	stack = append(stack, p.nfa.StartAnchored())
-	p.visited.Insert(uint32(p.nfa.StartAnchored()))
+	p.internalState.Visited.Insert(uint32(p.nfa.StartAnchored()))
 
 	for len(stack) > 0 {
 		// Pop state from stack
@@ -1247,35 +1298,35 @@ func (p *PikeVM) matchesEmptyAt(haystack []byte, pos int) bool {
 		switch state.Kind() {
 		case StateEpsilon:
 			next := state.Epsilon()
-			if next != InvalidState && !p.visited.Contains(uint32(next)) {
-				p.visited.Insert(uint32(next))
+			if next != InvalidState && !p.internalState.Visited.Contains(uint32(next)) {
+				p.internalState.Visited.Insert(uint32(next))
 				stack = append(stack, next)
 			}
 
 		case StateSplit:
 			left, right := state.Split()
-			if left != InvalidState && !p.visited.Contains(uint32(left)) {
-				p.visited.Insert(uint32(left))
+			if left != InvalidState && !p.internalState.Visited.Contains(uint32(left)) {
+				p.internalState.Visited.Insert(uint32(left))
 				stack = append(stack, left)
 			}
-			if right != InvalidState && !p.visited.Contains(uint32(right)) {
-				p.visited.Insert(uint32(right))
+			if right != InvalidState && !p.internalState.Visited.Contains(uint32(right)) {
+				p.internalState.Visited.Insert(uint32(right))
 				stack = append(stack, right)
 			}
 
 		case StateLook:
 			// Check if assertion holds at the actual position
 			look, next := state.Look()
-			if checkLookAssertion(look, haystack, pos) && next != InvalidState && !p.visited.Contains(uint32(next)) {
-				p.visited.Insert(uint32(next))
+			if checkLookAssertion(look, haystack, pos) && next != InvalidState && !p.internalState.Visited.Contains(uint32(next)) {
+				p.internalState.Visited.Insert(uint32(next))
 				stack = append(stack, next)
 			}
 
 		case StateCapture:
 			// Capture states are epsilon transitions, follow through
 			_, _, next := state.Capture()
-			if next != InvalidState && !p.visited.Contains(uint32(next)) {
-				p.visited.Insert(uint32(next))
+			if next != InvalidState && !p.internalState.Visited.Contains(uint32(next)) {
+				p.internalState.Visited.Insert(uint32(next))
 				stack = append(stack, next)
 			}
 		}

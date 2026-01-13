@@ -20,18 +20,23 @@ import (
 //  3. Builds prefilter (if literals available)
 //  4. Coordinates search across engines
 //
-// Thread safety: Not thread-safe. Each goroutine should use its own Engine instance.
-// The underlying NFA is immutable and can be shared, but Engine state is mutable.
+// Thread safety: The Engine uses a sync.Pool internally to provide thread-safe
+// concurrent access. Multiple goroutines can safely call search methods (Find,
+// IsMatch, FindSubmatch, etc.) on the same Engine instance concurrently.
+//
+// The underlying NFA, DFA, and prefilters are immutable after compilation.
+// Per-search mutable state is managed via sync.Pool, following the Go stdlib
+// regexp package pattern.
 //
 // Example:
 //
-//	// Compile pattern
+//	// Compile pattern (once)
 //	engine, err := meta.Compile("(foo|bar)\\d+")
 //	if err != nil {
 //	    return err
 //	}
 //
-//	// Search
+//	// Search (safe to call from multiple goroutines)
 //	haystack := []byte("test foo123 end")
 //	match := engine.Find(haystack)
 //	if match != nil {
@@ -63,6 +68,10 @@ type Engine struct {
 	// This is independent of strategy - used by FindSubmatch when available
 	onepass      *onepass.DFA
 	onepassCache *onepass.Cache
+
+	// statePool provides thread-safe pooling of per-search mutable state.
+	// This enables concurrent searches on the same Engine instance.
+	statePool *searchStatePool
 
 	// longest enables leftmost-longest (POSIX) matching semantics
 	// By default (false), uses leftmost-first (Perl) semantics
@@ -451,6 +460,9 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		}
 	}
 
+	// Initialize state pool for thread-safe concurrent searches
+	numCaptures := nfaEngine.CaptureCount()
+
 	return &Engine{
 		nfa:                      nfaEngine,
 		dfa:                      engines.dfa,
@@ -470,8 +482,33 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		onepassCache:             onePassRes.cache,
 		canMatchEmpty:            canMatchEmpty,
 		fatTeddyFallback:         fatTeddyFallback,
+		statePool:                newSearchStatePool(nfaEngine, numCaptures),
 		stats:                    Stats{},
 	}, nil
+}
+
+// getSearchState retrieves a SearchState from the pool.
+// Caller must call putSearchState when done.
+// The returned state contains its own PikeVM instance for thread-safe concurrent use.
+func (e *Engine) getSearchState() *SearchState {
+	state := e.statePool.get()
+
+	// Initialize state for BoundedBacktracker if needed
+	if e.boundedBacktracker != nil && state.backtracker != nil {
+		state.backtracker.Longest = e.longest
+	}
+
+	// PikeVM is already created per-state, just set longest flag if needed
+	if state.pikevm != nil {
+		state.pikevm.SetLongest(e.longest)
+	}
+
+	return state
+}
+
+// putSearchState returns a SearchState to the pool.
+func (e *Engine) putSearchState(state *SearchState) {
+	e.statePool.put(state)
 }
 
 // Find returns the first match in the haystack, or nil if no match.
@@ -633,11 +670,16 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 // isMatchNFA checks for match using NFA (PikeVM or BoundedBacktracker) with early termination.
 // Uses prefilter for skip-ahead when available (like Rust regex).
 // For small NFAs, prefers BoundedBacktracker (2-3x faster than PikeVM on small inputs).
+// Thread-safe: uses pooled state for both BoundedBacktracker and PikeVM.
 func (e *Engine) isMatchNFA(haystack []byte) bool {
 	e.stats.NFASearches++
 
 	// BoundedBacktracker is preferred when available (supports both default and Longest modes)
 	useBT := e.boundedBacktracker != nil
+
+	// Get pooled state for thread-safe execution
+	state := e.getSearchState()
+	defer e.putSearchState(state)
 
 	// Use prefilter for skip-ahead if available
 	if e.prefilter != nil {
@@ -654,9 +696,9 @@ func (e *Engine) isMatchNFA(haystack []byte) bool {
 			// Prefer BoundedBacktracker for small inputs (2-3x faster)
 			var found bool
 			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
-				_, _, found = e.boundedBacktracker.SearchAt(haystack, pos)
+				_, _, found = e.boundedBacktracker.SearchAtWithState(haystack, pos, state.backtracker)
 			} else {
-				_, _, found = e.pikevm.SearchAt(haystack, pos)
+				_, _, found = state.pikevm.SearchAt(haystack, pos)
 			}
 			if found {
 				return true
@@ -671,12 +713,12 @@ func (e *Engine) isMatchNFA(haystack []byte) bool {
 
 	// No prefilter: use BoundedBacktracker if available, else PikeVM
 	if useBT && e.boundedBacktracker.CanHandle(len(haystack)) {
-		return e.boundedBacktracker.IsMatch(haystack)
+		return e.boundedBacktracker.IsMatchWithState(haystack, state.backtracker)
 	}
 
 	// Use optimized IsMatch that returns immediately on first match
 	// without computing exact match positions
-	return e.pikevm.IsMatch(haystack)
+	return state.pikevm.IsMatch(haystack)
 }
 
 // isMatchDFA checks for match using DFA with early termination.
@@ -724,6 +766,7 @@ func (e *Engine) isMatchAdaptive(haystack []byte) bool {
 
 // isMatchBoundedBacktracker checks for match using bounded backtracker.
 // 2-4x faster than PikeVM for simple character class patterns.
+// Thread-safe: uses pooled state.
 func (e *Engine) isMatchBoundedBacktracker(haystack []byte) bool {
 	if e.boundedBacktracker == nil {
 		return e.isMatchNFA(haystack)
@@ -733,7 +776,11 @@ func (e *Engine) isMatchBoundedBacktracker(haystack []byte) bool {
 		// Input too large for bounded backtracker, fall back to PikeVM
 		return e.pikevm.IsMatch(haystack)
 	}
-	return e.boundedBacktracker.IsMatch(haystack)
+
+	// Use pooled state for thread-safety
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+	return e.boundedBacktracker.IsMatchWithState(haystack, state.backtracker)
 }
 
 // FindSubmatch returns the first match with capture group information.
@@ -765,6 +812,7 @@ func (e *Engine) FindSubmatch(haystack []byte) *MatchWithCaptures {
 //
 // This method is used by ReplaceAll* operations to correctly handle anchors like ^.
 // Unlike FindSubmatch, it takes the FULL haystack and a starting position.
+// Thread-safe: uses pooled PikeVM instance.
 func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
 	// For position 0, try OnePass DFA if available (10-20x faster for anchored patterns)
 	if at == 0 && e.onepass != nil && e.onepassCache != nil {
@@ -781,8 +829,11 @@ func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
 
 	e.stats.NFASearches++
 
-	// Use PikeVM for capture group extraction
-	nfaMatch := e.pikevm.SearchWithCapturesAt(haystack, at)
+	// Use pooled PikeVM for capture group extraction
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
+	nfaMatch := state.pikevm.SearchWithCapturesAt(haystack, at)
 	if nfaMatch == nil {
 		return nil
 	}
@@ -913,6 +964,7 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 // BoundedBacktracker can be used for patterns that cannot match empty.
 // For patterns like (?:|a)*, its greedy semantics give wrong results,
 // so we must use PikeVM which correctly implements leftmost-first semantics.
+// Thread-safe: uses pooled state for both BoundedBacktracker and PikeVM.
 func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 	e.stats.NFASearches++
 
@@ -920,6 +972,10 @@ func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 	// 1. It's available
 	// 2. Pattern cannot match empty (BT has greedy semantics that break empty match handling)
 	useBT := e.boundedBacktracker != nil && !e.canMatchEmpty
+
+	// Get pooled state for thread-safe execution
+	state := e.getSearchState()
+	defer e.putSearchState(state)
 
 	// Use prefilter for skip-ahead if available
 	if e.prefilter != nil {
@@ -936,9 +992,9 @@ func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 			var start, end int
 			var found bool
 			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
-				start, end, found = e.boundedBacktracker.SearchAt(haystack, pos)
+				start, end, found = e.boundedBacktracker.SearchAtWithState(haystack, pos, state.backtracker)
 			} else {
-				start, end, found = e.pikevm.SearchAt(haystack, pos)
+				start, end, found = state.pikevm.SearchAt(haystack, pos)
 			}
 			if found {
 				return start, end, true
@@ -953,20 +1009,25 @@ func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 
 	// No prefilter: use BoundedBacktracker if available and safe
 	if useBT && e.boundedBacktracker.CanHandle(len(haystack)) {
-		return e.boundedBacktracker.Search(haystack)
+		return e.boundedBacktracker.SearchWithState(haystack, state.backtracker)
 	}
 
-	return e.pikevm.Search(haystack)
+	return state.pikevm.Search(haystack)
 }
 
 // findIndicesNFAAt searches using NFA starting at position - zero alloc.
 // Uses prefilter for skip-ahead when available (like Rust regex).
 // Same BoundedBacktracker rules as findIndicesNFA.
+// Thread-safe: uses pooled state for both BoundedBacktracker and PikeVM.
 func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 	e.stats.NFASearches++
 
 	// BoundedBacktracker can be used for Find operations only when safe
 	useBT := e.boundedBacktracker != nil && !e.canMatchEmpty
+
+	// Get pooled state for thread-safe execution
+	state := e.getSearchState()
+	defer e.putSearchState(state)
 
 	// Use prefilter for skip-ahead if available
 	if e.prefilter != nil {
@@ -982,9 +1043,9 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 			var start, end int
 			var found bool
 			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
-				start, end, found = e.boundedBacktracker.SearchAt(haystack, pos)
+				start, end, found = e.boundedBacktracker.SearchAtWithState(haystack, pos, state.backtracker)
 			} else {
-				start, end, found = e.pikevm.SearchAt(haystack, pos)
+				start, end, found = state.pikevm.SearchAt(haystack, pos)
 			}
 			if found {
 				return start, end, true
@@ -999,10 +1060,10 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 
 	// No prefilter: use BoundedBacktracker if available and safe
 	if useBT && e.boundedBacktracker.CanHandle(len(haystack)-at) {
-		return e.boundedBacktracker.SearchAt(haystack, at)
+		return e.boundedBacktracker.SearchAtWithState(haystack, at, state.backtracker)
 	}
 
-	return e.pikevm.SearchAt(haystack, at)
+	return state.pikevm.SearchAt(haystack, at)
 }
 
 // findIndicesDFA searches using DFA with prefilter - zero alloc.
@@ -1243,6 +1304,7 @@ func (e *Engine) findIndicesReverseInnerAt(haystack []byte, at int) (int, int, b
 }
 
 // findIndicesBoundedBacktracker searches using bounded backtracker - zero alloc.
+// Thread-safe: uses pooled state.
 func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool) {
 	if e.boundedBacktracker == nil {
 		return e.findIndicesNFA(haystack)
@@ -1251,10 +1313,14 @@ func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool)
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		return e.pikevm.Search(haystack)
 	}
-	return e.boundedBacktracker.Search(haystack)
+
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+	return e.boundedBacktracker.SearchWithState(haystack, state.backtracker)
 }
 
 // findIndicesBoundedBacktrackerAt searches using bounded backtracker at position.
+// Thread-safe: uses pooled state.
 func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, int, bool) {
 	if e.boundedBacktracker == nil {
 		return e.findIndicesNFAAt(haystack, at)
@@ -1263,10 +1329,14 @@ func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, 
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		return e.pikevm.SearchAt(haystack, at)
 	}
-	return e.boundedBacktracker.SearchAt(haystack, at)
+
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+	return e.boundedBacktracker.SearchAtWithState(haystack, at, state.backtracker)
 }
 
 // findBoundedBacktracker searches using bounded backtracker.
+// Thread-safe: uses pooled state.
 func (e *Engine) findBoundedBacktracker(haystack []byte) *Match {
 	if e.boundedBacktracker == nil {
 		return e.findNFA(haystack)
@@ -1275,7 +1345,10 @@ func (e *Engine) findBoundedBacktracker(haystack []byte) *Match {
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		return e.findNFA(haystack)
 	}
-	start, end, found := e.boundedBacktracker.Search(haystack)
+
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+	start, end, found := e.boundedBacktracker.SearchWithState(haystack, state.backtracker)
 	if !found {
 		return nil
 	}
@@ -1593,10 +1666,14 @@ func (e *Engine) findIndicesTeddyAt(haystack []byte, at int) (int, int, bool) {
 }
 
 // findNFA searches using NFA (PikeVM) directly.
+// Thread-safe: uses pooled PikeVM instance.
 func (e *Engine) findNFA(haystack []byte) *Match {
 	e.stats.NFASearches++
 
-	start, end, matched := e.pikevm.Search(haystack)
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
+	start, end, matched := state.pikevm.Search(haystack)
 	if !matched {
 		return nil
 	}
