@@ -44,6 +44,11 @@ import (
 //	    println(match.String()) // "foo123"
 //	}
 type Engine struct {
+	// Statistics (useful for debugging and tuning)
+	// IMPORTANT: stats MUST be first field for proper 8-byte alignment on 32-bit platforms.
+	// This ensures atomic operations on uint64 fields work correctly.
+	stats Stats
+
 	nfa                      *nfa.NFA
 	dfa                      *lazy.DFA
 	pikevm                   *nfa.PikeVM
@@ -89,9 +94,6 @@ type Engine struct {
 	// isStartAnchored is true if the pattern is anchored at start (^).
 	// Used for first-byte prefilter optimization.
 	isStartAnchored bool
-
-	// Statistics (useful for debugging and tuning)
-	stats Stats
 }
 
 // Stats tracks execution statistics for performance analysis.
