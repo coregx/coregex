@@ -85,6 +85,10 @@ type DFA struct {
 	// hasWordBoundary is true if the pattern contains \b or \B assertions.
 	// When false, we can skip expensive word boundary checks in the search loop.
 	hasWordBoundary bool
+
+	// isAlwaysAnchored is true if the pattern is inherently anchored (has ^ prefix).
+	// When true, we only need to try matching from position 0.
+	isAlwaysAnchored bool
 }
 
 // hasInProgressPattern checks if any pattern threads are still active (could extend the match).
@@ -348,6 +352,12 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 		return false
 	}
 
+	// Fast path: for anchored patterns (^...), only try from position 0.
+	// Patterns like ^foo can never match at position > 0.
+	if d.isAlwaysAnchored && startPos > 0 {
+		return false
+	}
+
 	// Get context-aware start state
 	currentState := d.getStartStateForUnanchored(haystack, startPos)
 	if currentState == nil {
@@ -590,6 +600,11 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 		return -1
 	}
 
+	// Fast path: for anchored patterns (^...), only try from position 0.
+	if d.isAlwaysAnchored && startPos > 0 {
+		return -1
+	}
+
 	// Get appropriate start state based on look-behind context
 	// This enables correct handling of assertions like ^, \b, etc.
 	currentState := d.getStartStateForUnanchored(haystack, startPos)
@@ -707,8 +722,9 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int {
 // Returns (nil, nil) if no transition is possible (dead state).
 // Returns (nil, error) if cache is full.
 func (d *DFA) determinize(current *State, b byte) (*State, error) {
-	// Need builder for move operations
-	builder := NewBuilder(d.nfa, d.config)
+	// Need builder for move operations.
+	// Use NewBuilderWithWordBoundary to pass pre-computed flag and avoid O(states) scan.
+	builder := NewBuilderWithWordBoundary(d.nfa, d.config, d.hasWordBoundary)
 
 	// Convert input byte to equivalence class index for transition storage
 	// The actual byte value is still used for NFA move operations
@@ -877,7 +893,7 @@ func (d *DFA) getStartState(haystack []byte, pos int, anchored bool) *State {
 	}
 
 	// Not cached - compute and store with proper stride for ByteClasses compression
-	builder := NewBuilder(d.nfa, d.config)
+	builder := NewBuilderWithWordBoundary(d.nfa, d.config, d.hasWordBoundary)
 	config := StartConfig{Kind: kind, Anchored: anchored}
 	state, key := ComputeStartStateWithStride(builder, d.nfa, config, d.AlphabetLen())
 
@@ -1008,7 +1024,7 @@ func (d *DFA) ResetCache() {
 
 	// Recreate start state using unanchored start (with implicit (?s:.)*? prefix)
 	// Use StartText look assertions (both \A and ^ are satisfied at position 0)
-	builder := NewBuilder(d.nfa, d.config)
+	builder := NewBuilderWithWordBoundary(d.nfa, d.config, d.hasWordBoundary)
 	startLook := LookSetFromStartKind(StartText)
 	startStateSet := builder.epsilonClosure([]nfa.StateID{d.nfa.StartUnanchored()}, startLook)
 	isMatch := builder.containsMatchState(startStateSet)
@@ -1206,9 +1222,9 @@ func (d *DFA) getStartStateForReverse(haystack []byte, end int) *State {
 	}
 
 	// Not cached - compute and store with proper stride for ByteClasses compression
-	builder := NewBuilder(d.nfa, d.config)
-	config := StartConfig{Kind: kind, Anchored: false}
-	state, key := ComputeStartStateWithStride(builder, d.nfa, config, d.AlphabetLen())
+	builder := NewBuilderWithWordBoundary(d.nfa, d.config, d.hasWordBoundary)
+	cfg := StartConfig{Kind: kind, Anchored: false}
+	state, key := ComputeStartStateWithStride(builder, d.nfa, cfg, d.AlphabetLen())
 
 	insertedState, existed, err := d.cache.GetOrInsert(key, state)
 	if err != nil {

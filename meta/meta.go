@@ -3,6 +3,7 @@ package meta
 import (
 	"errors"
 	"regexp/syntax"
+	"sync/atomic"
 
 	"github.com/coregx/ahocorasick"
 	"github.com/coregx/coregex/dfa/lazy"
@@ -20,29 +21,42 @@ import (
 //  3. Builds prefilter (if literals available)
 //  4. Coordinates search across engines
 //
-// Thread safety: Not thread-safe. Each goroutine should use its own Engine instance.
-// The underlying NFA is immutable and can be shared, but Engine state is mutable.
+// Thread safety: The Engine uses a sync.Pool internally to provide thread-safe
+// concurrent access. Multiple goroutines can safely call search methods (Find,
+// IsMatch, FindSubmatch, etc.) on the same Engine instance concurrently.
+//
+// The underlying NFA, DFA, and prefilters are immutable after compilation.
+// Per-search mutable state is managed via sync.Pool, following the Go stdlib
+// regexp package pattern.
 //
 // Example:
 //
-//	// Compile pattern
+//	// Compile pattern (once)
 //	engine, err := meta.Compile("(foo|bar)\\d+")
 //	if err != nil {
 //	    return err
 //	}
 //
-//	// Search
+//	// Search (safe to call from multiple goroutines)
 //	haystack := []byte("test foo123 end")
 //	match := engine.Find(haystack)
 //	if match != nil {
 //	    println(match.String()) // "foo123"
 //	}
 type Engine struct {
+	// Statistics (useful for debugging and tuning)
+	// IMPORTANT: stats MUST be first field for proper 8-byte alignment on 32-bit platforms.
+	// This ensures atomic operations on uint64 fields work correctly.
+	stats Stats
+
 	nfa                      *nfa.NFA
 	dfa                      *lazy.DFA
 	pikevm                   *nfa.PikeVM
 	boundedBacktracker       *nfa.BoundedBacktracker
 	charClassSearcher        *nfa.CharClassSearcher // Specialized searcher for char_class+ patterns
+	compositeSearcher        *nfa.CompositeSearcher // For concatenated char classes like [a-zA-Z]+[0-9]+
+	branchDispatcher         *nfa.BranchDispatcher  // O(1) branch dispatch for anchored alternations
+	anchoredFirstBytes       *nfa.FirstByteSet      // O(1) first-byte rejection for anchored patterns
 	reverseSearcher          *ReverseAnchoredSearcher
 	reverseSuffixSearcher    *ReverseSuffixSearcher
 	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
@@ -61,8 +75,12 @@ type Engine struct {
 
 	// OnePass DFA for anchored patterns with captures (optional optimization)
 	// This is independent of strategy - used by FindSubmatch when available
-	onepass      *onepass.DFA
-	onepassCache *onepass.Cache
+	// Note: The cache is now stored in pooled SearchState for thread-safety
+	onepass *onepass.DFA
+
+	// statePool provides thread-safe pooling of per-search mutable state.
+	// This enables concurrent searches on the same Engine instance.
+	statePool *searchStatePool
 
 	// longest enables leftmost-longest (POSIX) matching semantics
 	// By default (false), uses leftmost-first (Perl) semantics
@@ -73,8 +91,9 @@ type Engine struct {
 	// because its greedy semantics give wrong results for patterns like (?:|a)*
 	canMatchEmpty bool
 
-	// Statistics (useful for debugging and tuning)
-	stats Stats
+	// isStartAnchored is true if the pattern is anchored at start (^).
+	// Used for first-byte prefilter optimization.
+	isStartAnchored bool
 }
 
 // Stats tracks execution statistics for performance analysis.
@@ -157,17 +176,13 @@ func CompileWithConfig(pattern string, config Config) (*Engine, error) {
 // buildCharClassSearchers creates specialized searchers for character class patterns.
 // Returns (BoundedBacktracker, CharClassSearcher, updatedStrategy).
 // If CharClassSearcher extraction fails, falls back to BoundedBacktracker.
-// onePassResult holds the result of buildOnePassDFA.
-type onePassResult struct {
-	dfa   *onepass.DFA
-	cache *onepass.Cache
-}
 
 // buildOnePassDFA tries to build a OnePass DFA for anchored patterns with captures.
 // This is an optional optimization for FindSubmatch (10-20x faster).
-func buildOnePassDFA(re *syntax.Regexp, nfaEngine *nfa.NFA, config Config) onePassResult {
+// Note: The cache is now created per-search in pooled SearchState for thread-safety.
+func buildOnePassDFA(re *syntax.Regexp, nfaEngine *nfa.NFA, config Config) *onepass.DFA {
 	if !config.EnableDFA || nfaEngine.CaptureCount() <= 1 {
-		return onePassResult{}
+		return nil
 	}
 
 	// Compile anchored NFA for OnePass (requires Anchored: true)
@@ -179,19 +194,16 @@ func buildOnePassDFA(re *syntax.Regexp, nfaEngine *nfa.NFA, config Config) onePa
 	})
 	anchoredNFA, err := anchoredCompiler.CompileRegexp(re)
 	if err != nil {
-		return onePassResult{}
+		return nil
 	}
 
 	// Try to build one-pass DFA
 	onepassDFA, err := onepass.Build(anchoredNFA)
 	if err != nil {
-		return onePassResult{}
+		return nil
 	}
 
-	return onePassResult{
-		dfa:   onepassDFA,
-		cache: onepass.NewCache(onepassDFA.NumCaptures()),
-	}
+	return onepassDFA
 }
 
 // strategyEngines holds all strategy-specific engines built by buildStrategyEngines.
@@ -329,16 +341,24 @@ func buildReverseSearchers(
 	return result
 }
 
+// charClassSearcherResult holds the result of building specialized searchers.
+type charClassSearcherResult struct {
+	boundedBT        *nfa.BoundedBacktracker
+	charClassSrch    *nfa.CharClassSearcher
+	compositeSrch    *nfa.CompositeSearcher
+	branchDispatcher *nfa.BranchDispatcher
+	finalStrategy    Strategy
+}
+
 func buildCharClassSearchers(
 	strategy Strategy,
 	re *syntax.Regexp,
 	nfaEngine *nfa.NFA,
-) (*nfa.BoundedBacktracker, *nfa.CharClassSearcher, Strategy) {
-	var boundedBT *nfa.BoundedBacktracker
-	var charClassSrch *nfa.CharClassSearcher
+) charClassSearcherResult {
+	result := charClassSearcherResult{finalStrategy: strategy}
 
 	if strategy == UseBoundedBacktracker {
-		boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+		result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
 	}
 
 	if strategy == UseCharClassSearcher {
@@ -349,11 +369,44 @@ func buildCharClassSearchers(
 			if re.Op == syntax.OpStar {
 				minMatch = 0
 			}
-			charClassSrch = nfa.NewCharClassSearcher(ranges, minMatch)
+			result.charClassSrch = nfa.NewCharClassSearcher(ranges, minMatch)
 		} else {
 			// Fallback to BoundedBacktracker if extraction fails
-			strategy = UseBoundedBacktracker
-			boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+			result.finalStrategy = UseBoundedBacktracker
+			result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+		}
+	}
+
+	// CompositeSearcher for concatenated char classes like [a-zA-Z]+[0-9]+
+	// Reference: https://github.com/coregx/coregex/issues/72
+	if strategy == UseCompositeSearcher {
+		result.compositeSrch = nfa.NewCompositeSearcher(re)
+		if result.compositeSrch == nil {
+			// Fallback to BoundedBacktracker if extraction fails
+			result.finalStrategy = UseBoundedBacktracker
+			result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+		}
+	}
+
+	// BranchDispatcher for anchored alternations with distinct first bytes
+	// Reference: https://github.com/coregx/coregex/issues/79
+	if strategy == UseBranchDispatch {
+		// Extract the alternation part (skip ^ anchor)
+		altPart := re
+		if re.Op == syntax.OpConcat && len(re.Sub) >= 2 {
+			// Skip start anchor, get the rest
+			for _, sub := range re.Sub[1:] {
+				if sub.Op == syntax.OpAlternate || sub.Op == syntax.OpCapture {
+					altPart = sub
+					break
+				}
+			}
+		}
+		result.branchDispatcher = nfa.NewBranchDispatcher(altPart)
+		if result.branchDispatcher == nil {
+			// Fallback to BoundedBacktracker if dispatch not possible
+			result.finalStrategy = UseBoundedBacktracker
+			result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
 		}
 	}
 
@@ -361,11 +414,11 @@ func buildCharClassSearchers(
 	// BoundedBacktracker is 2-3x faster than PikeVM on small inputs due to
 	// generation-based visited tracking (O(1) reset) vs PikeVM's thread queues.
 	// This is similar to how stdlib uses backtracking for simple patterns.
-	if strategy == UseNFA && boundedBT == nil && nfaEngine.States() < 50 {
-		boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+	if result.finalStrategy == UseNFA && result.boundedBT == nil && nfaEngine.States() < 50 {
+		result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
 	}
 
-	return boundedBT, charClassSrch, strategy
+	return result
 }
 
 // CompileRegexp compiles a parsed syntax.Regexp with default configuration.
@@ -428,12 +481,24 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	strategy = engines.finalStrategy
 
 	// Build specialized searchers for character class patterns
-	boundedBT, charClassSrch, strategy := buildCharClassSearchers(strategy, re, nfaEngine)
+	charClassResult := buildCharClassSearchers(strategy, re, nfaEngine)
+	strategy = charClassResult.finalStrategy
 
 	// Check if pattern can match empty string.
 	// If true, BoundedBacktracker cannot be used for Find operations
 	// because its greedy semantics give wrong results for patterns like (?:|a)*
 	canMatchEmpty := pikevm.IsMatch(nil)
+
+	// Extract first-byte prefilter for anchored patterns.
+	// This enables O(1) early rejection for non-matching inputs.
+	// Only useful for start-anchored patterns where we only check position 0.
+	var anchoredFirstBytes *nfa.FirstByteSet
+	if isStartAnchored && strategy == UseBoundedBacktracker {
+		fb := nfa.ExtractFirstBytes(re)
+		if fb != nil && fb.IsUseful() {
+			anchoredFirstBytes = fb
+		}
+	}
 
 	// Build Aho-Corasick fallback for Fat Teddy patterns.
 	// Fat Teddy's AVX2 SIMD has setup overhead that makes it slower than Aho-Corasick
@@ -451,12 +516,18 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		}
 	}
 
+	// Initialize state pool for thread-safe concurrent searches
+	numCaptures := nfaEngine.CaptureCount()
+
 	return &Engine{
 		nfa:                      nfaEngine,
 		dfa:                      engines.dfa,
 		pikevm:                   pikevm,
-		boundedBacktracker:       boundedBT,
-		charClassSearcher:        charClassSrch,
+		boundedBacktracker:       charClassResult.boundedBT,
+		charClassSearcher:        charClassResult.charClassSrch,
+		compositeSearcher:        charClassResult.compositeSrch,
+		branchDispatcher:         charClassResult.branchDispatcher,
+		anchoredFirstBytes:       anchoredFirstBytes,
 		reverseSearcher:          engines.reverseSearcher,
 		reverseSuffixSearcher:    engines.reverseSuffixSearcher,
 		reverseSuffixSetSearcher: engines.reverseSuffixSetSearcher,
@@ -466,12 +537,37 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		prefilter:                pf,
 		strategy:                 strategy,
 		config:                   config,
-		onepass:                  onePassRes.dfa,
-		onepassCache:             onePassRes.cache,
+		onepass:                  onePassRes,
 		canMatchEmpty:            canMatchEmpty,
+		isStartAnchored:          isStartAnchored,
 		fatTeddyFallback:         fatTeddyFallback,
+		statePool:                newSearchStatePool(nfaEngine, numCaptures),
 		stats:                    Stats{},
 	}, nil
+}
+
+// getSearchState retrieves a SearchState from the pool.
+// Caller must call putSearchState when done.
+// The returned state contains its own PikeVM instance for thread-safe concurrent use.
+func (e *Engine) getSearchState() *SearchState {
+	state := e.statePool.get()
+
+	// Initialize state for BoundedBacktracker if needed
+	if e.boundedBacktracker != nil && state.backtracker != nil {
+		state.backtracker.Longest = e.longest
+	}
+
+	// PikeVM is already created per-state, just set longest flag if needed
+	if state.pikevm != nil {
+		state.pikevm.SetLongest(e.longest)
+	}
+
+	return state
+}
+
+// putSearchState returns a SearchState to the pool.
+func (e *Engine) putSearchState(state *SearchState) {
+	e.statePool.put(state)
 }
 
 // Find returns the first match in the haystack, or nil if no match.
@@ -546,6 +642,10 @@ func (e *Engine) findAtZero(haystack []byte) *Match {
 		return e.findBoundedBacktracker(haystack)
 	case UseCharClassSearcher:
 		return e.findCharClassSearcher(haystack)
+	case UseCompositeSearcher:
+		return e.findCompositeSearcher(haystack)
+	case UseBranchDispatch:
+		return e.findBranchDispatch(haystack)
 	case UseTeddy:
 		return e.findTeddy(haystack)
 	case UseDigitPrefilter:
@@ -575,6 +675,10 @@ func (e *Engine) findAtNonZero(haystack []byte, at int) *Match {
 		return e.findBoundedBacktrackerAt(haystack, at)
 	case UseCharClassSearcher:
 		return e.findCharClassSearcherAt(haystack, at)
+	case UseCompositeSearcher:
+		return e.findCompositeSearcherAt(haystack, at)
+	case UseBranchDispatch:
+		return e.findBranchDispatchAt(haystack, at)
 	case UseTeddy:
 		return e.findTeddyAt(haystack, at)
 	case UseDigitPrefilter:
@@ -619,6 +723,10 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchBoundedBacktracker(haystack)
 	case UseCharClassSearcher:
 		return e.isMatchCharClassSearcher(haystack)
+	case UseCompositeSearcher:
+		return e.isMatchCompositeSearcher(haystack)
+	case UseBranchDispatch:
+		return e.isMatchBranchDispatch(haystack)
 	case UseTeddy:
 		return e.isMatchTeddy(haystack)
 	case UseDigitPrefilter:
@@ -633,11 +741,16 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 // isMatchNFA checks for match using NFA (PikeVM or BoundedBacktracker) with early termination.
 // Uses prefilter for skip-ahead when available (like Rust regex).
 // For small NFAs, prefers BoundedBacktracker (2-3x faster than PikeVM on small inputs).
+// Thread-safe: uses pooled state for both BoundedBacktracker and PikeVM.
 func (e *Engine) isMatchNFA(haystack []byte) bool {
-	e.stats.NFASearches++
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 
 	// BoundedBacktracker is preferred when available (supports both default and Longest modes)
 	useBT := e.boundedBacktracker != nil
+
+	// Get pooled state for thread-safe execution
+	state := e.getSearchState()
+	defer e.putSearchState(state)
 
 	// Use prefilter for skip-ahead if available
 	if e.prefilter != nil {
@@ -648,22 +761,22 @@ func (e *Engine) isMatchNFA(haystack []byte) bool {
 			if pos == -1 {
 				return false // No more candidates
 			}
-			e.stats.PrefilterHits++
+			atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
 			// Try to match at candidate position
 			// Prefer BoundedBacktracker for small inputs (2-3x faster)
 			var found bool
 			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
-				_, _, found = e.boundedBacktracker.SearchAt(haystack, pos)
+				_, _, found = e.boundedBacktracker.SearchAtWithState(haystack, pos, state.backtracker)
 			} else {
-				_, _, found = e.pikevm.SearchAt(haystack, pos)
+				_, _, found = state.pikevm.SearchAt(haystack, pos)
 			}
 			if found {
 				return true
 			}
 
 			// Move past this position
-			e.stats.PrefilterMisses++
+			atomic.AddUint64(&e.stats.PrefilterMisses, 1)
 			at = pos + 1
 		}
 		return false
@@ -671,17 +784,17 @@ func (e *Engine) isMatchNFA(haystack []byte) bool {
 
 	// No prefilter: use BoundedBacktracker if available, else PikeVM
 	if useBT && e.boundedBacktracker.CanHandle(len(haystack)) {
-		return e.boundedBacktracker.IsMatch(haystack)
+		return e.boundedBacktracker.IsMatchWithState(haystack, state.backtracker)
 	}
 
 	// Use optimized IsMatch that returns immediately on first match
 	// without computing exact match positions
-	return e.pikevm.IsMatch(haystack)
+	return state.pikevm.IsMatch(haystack)
 }
 
 // isMatchDFA checks for match using DFA with early termination.
 func (e *Engine) isMatchDFA(haystack []byte) bool {
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 
 	// Use DFA.IsMatch which has early termination optimization
 	return e.dfa.IsMatch(haystack)
@@ -695,7 +808,7 @@ func (e *Engine) isMatchAdaptive(haystack []byte) bool {
 		if pos == -1 {
 			return false // Prefilter says no match
 		}
-		e.stats.PrefilterHits++
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
 		// For complete prefilters (Teddy with literals), the find is sufficient
 		if e.prefilter.IsComplete() {
 			return true
@@ -706,14 +819,14 @@ func (e *Engine) isMatchAdaptive(haystack []byte) bool {
 
 	// Fall back to DFA
 	if e.dfa != nil {
-		e.stats.DFASearches++
+		atomic.AddUint64(&e.stats.DFASearches, 1)
 		if e.dfa.IsMatch(haystack) {
 			return true
 		}
 		// DFA returned false - check if cache was full
 		size, capacity, _, _, _ := e.dfa.CacheStats()
 		if size >= int(capacity)*9/10 {
-			e.stats.DFACacheFull++
+			atomic.AddUint64(&e.stats.DFACacheFull, 1)
 			// Cache nearly full, fall back to NFA
 			return e.isMatchNFA(haystack)
 		}
@@ -724,16 +837,30 @@ func (e *Engine) isMatchAdaptive(haystack []byte) bool {
 
 // isMatchBoundedBacktracker checks for match using bounded backtracker.
 // 2-4x faster than PikeVM for simple character class patterns.
+// Thread-safe: uses pooled state.
 func (e *Engine) isMatchBoundedBacktracker(haystack []byte) bool {
 	if e.boundedBacktracker == nil {
 		return e.isMatchNFA(haystack)
 	}
-	e.stats.NFASearches++ // Count as NFA-family search for stats
+
+	// O(1) early rejection for anchored patterns using first-byte prefilter.
+	// For ^(\d+|UUID|hex32), quickly reject inputs not starting with valid byte.
+	if e.anchoredFirstBytes != nil && len(haystack) > 0 {
+		if !e.anchoredFirstBytes.Contains(haystack[0]) {
+			return false
+		}
+	}
+
+	atomic.AddUint64(&e.stats.NFASearches, 1) // Count as NFA-family search for stats
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		// Input too large for bounded backtracker, fall back to PikeVM
 		return e.pikevm.IsMatch(haystack)
 	}
-	return e.boundedBacktracker.IsMatch(haystack)
+
+	// Use pooled state for thread-safety
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+	return e.boundedBacktracker.IsMatchWithState(haystack, state.backtracker)
 }
 
 // FindSubmatch returns the first match with capture group information.
@@ -765,11 +892,16 @@ func (e *Engine) FindSubmatch(haystack []byte) *MatchWithCaptures {
 //
 // This method is used by ReplaceAll* operations to correctly handle anchors like ^.
 // Unlike FindSubmatch, it takes the FULL haystack and a starting position.
+// Thread-safe: uses pooled state for both OnePass cache and PikeVM.
 func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
+	// Get pooled state first for thread-safe access
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
 	// For position 0, try OnePass DFA if available (10-20x faster for anchored patterns)
-	if at == 0 && e.onepass != nil && e.onepassCache != nil {
-		e.stats.OnePassSearches++
-		slots := e.onepass.Search(haystack, e.onepassCache)
+	if at == 0 && e.onepass != nil && state.onepassCache != nil {
+		atomic.AddUint64(&e.stats.OnePassSearches, 1)
+		slots := e.onepass.Search(haystack, state.onepassCache)
 		if slots != nil {
 			// Convert flat slots [start0, end0, start1, end1, ...] to nested captures
 			captures := slotsToCaptures(slots)
@@ -779,10 +911,9 @@ func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
 		// Fall through to PikeVM which can find match anywhere
 	}
 
-	e.stats.NFASearches++
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 
-	// Use PikeVM for capture group extraction
-	nfaMatch := e.pikevm.SearchWithCapturesAt(haystack, at)
+	nfaMatch := state.pikevm.SearchWithCapturesAt(haystack, at)
 	if nfaMatch == nil {
 		return nil
 	}
@@ -860,6 +991,10 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesBoundedBacktracker(haystack)
 	case UseCharClassSearcher:
 		return e.findIndicesCharClassSearcher(haystack)
+	case UseCompositeSearcher:
+		return e.findIndicesCompositeSearcher(haystack)
+	case UseBranchDispatch:
+		return e.findIndicesBranchDispatch(haystack)
 	case UseTeddy:
 		return e.findIndicesTeddy(haystack)
 	case UseDigitPrefilter:
@@ -896,6 +1031,10 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesBoundedBacktrackerAt(haystack, at)
 	case UseCharClassSearcher:
 		return e.findIndicesCharClassSearcherAt(haystack, at)
+	case UseCompositeSearcher:
+		return e.findIndicesCompositeSearcherAt(haystack, at)
+	case UseBranchDispatch:
+		return e.findIndicesBranchDispatchAt(haystack, at)
 	case UseTeddy:
 		return e.findIndicesTeddyAt(haystack, at)
 	case UseDigitPrefilter:
@@ -913,13 +1052,18 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 // BoundedBacktracker can be used for patterns that cannot match empty.
 // For patterns like (?:|a)*, its greedy semantics give wrong results,
 // so we must use PikeVM which correctly implements leftmost-first semantics.
+// Thread-safe: uses pooled state for both BoundedBacktracker and PikeVM.
 func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
-	e.stats.NFASearches++
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 
 	// BoundedBacktracker can be used for Find operations only when:
 	// 1. It's available
 	// 2. Pattern cannot match empty (BT has greedy semantics that break empty match handling)
 	useBT := e.boundedBacktracker != nil && !e.canMatchEmpty
+
+	// Get pooled state for thread-safe execution
+	state := e.getSearchState()
+	defer e.putSearchState(state)
 
 	// Use prefilter for skip-ahead if available
 	if e.prefilter != nil {
@@ -930,22 +1074,22 @@ func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 			if pos == -1 {
 				return -1, -1, false // No more candidates
 			}
-			e.stats.PrefilterHits++
+			atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
 			// Try to match at candidate position
 			var start, end int
 			var found bool
 			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
-				start, end, found = e.boundedBacktracker.SearchAt(haystack, pos)
+				start, end, found = e.boundedBacktracker.SearchAtWithState(haystack, pos, state.backtracker)
 			} else {
-				start, end, found = e.pikevm.SearchAt(haystack, pos)
+				start, end, found = state.pikevm.SearchAt(haystack, pos)
 			}
 			if found {
 				return start, end, true
 			}
 
 			// Move past this position
-			e.stats.PrefilterMisses++
+			atomic.AddUint64(&e.stats.PrefilterMisses, 1)
 			at = pos + 1
 		}
 		return -1, -1, false
@@ -953,20 +1097,25 @@ func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 
 	// No prefilter: use BoundedBacktracker if available and safe
 	if useBT && e.boundedBacktracker.CanHandle(len(haystack)) {
-		return e.boundedBacktracker.Search(haystack)
+		return e.boundedBacktracker.SearchWithState(haystack, state.backtracker)
 	}
 
-	return e.pikevm.Search(haystack)
+	return state.pikevm.Search(haystack)
 }
 
 // findIndicesNFAAt searches using NFA starting at position - zero alloc.
 // Uses prefilter for skip-ahead when available (like Rust regex).
 // Same BoundedBacktracker rules as findIndicesNFA.
+// Thread-safe: uses pooled state for both BoundedBacktracker and PikeVM.
 func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
-	e.stats.NFASearches++
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 
 	// BoundedBacktracker can be used for Find operations only when safe
 	useBT := e.boundedBacktracker != nil && !e.canMatchEmpty
+
+	// Get pooled state for thread-safe execution
+	state := e.getSearchState()
+	defer e.putSearchState(state)
 
 	// Use prefilter for skip-ahead if available
 	if e.prefilter != nil {
@@ -976,22 +1125,22 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 			if pos == -1 {
 				return -1, -1, false // No more candidates
 			}
-			e.stats.PrefilterHits++
+			atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
 			// Try to match at candidate position
 			var start, end int
 			var found bool
 			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
-				start, end, found = e.boundedBacktracker.SearchAt(haystack, pos)
+				start, end, found = e.boundedBacktracker.SearchAtWithState(haystack, pos, state.backtracker)
 			} else {
-				start, end, found = e.pikevm.SearchAt(haystack, pos)
+				start, end, found = state.pikevm.SearchAt(haystack, pos)
 			}
 			if found {
 				return start, end, true
 			}
 
 			// Move past this position
-			e.stats.PrefilterMisses++
+			atomic.AddUint64(&e.stats.PrefilterMisses, 1)
 			at = pos + 1
 		}
 		return -1, -1, false
@@ -999,15 +1148,15 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 
 	// No prefilter: use BoundedBacktracker if available and safe
 	if useBT && e.boundedBacktracker.CanHandle(len(haystack)-at) {
-		return e.boundedBacktracker.SearchAt(haystack, at)
+		return e.boundedBacktracker.SearchAtWithState(haystack, at, state.backtracker)
 	}
 
-	return e.pikevm.SearchAt(haystack, at)
+	return state.pikevm.SearchAt(haystack, at)
 }
 
 // findIndicesDFA searches using DFA with prefilter - zero alloc.
 func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 
 	// Literal fast path
 	if e.prefilter != nil && e.prefilter.IsComplete() {
@@ -1015,7 +1164,7 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
 		if pos == -1 {
 			return -1, -1, false
 		}
-		e.stats.PrefilterHits++
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
 		literalLen := e.prefilter.LiteralLen()
 		if literalLen > 0 {
 			return pos, pos + literalLen, true
@@ -1038,7 +1187,7 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
 
 // findIndicesDFAAt searches using DFA starting at position - zero alloc.
 func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 
 	// Literal fast path
 	if e.prefilter != nil && e.prefilter.IsComplete() {
@@ -1046,7 +1195,7 @@ func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
 		if pos == -1 {
 			return -1, -1, false
 		}
-		e.stats.PrefilterHits++
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
 		literalLen := e.prefilter.LiteralLen()
 		if literalLen > 0 {
 			return pos, pos + literalLen, true
@@ -1074,8 +1223,8 @@ func (e *Engine) findIndicesAdaptive(haystack []byte) (int, int, bool) {
 			if start == -1 {
 				return -1, -1, false
 			}
-			e.stats.PrefilterHits++
-			e.stats.DFASearches++
+			atomic.AddUint64(&e.stats.PrefilterHits, 1)
+			atomic.AddUint64(&e.stats.DFASearches, 1)
 			return start, end, true
 		}
 
@@ -1085,8 +1234,8 @@ func (e *Engine) findIndicesAdaptive(haystack []byte) (int, int, bool) {
 			// No candidate found - definitely no match
 			return -1, -1, false
 		}
-		e.stats.PrefilterHits++
-		e.stats.DFASearches++
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		atomic.AddUint64(&e.stats.DFASearches, 1)
 
 		// Literal fast path
 		if e.prefilter.IsComplete() {
@@ -1102,7 +1251,7 @@ func (e *Engine) findIndicesAdaptive(haystack []byte) (int, int, bool) {
 
 	// Try DFA without prefilter
 	if e.dfa != nil {
-		e.stats.DFASearches++
+		atomic.AddUint64(&e.stats.DFASearches, 1)
 		endPos := e.dfa.Find(haystack)
 		if endPos != -1 {
 			// Use estimated start position for O(m) search instead of O(n)
@@ -1114,7 +1263,7 @@ func (e *Engine) findIndicesAdaptive(haystack []byte) (int, int, bool) {
 		}
 		size, capacity, _, _, _ := e.dfa.CacheStats()
 		if size >= int(capacity)*9/10 {
-			e.stats.DFACacheFull++
+			atomic.AddUint64(&e.stats.DFACacheFull, 1)
 		}
 	}
 	return e.findIndicesNFA(haystack)
@@ -1128,8 +1277,8 @@ func (e *Engine) findIndicesAdaptiveAt(haystack []byte, at int) (int, int, bool)
 		if pos == -1 {
 			return -1, -1, false
 		}
-		e.stats.PrefilterHits++
-		e.stats.DFASearches++
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		atomic.AddUint64(&e.stats.DFASearches, 1)
 
 		// Literal fast path
 		if e.prefilter.IsComplete() {
@@ -1145,7 +1294,7 @@ func (e *Engine) findIndicesAdaptiveAt(haystack []byte, at int) (int, int, bool)
 
 	// Try DFA without prefilter
 	if e.dfa != nil {
-		e.stats.DFASearches++
+		atomic.AddUint64(&e.stats.DFASearches, 1)
 		endPos := e.dfa.FindAt(haystack, at)
 		if endPos != -1 {
 			// Use estimated start for O(m) search
@@ -1157,7 +1306,7 @@ func (e *Engine) findIndicesAdaptiveAt(haystack []byte, at int) (int, int, bool)
 		}
 		size, capacity, _, _, _ := e.dfa.CacheStats()
 		if size >= int(capacity)*9/10 {
-			e.stats.DFACacheFull++
+			atomic.AddUint64(&e.stats.DFACacheFull, 1)
 		}
 	}
 	return e.findIndicesNFAAt(haystack, at)
@@ -1168,7 +1317,7 @@ func (e *Engine) findIndicesReverseAnchored(haystack []byte) (int, int, bool) {
 	if e.reverseSearcher == nil {
 		return e.findIndicesNFA(haystack)
 	}
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	match := e.reverseSearcher.Find(haystack)
 	if match == nil {
 		return -1, -1, false
@@ -1181,7 +1330,7 @@ func (e *Engine) findIndicesReverseSuffix(haystack []byte) (int, int, bool) {
 	if e.reverseSuffixSearcher == nil {
 		return e.findIndicesNFA(haystack)
 	}
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	match := e.reverseSuffixSearcher.Find(haystack)
 	if match == nil {
 		return -1, -1, false
@@ -1194,7 +1343,7 @@ func (e *Engine) findIndicesReverseSuffixAt(haystack []byte, at int) (int, int, 
 	if e.reverseSuffixSearcher == nil {
 		return e.findIndicesNFAAt(haystack, at)
 	}
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseSuffixSearcher.FindIndicesAt(haystack, at)
 }
 
@@ -1203,7 +1352,7 @@ func (e *Engine) findIndicesReverseSuffixSet(haystack []byte) (int, int, bool) {
 	if e.reverseSuffixSetSearcher == nil {
 		return e.findIndicesNFA(haystack)
 	}
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	match := e.reverseSuffixSetSearcher.Find(haystack)
 	if match == nil {
 		return -1, -1, false
@@ -1216,7 +1365,7 @@ func (e *Engine) findIndicesReverseSuffixSetAt(haystack []byte, at int) (int, in
 	if e.reverseSuffixSetSearcher == nil {
 		return e.findIndicesNFAAt(haystack, at)
 	}
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseSuffixSetSearcher.FindIndicesAt(haystack, at)
 }
 
@@ -1225,7 +1374,7 @@ func (e *Engine) findIndicesReverseInner(haystack []byte) (int, int, bool) {
 	if e.reverseInnerSearcher == nil {
 		return e.findIndicesNFA(haystack)
 	}
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	match := e.reverseInnerSearcher.Find(haystack)
 	if match == nil {
 		return -1, -1, false
@@ -1238,44 +1387,73 @@ func (e *Engine) findIndicesReverseInnerAt(haystack []byte, at int) (int, int, b
 	if e.reverseInnerSearcher == nil {
 		return e.findIndicesNFAAt(haystack, at)
 	}
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseInnerSearcher.FindIndicesAt(haystack, at)
 }
 
 // findIndicesBoundedBacktracker searches using bounded backtracker - zero alloc.
+// Thread-safe: uses pooled state.
 func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool) {
 	if e.boundedBacktracker == nil {
 		return e.findIndicesNFA(haystack)
 	}
-	e.stats.NFASearches++
+
+	// O(1) early rejection for anchored patterns using first-byte prefilter.
+	if e.anchoredFirstBytes != nil && len(haystack) > 0 {
+		if !e.anchoredFirstBytes.Contains(haystack[0]) {
+			return -1, -1, false
+		}
+	}
+
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		return e.pikevm.Search(haystack)
 	}
-	return e.boundedBacktracker.Search(haystack)
+
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+	return e.boundedBacktracker.SearchWithState(haystack, state.backtracker)
 }
 
 // findIndicesBoundedBacktrackerAt searches using bounded backtracker at position.
+// Thread-safe: uses pooled state.
 func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, int, bool) {
 	if e.boundedBacktracker == nil {
 		return e.findIndicesNFAAt(haystack, at)
 	}
-	e.stats.NFASearches++
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		return e.pikevm.SearchAt(haystack, at)
 	}
-	return e.boundedBacktracker.SearchAt(haystack, at)
+
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+	return e.boundedBacktracker.SearchAtWithState(haystack, at, state.backtracker)
 }
 
 // findBoundedBacktracker searches using bounded backtracker.
+// Thread-safe: uses pooled state.
 func (e *Engine) findBoundedBacktracker(haystack []byte) *Match {
 	if e.boundedBacktracker == nil {
 		return e.findNFA(haystack)
 	}
-	e.stats.NFASearches++
+
+	// O(1) early rejection for anchored patterns using first-byte prefilter.
+	// For ^(\d+|UUID|hex32), quickly reject inputs not starting with valid byte.
+	if e.anchoredFirstBytes != nil && len(haystack) > 0 {
+		if !e.anchoredFirstBytes.Contains(haystack[0]) {
+			return nil
+		}
+	}
+
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		return e.findNFA(haystack)
 	}
-	start, end, found := e.boundedBacktracker.Search(haystack)
+
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+	start, end, found := e.boundedBacktracker.SearchWithState(haystack, state.backtracker)
 	if !found {
 		return nil
 	}
@@ -1294,7 +1472,7 @@ func (e *Engine) findCharClassSearcher(haystack []byte) *Match {
 	if e.charClassSearcher == nil {
 		return e.findNFA(haystack)
 	}
-	e.stats.NFASearches++ // Count as NFA-family for stats
+	atomic.AddUint64(&e.stats.NFASearches, 1) // Count as NFA-family for stats
 	start, end, found := e.charClassSearcher.Search(haystack)
 	if !found {
 		return nil
@@ -1307,7 +1485,7 @@ func (e *Engine) findCharClassSearcherAt(haystack []byte, at int) *Match {
 	if e.charClassSearcher == nil {
 		return e.findNFAAt(haystack, at)
 	}
-	e.stats.NFASearches++
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 	start, end, found := e.charClassSearcher.SearchAt(haystack, at)
 	if !found {
 		return nil
@@ -1320,7 +1498,7 @@ func (e *Engine) isMatchCharClassSearcher(haystack []byte) bool {
 	if e.charClassSearcher == nil {
 		return e.isMatchNFA(haystack)
 	}
-	e.stats.NFASearches++
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 	return e.charClassSearcher.IsMatch(haystack)
 }
 
@@ -1329,7 +1507,7 @@ func (e *Engine) findIndicesCharClassSearcher(haystack []byte) (int, int, bool) 
 	if e.charClassSearcher == nil {
 		return e.findIndicesNFA(haystack)
 	}
-	e.stats.NFASearches++
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 	return e.charClassSearcher.Search(haystack)
 }
 
@@ -1338,8 +1516,112 @@ func (e *Engine) findIndicesCharClassSearcherAt(haystack []byte, at int) (int, i
 	if e.charClassSearcher == nil {
 		return e.findIndicesNFAAt(haystack, at)
 	}
-	e.stats.NFASearches++
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 	return e.charClassSearcher.SearchAt(haystack, at)
+}
+
+// findCompositeSearcher searches using CompositeSearcher for concatenated char classes.
+func (e *Engine) findCompositeSearcher(haystack []byte) *Match {
+	if e.compositeSearcher == nil {
+		return e.findNFA(haystack)
+	}
+	atomic.AddUint64(&e.stats.NFASearches, 1) // Count as NFA-family for stats
+	start, end, found := e.compositeSearcher.Search(haystack)
+	if !found {
+		return nil
+	}
+	return NewMatch(start, end, haystack)
+}
+
+// findCompositeSearcherAt searches using CompositeSearcher at position.
+func (e *Engine) findCompositeSearcherAt(haystack []byte, at int) *Match {
+	if e.compositeSearcher == nil {
+		return e.findNFAAt(haystack, at)
+	}
+	atomic.AddUint64(&e.stats.NFASearches, 1)
+	start, end, found := e.compositeSearcher.SearchAt(haystack, at)
+	if !found {
+		return nil
+	}
+	return NewMatch(start, end, haystack)
+}
+
+// isMatchCompositeSearcher checks for match using CompositeSearcher.
+func (e *Engine) isMatchCompositeSearcher(haystack []byte) bool {
+	if e.compositeSearcher == nil {
+		return e.isMatchNFA(haystack)
+	}
+	atomic.AddUint64(&e.stats.NFASearches, 1)
+	return e.compositeSearcher.IsMatch(haystack)
+}
+
+// findIndicesCompositeSearcher searches using CompositeSearcher - zero alloc.
+func (e *Engine) findIndicesCompositeSearcher(haystack []byte) (int, int, bool) {
+	if e.compositeSearcher == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	atomic.AddUint64(&e.stats.NFASearches, 1)
+	return e.compositeSearcher.Search(haystack)
+}
+
+// findIndicesCompositeSearcherAt searches using CompositeSearcher at position - zero alloc.
+func (e *Engine) findIndicesCompositeSearcherAt(haystack []byte, at int) (int, int, bool) {
+	if e.compositeSearcher == nil {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	atomic.AddUint64(&e.stats.NFASearches, 1)
+	return e.compositeSearcher.SearchAt(haystack, at)
+}
+
+// findBranchDispatch searches using O(1) branch dispatch for anchored alternations.
+// 2-3x faster than BoundedBacktracker on match, 10x+ on no-match.
+func (e *Engine) findBranchDispatch(haystack []byte) *Match {
+	if e.branchDispatcher == nil {
+		return e.findBoundedBacktracker(haystack)
+	}
+	atomic.AddUint64(&e.stats.NFASearches, 1)
+	start, end, found := e.branchDispatcher.Search(haystack)
+	if !found {
+		return nil
+	}
+	return NewMatch(start, end, haystack)
+}
+
+// findBranchDispatchAt searches using branch dispatch at position.
+// For anchored patterns, only position 0 is meaningful.
+func (e *Engine) findBranchDispatchAt(haystack []byte, at int) *Match {
+	if at != 0 {
+		// Anchored pattern can only match at position 0
+		return nil
+	}
+	return e.findBranchDispatch(haystack)
+}
+
+// isMatchBranchDispatch checks for match using O(1) branch dispatch.
+func (e *Engine) isMatchBranchDispatch(haystack []byte) bool {
+	if e.branchDispatcher == nil {
+		return e.isMatchBoundedBacktracker(haystack)
+	}
+	atomic.AddUint64(&e.stats.NFASearches, 1)
+	return e.branchDispatcher.IsMatch(haystack)
+}
+
+// findIndicesBranchDispatch searches using branch dispatch - zero alloc.
+func (e *Engine) findIndicesBranchDispatch(haystack []byte) (int, int, bool) {
+	if e.branchDispatcher == nil {
+		return e.findIndicesBoundedBacktracker(haystack)
+	}
+	atomic.AddUint64(&e.stats.NFASearches, 1)
+	return e.branchDispatcher.Search(haystack)
+}
+
+// findIndicesBranchDispatchAt searches using branch dispatch at position - zero alloc.
+func (e *Engine) findIndicesBranchDispatchAt(haystack []byte, at int) (int, int, bool) {
+	if at != 0 {
+		// Anchored pattern can only match at position 0
+		return -1, -1, false
+	}
+	return e.findIndicesBranchDispatch(haystack)
 }
 
 // FindAllIndicesStreaming returns all non-overlapping match indices using streaming algorithm.
@@ -1427,7 +1709,7 @@ func (e *Engine) findTeddy(haystack []byte) *Match {
 	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
 	// Fat Teddy's AVX2 SIMD setup overhead exceeds benefit on small inputs.
 	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
-		e.stats.AhoCorasickSearches++
+		atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 		match := e.fatTeddyFallback.Find(haystack, 0)
 		if match == nil {
 			return nil
@@ -1435,7 +1717,7 @@ func (e *Engine) findTeddy(haystack []byte) *Match {
 		return NewMatch(match.Start, match.End, haystack)
 	}
 
-	e.stats.PrefilterHits++
+	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
 	// Use FindMatch which returns both start and end positions
 	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
@@ -1467,7 +1749,7 @@ func (e *Engine) findTeddyAt(haystack []byte, at int) *Match {
 
 	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
 	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
-		e.stats.AhoCorasickSearches++
+		atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 		match := e.fatTeddyFallback.FindAt(haystack, at)
 		if match == nil {
 			return nil
@@ -1475,7 +1757,7 @@ func (e *Engine) findTeddyAt(haystack []byte, at int) *Match {
 		return NewMatch(match.Start, match.End, haystack)
 	}
 
-	e.stats.PrefilterHits++
+	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
 	// Use FindMatch which returns both start and end positions
 	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
@@ -1506,11 +1788,11 @@ func (e *Engine) isMatchTeddy(haystack []byte) bool {
 
 	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
 	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
-		e.stats.AhoCorasickSearches++
+		atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 		return e.fatTeddyFallback.IsMatch(haystack)
 	}
 
-	e.stats.PrefilterHits++
+	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 	return e.prefilter.Find(haystack, 0) != -1
 }
 
@@ -1522,7 +1804,7 @@ func (e *Engine) findIndicesTeddy(haystack []byte) (int, int, bool) {
 
 	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
 	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
-		e.stats.AhoCorasickSearches++
+		atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 		match := e.fatTeddyFallback.Find(haystack, 0)
 		if match == nil {
 			return -1, -1, false
@@ -1530,7 +1812,7 @@ func (e *Engine) findIndicesTeddy(haystack []byte) (int, int, bool) {
 		return match.Start, match.End, true
 	}
 
-	e.stats.PrefilterHits++
+	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
 	// Use FindMatch which returns both start and end positions
 	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
@@ -1561,7 +1843,7 @@ func (e *Engine) findIndicesTeddyAt(haystack []byte, at int) (int, int, bool) {
 
 	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
 	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
-		e.stats.AhoCorasickSearches++
+		atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 		match := e.fatTeddyFallback.FindAt(haystack, at)
 		if match == nil {
 			return -1, -1, false
@@ -1569,7 +1851,7 @@ func (e *Engine) findIndicesTeddyAt(haystack []byte, at int) (int, int, bool) {
 		return match.Start, match.End, true
 	}
 
-	e.stats.PrefilterHits++
+	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
 	// Use FindMatch which returns both start and end positions
 	if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
@@ -1593,10 +1875,14 @@ func (e *Engine) findIndicesTeddyAt(haystack []byte, at int) (int, int, bool) {
 }
 
 // findNFA searches using NFA (PikeVM) directly.
+// Thread-safe: uses pooled PikeVM instance.
 func (e *Engine) findNFA(haystack []byte) *Match {
-	e.stats.NFASearches++
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 
-	start, end, matched := e.pikevm.Search(haystack)
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
+	start, end, matched := state.pikevm.Search(haystack)
 	if !matched {
 		return nil
 	}
@@ -1606,7 +1892,7 @@ func (e *Engine) findNFA(haystack []byte) *Match {
 
 // findDFA searches using DFA with prefilter and NFA fallback.
 func (e *Engine) findDFA(haystack []byte) *Match {
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 
 	// If prefilter available, use it to find candidate positions quickly
 	if e.prefilter != nil {
@@ -1614,7 +1900,7 @@ func (e *Engine) findDFA(haystack []byte) *Match {
 		if pos == -1 {
 			return nil
 		}
-		e.stats.PrefilterHits++
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
 		// Literal fast path: if prefilter is complete and we know literal length
 		if e.prefilter.IsComplete() {
@@ -1666,8 +1952,8 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 			if start == -1 {
 				return nil
 			}
-			e.stats.PrefilterHits++
-			e.stats.DFASearches++
+			atomic.AddUint64(&e.stats.PrefilterHits, 1)
+			atomic.AddUint64(&e.stats.DFASearches, 1)
 			return NewMatch(start, end, haystack)
 		}
 
@@ -1677,8 +1963,8 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 			// No candidate found - definitely no match
 			return nil
 		}
-		e.stats.PrefilterHits++
-		e.stats.DFASearches++
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		atomic.AddUint64(&e.stats.DFASearches, 1)
 
 		// Literal fast path: if prefilter is complete and we know literal length
 		if e.prefilter.IsComplete() {
@@ -1699,7 +1985,7 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 
 	// Try DFA without prefilter
 	if e.dfa != nil {
-		e.stats.DFASearches++
+		atomic.AddUint64(&e.stats.DFASearches, 1)
 		endPos := e.dfa.Find(haystack)
 		if endPos != -1 {
 			// DFA succeeded - get exact match bounds from NFA
@@ -1717,7 +2003,7 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 		// DFA failed (might be cache full) - check cache stats
 		size, capacity, _, _, _ := e.dfa.CacheStats()
 		if size >= int(capacity)*9/10 { // 90% full
-			e.stats.DFACacheFull++
+			atomic.AddUint64(&e.stats.DFACacheFull, 1)
 		}
 	}
 
@@ -1728,7 +2014,7 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 // findNFAAt searches using NFA starting from a specific position.
 // This preserves absolute positions for correct anchor handling.
 func (e *Engine) findNFAAt(haystack []byte, at int) *Match {
-	e.stats.NFASearches++
+	atomic.AddUint64(&e.stats.NFASearches, 1)
 	start, end, matched := e.pikevm.SearchAt(haystack, at)
 	if !matched {
 		return nil
@@ -1739,7 +2025,7 @@ func (e *Engine) findNFAAt(haystack []byte, at int) *Match {
 // findDFAAt searches using DFA starting from a specific position.
 // This preserves absolute positions for correct anchor handling.
 func (e *Engine) findDFAAt(haystack []byte, at int) *Match {
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 
 	// If prefilter available and complete, use literal fast path
 	if e.prefilter != nil && e.prefilter.IsComplete() {
@@ -1747,7 +2033,7 @@ func (e *Engine) findDFAAt(haystack []byte, at int) *Match {
 		if pos == -1 {
 			return nil
 		}
-		e.stats.PrefilterHits++
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
 		// Literal fast path: prefilter already found exact match
 		// Use LiteralLen() to calculate end position directly
 		literalLen := e.prefilter.LiteralLen()
@@ -1782,7 +2068,7 @@ func (e *Engine) findDFAAt(haystack []byte, at int) *Match {
 func (e *Engine) findAdaptiveAt(haystack []byte, at int) *Match {
 	// Try DFA first
 	if e.dfa != nil {
-		e.stats.DFASearches++
+		atomic.AddUint64(&e.stats.DFASearches, 1)
 		pos := e.dfa.FindAt(haystack, at)
 		if pos != -1 {
 			// DFA succeeded - need to find start position from NFA
@@ -1794,7 +2080,7 @@ func (e *Engine) findAdaptiveAt(haystack []byte, at int) *Match {
 		// DFA failed (might be cache full) - check cache stats
 		size, capacity, _, _, _ := e.dfa.CacheStats()
 		if size >= int(capacity)*9/10 { // 90% full
-			e.stats.DFACacheFull++
+			atomic.AddUint64(&e.stats.DFACacheFull, 1)
 		}
 	}
 
@@ -1809,7 +2095,7 @@ func (e *Engine) findReverseAnchored(haystack []byte) *Match {
 		return e.findNFA(haystack)
 	}
 
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseSearcher.Find(haystack)
 }
 
@@ -1819,7 +2105,7 @@ func (e *Engine) isMatchReverseAnchored(haystack []byte) bool {
 		return e.isMatchNFA(haystack)
 	}
 
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseSearcher.IsMatch(haystack)
 }
 
@@ -1830,7 +2116,7 @@ func (e *Engine) findReverseSuffix(haystack []byte) *Match {
 		return e.findNFA(haystack)
 	}
 
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseSuffixSearcher.Find(haystack)
 }
 
@@ -1840,7 +2126,7 @@ func (e *Engine) isMatchReverseSuffix(haystack []byte) bool {
 		return e.isMatchNFA(haystack)
 	}
 
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseSuffixSearcher.IsMatch(haystack)
 }
 
@@ -1850,7 +2136,7 @@ func (e *Engine) findReverseSuffixSet(haystack []byte) *Match {
 		return e.findNFA(haystack)
 	}
 
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseSuffixSetSearcher.Find(haystack)
 }
 
@@ -1860,7 +2146,7 @@ func (e *Engine) isMatchReverseSuffixSet(haystack []byte) bool {
 		return e.isMatchNFA(haystack)
 	}
 
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseSuffixSetSearcher.IsMatch(haystack)
 }
 
@@ -1871,7 +2157,7 @@ func (e *Engine) findReverseInner(haystack []byte) *Match {
 		return e.findNFA(haystack)
 	}
 
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseInnerSearcher.Find(haystack)
 }
 
@@ -1881,7 +2167,7 @@ func (e *Engine) isMatchReverseInner(haystack []byte) bool {
 		return e.isMatchNFA(haystack)
 	}
 
-	e.stats.DFASearches++
+	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseInnerSearcher.IsMatch(haystack)
 }
 
@@ -1995,7 +2281,7 @@ func (e *Engine) FindAllSubmatch(haystack []byte, n int) []*MatchWithCaptures {
 
 	for pos <= len(haystack) {
 		// Use PikeVM for capture extraction
-		e.stats.NFASearches++
+		atomic.AddUint64(&e.stats.NFASearches, 1)
 		nfaMatch := e.pikevm.SearchWithCaptures(haystack[pos:])
 		if nfaMatch == nil {
 			break
@@ -2053,7 +2339,7 @@ func (e *Engine) findDigitPrefilter(haystack []byte) *Match {
 		return e.findNFA(haystack)
 	}
 
-	e.stats.PrefilterHits++
+	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 	pos := 0
 
 	for pos < len(haystack) {
@@ -2065,7 +2351,7 @@ func (e *Engine) findDigitPrefilter(haystack []byte) *Match {
 
 		// Verify match at digit position using DFA
 		if e.dfa != nil {
-			e.stats.DFASearches++
+			atomic.AddUint64(&e.stats.DFASearches, 1)
 			endPos := e.dfa.FindAt(haystack, digitPos)
 			if endPos != -1 {
 				// DFA found potential match - get exact bounds from NFA
@@ -2076,7 +2362,7 @@ func (e *Engine) findDigitPrefilter(haystack []byte) *Match {
 			}
 		} else {
 			// No DFA - use PikeVM directly
-			e.stats.NFASearches++
+			atomic.AddUint64(&e.stats.NFASearches, 1)
 			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
 			if found {
 				return NewMatch(start, end, haystack)
@@ -2096,7 +2382,7 @@ func (e *Engine) findDigitPrefilterAt(haystack []byte, at int) *Match {
 		return e.findNFAAt(haystack, at)
 	}
 
-	e.stats.PrefilterHits++
+	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 	pos := at
 
 	for pos < len(haystack) {
@@ -2106,7 +2392,7 @@ func (e *Engine) findDigitPrefilterAt(haystack []byte, at int) *Match {
 		}
 
 		if e.dfa != nil {
-			e.stats.DFASearches++
+			atomic.AddUint64(&e.stats.DFASearches, 1)
 			endPos := e.dfa.FindAt(haystack, digitPos)
 			if endPos != -1 {
 				start, end, found := e.pikevm.SearchAt(haystack, digitPos)
@@ -2115,7 +2401,7 @@ func (e *Engine) findDigitPrefilterAt(haystack []byte, at int) *Match {
 				}
 			}
 		} else {
-			e.stats.NFASearches++
+			atomic.AddUint64(&e.stats.NFASearches, 1)
 			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
 			if found {
 				return NewMatch(start, end, haystack)
@@ -2135,7 +2421,7 @@ func (e *Engine) isMatchDigitPrefilter(haystack []byte) bool {
 		return e.isMatchNFA(haystack)
 	}
 
-	e.stats.PrefilterHits++
+	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 	pos := 0
 
 	for pos < len(haystack) {
@@ -2146,12 +2432,12 @@ func (e *Engine) isMatchDigitPrefilter(haystack []byte) bool {
 
 		// Use DFA for fast boolean check if available
 		if e.dfa != nil {
-			e.stats.DFASearches++
+			atomic.AddUint64(&e.stats.DFASearches, 1)
 			if e.dfa.FindAt(haystack, digitPos) != -1 {
 				return true
 			}
 		} else {
-			e.stats.NFASearches++
+			atomic.AddUint64(&e.stats.NFASearches, 1)
 			_, _, found := e.pikevm.SearchAt(haystack, digitPos)
 			if found {
 				return true
@@ -2170,7 +2456,7 @@ func (e *Engine) findIndicesDigitPrefilter(haystack []byte) (int, int, bool) {
 		return e.findIndicesNFA(haystack)
 	}
 
-	e.stats.PrefilterHits++
+	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 	pos := 0
 
 	for pos < len(haystack) {
@@ -2180,7 +2466,7 @@ func (e *Engine) findIndicesDigitPrefilter(haystack []byte) (int, int, bool) {
 		}
 
 		if e.dfa != nil {
-			e.stats.DFASearches++
+			atomic.AddUint64(&e.stats.DFASearches, 1)
 			// Use anchored search - pattern MUST start at digitPos
 			// This is much faster than PikeVM for patterns that require digit start
 			endPos := e.dfa.SearchAtAnchored(haystack, digitPos)
@@ -2188,7 +2474,7 @@ func (e *Engine) findIndicesDigitPrefilter(haystack []byte) (int, int, bool) {
 				return digitPos, endPos, true
 			}
 		} else {
-			e.stats.NFASearches++
+			atomic.AddUint64(&e.stats.NFASearches, 1)
 			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
 			if found {
 				return start, end, true
@@ -2207,7 +2493,7 @@ func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int,
 		return e.findIndicesNFAAt(haystack, at)
 	}
 
-	e.stats.PrefilterHits++
+	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 	pos := at
 
 	for pos < len(haystack) {
@@ -2217,7 +2503,7 @@ func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int,
 		}
 
 		if e.dfa != nil {
-			e.stats.DFASearches++
+			atomic.AddUint64(&e.stats.DFASearches, 1)
 			// Use anchored search - pattern MUST start at digitPos
 			// This is much faster than PikeVM for patterns that require digit start
 			endPos := e.dfa.SearchAtAnchored(haystack, digitPos)
@@ -2225,7 +2511,7 @@ func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int,
 				return digitPos, endPos, true
 			}
 		} else {
-			e.stats.NFASearches++
+			atomic.AddUint64(&e.stats.NFASearches, 1)
 			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
 			if found {
 				return start, end, true
@@ -2245,7 +2531,7 @@ func (e *Engine) findAhoCorasick(haystack []byte) *Match {
 	if e.ahoCorasick == nil {
 		return e.findNFA(haystack)
 	}
-	e.stats.AhoCorasickSearches++
+	atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 
 	m := e.ahoCorasick.Find(haystack, 0)
 	if m == nil {
@@ -2259,7 +2545,7 @@ func (e *Engine) findAhoCorasickAt(haystack []byte, at int) *Match {
 	if e.ahoCorasick == nil || at >= len(haystack) {
 		return e.findNFAAt(haystack, at)
 	}
-	e.stats.AhoCorasickSearches++
+	atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 
 	m := e.ahoCorasick.Find(haystack, at)
 	if m == nil {
@@ -2274,7 +2560,7 @@ func (e *Engine) isMatchAhoCorasick(haystack []byte) bool {
 	if e.ahoCorasick == nil {
 		return e.isMatchNFA(haystack)
 	}
-	e.stats.AhoCorasickSearches++
+	atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 	return e.ahoCorasick.IsMatch(haystack)
 }
 
@@ -2283,7 +2569,7 @@ func (e *Engine) findIndicesAhoCorasick(haystack []byte) (int, int, bool) {
 	if e.ahoCorasick == nil {
 		return e.findIndicesNFA(haystack)
 	}
-	e.stats.AhoCorasickSearches++
+	atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 
 	m := e.ahoCorasick.Find(haystack, 0)
 	if m == nil {
@@ -2297,7 +2583,7 @@ func (e *Engine) findIndicesAhoCorasickAt(haystack []byte, at int) (int, int, bo
 	if e.ahoCorasick == nil || at >= len(haystack) {
 		return e.findIndicesNFAAt(haystack, at)
 	}
-	e.stats.AhoCorasickSearches++
+	atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 
 	m := e.ahoCorasick.Find(haystack, at)
 	if m == nil {

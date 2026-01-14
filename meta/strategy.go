@@ -119,6 +119,35 @@ const (
 	// NFA state tracking. Optimal for "find all words" type patterns.
 	UseCharClassSearcher
 
+	// UseCompositeSearcher uses sequential lookup tables for concatenated char class patterns.
+	// Selected for:
+	//   - Patterns like [a-zA-Z]+[0-9]+, \d+\s+\w+, [a-z]+[A-Z]+
+	//   - Concatenation of 2+ quantified character classes
+	//   - No anchors, captures, or alternations within
+	//   - Speedup: 5-6x over BoundedBacktracker by using O(1) lookup tables
+	//
+	// Algorithm:
+	//   1. Each char class part has [256]bool membership table
+	//   2. Greedy matching: consume max chars for each part
+	//   3. Backtrack if min requirement not met
+	//
+	// Reference: https://github.com/coregx/coregex/issues/72
+	UseCompositeSearcher
+
+	// UseBranchDispatch uses O(1) first-byte dispatch for anchored alternations.
+	// Selected for:
+	//   - Start-anchored patterns like ^(\d+|UUID|hex32)
+	//   - Each alternation branch has distinct first bytes (no overlap)
+	//   - Speedup: 2-3x on match, 10x+ on no-match by avoiding branch iteration
+	//
+	// Algorithm:
+	//   1. Build [256]int8 dispatch table: first_byte → branch_index
+	//   2. On search: dispatch[haystack[0]] gives branch to try
+	//   3. Only execute that single branch instead of all branches
+	//
+	// Reference: https://github.com/coregx/coregex/issues/79
+	UseBranchDispatch
+
 	// UseDigitPrefilter uses SIMD digit scanning for patterns that must start with digits.
 	// Selected for:
 	//   - Patterns where ALL alternation branches must start with a digit [0-9]
@@ -177,6 +206,10 @@ func (s Strategy) String() string {
 		return "UseReverseSuffixSet"
 	case UseCharClassSearcher:
 		return "UseCharClassSearcher"
+	case UseCompositeSearcher:
+		return "UseCompositeSearcher"
+	case UseBranchDispatch:
+		return "UseBranchDispatch"
 	case UseDigitPrefilter:
 		return "UseDigitPrefilter"
 	case UseAhoCorasick:
@@ -712,6 +745,8 @@ func analyzeLiterals(literals *literal.Seq, config Config) literalAnalysis {
 //	case meta.UseBoth:
 //	    // Adaptive
 //	}
+//
+//nolint:cyclop // Strategy selection has many cases by design
 func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config Config) Strategy {
 	// Check for end-anchored patterns (highest priority optimization)
 	// Pattern must:
@@ -732,6 +767,33 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		// Example: "pattern.*suffix$" on large haystack
 		// Forward: O(n*m) tries, Reverse: O(m) one try
 		return UseReverseAnchored
+	}
+
+	// START-ANCHORED OPTIMIZATION (Rust regex-automata approach)
+	// For patterns anchored at start (^ or \A), skip Lazy DFA overhead.
+	// Rationale: Only position 0 can match, so DFA construction is wasteful.
+	// Rust uses: OnePass → BoundedBacktracker → PikeVM for anchored patterns.
+	//
+	// Benefits:
+	//   - Zero state construction overhead (vs Lazy DFA building states per byte)
+	//   - BoundedBacktracker is optimized for single-position verification
+	//   - 2-5x faster than Lazy DFA for anchored alternations like ^(a|b|c)
+	//
+	// This fixes Issue #79: ^(\d+|UUID|hex32)$ was 10-14x slower than stdlib
+	// because Lazy DFA construction overhead dominated the single-position check.
+	//
+	// Applies to BOTH:
+	//   - Pure start-anchored: ^pattern (can match at pos 0 only)
+	//   - Both-anchored: ^pattern$ (can match at pos 0, must end at end)
+	// Both cases benefit from skipping DFA - match position is fully determined.
+	if isStartAnchored {
+		// Try branch dispatch for anchored alternations with distinct first bytes.
+		// This gives O(1) branch selection instead of trying all branches.
+		// Example: ^(\d+|UUID|hex32) → dispatch['0'-'9']=0, dispatch['U']=1, dispatch['h']=2
+		if nfa.IsBranchDispatchPattern(re) {
+			return UseBranchDispatch
+		}
+		return UseBoundedBacktracker
 	}
 
 	// Check for inner/suffix literal optimizations (second priority)
@@ -755,6 +817,14 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	// for the simple case (no concatenations, no capture groups).
 	if !litAnalysis.hasGoodLiterals && !litAnalysis.hasTeddyLiterals && nfa.IsSimpleCharClassPlus(re) {
 		return UseCharClassSearcher
+	}
+
+	// Check for concatenated char class patterns like [a-zA-Z]+[0-9]+
+	// Uses sequential lookup tables for 5-6x speedup over BoundedBacktracker.
+	// Must come AFTER CharClassSearcher (single char class) but BEFORE BoundedBacktracker.
+	// Reference: https://github.com/coregx/coregex/issues/72
+	if !litAnalysis.hasGoodLiterals && !litAnalysis.hasTeddyLiterals && nfa.IsCompositeCharClassPattern(re) {
+		return UseCompositeSearcher
 	}
 
 	// Check for complex character class patterns (concatenations, captures) without literals
@@ -868,6 +938,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 		return "inner literal prefilter + bidirectional DFA (10-100x for patterns like ERROR.*connection.*timeout)"
 
 	case UseBoundedBacktracker:
+		if n.IsAlwaysAnchored() {
+			return "bounded backtracker for start-anchored pattern (Rust approach: skip DFA for single-position check)"
+		}
 		return "bounded backtracker for simple character class pattern (2-4x faster than PikeVM)"
 
 	case UseTeddy:
@@ -878,6 +951,12 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseCharClassSearcher:
 		return "specialized lookup-table searcher for char_class+ patterns (14-17x faster than BoundedBacktracker)"
+
+	case UseCompositeSearcher:
+		return "sequential lookup tables for concatenated char classes (5-6x faster than BoundedBacktracker)"
+
+	case UseBranchDispatch:
+		return "O(1) first-byte dispatch for anchored alternations (2-3x faster on match, 10x+ on no-match)"
 
 	case UseDigitPrefilter:
 		return "SIMD digit scanner for digit-lead alternation patterns (5-10x for IP address patterns)"

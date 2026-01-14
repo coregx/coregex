@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Critical: Panic on concurrent usage of compiled Regexp** (#78)
+  - Bug: `index out of range` panic when using same `*Regexp` from multiple goroutines
+  - Root cause: BoundedBacktracker and PikeVM had shared mutable state (`visited`, `queue`)
+  - Fix: Implemented `sync.Pool` pattern (same as Go stdlib `regexp`)
+  - Added `SearchState` struct for per-search mutable state
+  - Added `BacktrackerState` and `PikeVMState` for externalized state
+  - All search operations now thread-safe via pooled state
+  - New concurrent tests: `TestConcurrentMatch`, `TestConcurrentFind`, etc.
+
 ### Planned
 - CompositeSearcher for concatenated char classes (#72)
 - Look-around assertions

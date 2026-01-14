@@ -18,13 +18,32 @@ import (
 type Builder struct {
 	nfa    *nfa.NFA
 	config Config
+
+	// hasWordBoundary is true if the NFA contains \b or \B assertions.
+	// When false, moveWithWordContext skips expensive resolveWordBoundaries calls.
+	// This optimization provides ~4x speedup for patterns without word boundaries.
+	hasWordBoundary bool
 }
 
-// NewBuilder creates a new DFA builder for the given NFA
+// NewBuilder creates a new DFA builder for the given NFA.
+// This constructor checks the NFA for word boundary assertions.
 func NewBuilder(n *nfa.NFA, config Config) *Builder {
-	return &Builder{
+	b := &Builder{
 		nfa:    n,
 		config: config,
+	}
+	b.hasWordBoundary = b.checkHasWordBoundary()
+	return b
+}
+
+// NewBuilderWithWordBoundary creates a new DFA builder with pre-computed word boundary flag.
+// This avoids re-scanning the NFA when the caller already knows whether it has word boundaries.
+// Used by DFA.determinize() for performance (avoids O(states) scan on every byte transition).
+func NewBuilderWithWordBoundary(n *nfa.NFA, config Config, hasWordBoundary bool) *Builder {
+	return &Builder{
+		nfa:             n,
+		config:          config,
+		hasWordBoundary: hasWordBoundary,
 	}
 }
 
@@ -99,6 +118,9 @@ func (b *Builder) Build() (*DFA, error) {
 	// Check if the NFA contains word boundary assertions
 	hasWordBoundary := b.checkHasWordBoundary()
 
+	// Check if the pattern is always anchored (has ^ prefix)
+	isAlwaysAnchored := b.nfa.IsAlwaysAnchored()
+
 	// Create DFA
 	dfa := &DFA{
 		nfa:              b.nfa,
@@ -112,6 +134,7 @@ func (b *Builder) Build() (*DFA, error) {
 		freshStartStates: freshStartStates,
 		unanchoredStart:  b.nfa.StartUnanchored(),
 		hasWordBoundary:  hasWordBoundary,
+		isAlwaysAnchored: isAlwaysAnchored,
 	}
 
 	// Register start state in ID lookup map
@@ -165,8 +188,9 @@ func (b *Builder) buildPrefilter() prefilter.Prefilter {
 //  4. Collect all reachable states
 //  5. Return sorted list for consistent ordering
 func (b *Builder) epsilonClosure(states []nfa.StateID, lookHave LookSet) []nfa.StateID {
-	// Use StateSet for efficient membership testing and deduplication
-	closure := NewStateSetWithCapacity(len(states) * 2)
+	// Use pooled StateSet for efficient membership testing and deduplication
+	closure := acquireStateSet()
+	defer releaseStateSet(closure)
 	stack := make([]nfa.StateID, 0, len(states)*2)
 
 	// Initialize with input states
@@ -265,17 +289,26 @@ func (b *Builder) move(states []nfa.StateID, input byte) []nfa.StateID {
 //
 // This effectively simulates one step of the NFA for all active states.
 func (b *Builder) moveWithWordContext(states []nfa.StateID, input byte, isFromWord bool) []nfa.StateID {
-	// Compute word boundary status for this transition
-	isCurrentWord := isWordByte(input)
-	wordBoundarySatisfied := isFromWord != isCurrentWord
+	// Fast path: skip word boundary resolution if NFA has no word boundaries.
+	// This optimization eliminates ~74% of allocations for patterns without \b/\B.
+	// Based on Rust regex-automata approach: only resolve boundaries when needed.
+	var resolvedStates []nfa.StateID
+	if !b.hasWordBoundary {
+		// No word boundaries - use states directly, skip expensive resolution
+		resolvedStates = states
+	} else {
+		// Compute word boundary status for this transition
+		isCurrentWord := isWordByte(input)
+		wordBoundarySatisfied := isFromWord != isCurrentWord
 
-	// Step 1: Resolve word boundary assertions in the current state set.
-	// StateLook(\b) and StateLook(\B) that weren't followed during epsilon closure
-	// need to be resolved now that we know the current byte.
-	resolvedStates := b.resolveWordBoundaries(states, wordBoundarySatisfied)
+		// Step 1: Resolve word boundary assertions in the current state set.
+		// StateLook(\b) and StateLook(\B) that weren't followed during epsilon closure
+		// need to be resolved now that we know the current byte.
+		resolvedStates = b.resolveWordBoundaries(states, wordBoundarySatisfied)
+	}
 
-	// Step 2: Collect target states for this input byte
-	targets := NewStateSet()
+	// Step 2: Collect target states for this input byte (use pooled StateSet)
+	targets := acquireStateSet()
 
 	for _, sid := range resolvedStates {
 		state := b.nfa.State(sid)
@@ -301,6 +334,7 @@ func (b *Builder) moveWithWordContext(states []nfa.StateID, input byte, isFromWo
 
 	// No transitions on this byte
 	if targets.Len() == 0 {
+		releaseStateSet(targets)
 		return nil
 	}
 
@@ -324,7 +358,10 @@ func (b *Builder) moveWithWordContext(states []nfa.StateID, input byte, isFromWo
 	// resolve word boundary assertions when the next byte is consumed.
 
 	// Compute epsilon-closure of target states with appropriate look assertions
-	return b.epsilonClosure(targets.ToSlice(), lookAfter)
+	// Get slice before releasing, as ToSlice allocates a new slice
+	targetSlice := targets.ToSlice()
+	releaseStateSet(targets)
+	return b.epsilonClosure(targetSlice, lookAfter)
 }
 
 // resolveWordBoundaries expands the NFA state set by following word boundary assertions
@@ -351,8 +388,8 @@ func (b *Builder) moveWithWordContext(states []nfa.StateID, input byte, isFromWo
 // This prevents false matches in patterns without word boundaries (like `a*`).
 func (b *Builder) resolveWordBoundaries(states []nfa.StateID, wordBoundarySatisfied bool) []nfa.StateID {
 	// First, find states reachable by crossing a word boundary assertion
-	// We track states that have crossed a boundary separately
-	crossedBoundary := NewStateSetWithCapacity(len(states))
+	// We track states that have crossed a boundary separately (use pooled StateSet)
+	crossedBoundary := acquireStateSet()
 	stack := make([]nfa.StateID, 0, len(states))
 
 	// Start by looking for word boundary assertions in input states
@@ -384,6 +421,7 @@ func (b *Builder) resolveWordBoundaries(states []nfa.StateID, wordBoundarySatisf
 
 	// If no word boundary was crossed, return original states unchanged
 	if len(stack) == 0 {
+		releaseStateSet(crossedBoundary)
 		return states
 	}
 
@@ -449,15 +487,19 @@ func (b *Builder) resolveWordBoundaries(states []nfa.StateID, wordBoundarySatisf
 	}
 
 	// Combine original states with states reached by crossing word boundaries
-	result := NewStateSetWithCapacity(len(states) + crossedBoundary.Len())
+	result := acquireStateSet()
 	for _, sid := range states {
 		result.Add(sid)
 	}
 	for _, sid := range crossedBoundary.ToSlice() {
 		result.Add(sid)
 	}
+	releaseStateSet(crossedBoundary)
 
-	return result.ToSlice()
+	// Get result slice before releasing
+	resultSlice := result.ToSlice()
+	releaseStateSet(result)
+	return resultSlice
 }
 
 // containsMatchState returns true if any state in the set is a match state

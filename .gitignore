@@ -61,3 +61,5 @@ benchmark/baselines/
 # Local assets (screenshots, diagrams for docs)
 assets/
 regex-bench/
+
+*-cwd
