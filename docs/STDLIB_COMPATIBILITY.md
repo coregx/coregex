@@ -10,14 +10,14 @@ This document describes the compatibility of coregex with Go's standard library 
 
 | Category | Status |
 |----------|--------|
-| **API Surface** | Full compatibility |
+| **API Surface** | 90%+ (core methods implemented, see below) |
 | **Pattern Syntax** | Full RE2 syntax support |
 | **Core Semantics** | Compatible for typical use cases |
 | **Edge Case Behavior** | Minor differences documented below |
 
 ## API Compatibility
 
-### Fully Compatible Functions
+### Implemented Functions
 
 The following functions have identical behavior to stdlib:
 
@@ -28,15 +28,13 @@ MustCompile(expr string) *Regex
 CompilePOSIX(expr string) (*Regex, error)
 MustCompilePOSIX(expr string) *Regex
 
-// Matching
+// Package-level matching
 Match(pattern string, b []byte) (bool, error)
 MatchString(pattern string, s string) (bool, error)
-MatchReader(pattern string, r io.RuneReader) (bool, error)
 
 // Regex methods - matching
 (r *Regex) Match(b []byte) bool
 (r *Regex) MatchString(s string) bool
-(r *Regex) MatchReader(r io.RuneReader) bool
 
 // Regex methods - finding
 (r *Regex) Find(b []byte) []byte
@@ -65,8 +63,6 @@ MatchReader(pattern string, r io.RuneReader) (bool, error)
 (r *Regex) ReplaceAllLiteralString(src, repl string) string
 (r *Regex) ReplaceAllFunc(src []byte, repl func([]byte) []byte) []byte
 (r *Regex) ReplaceAllStringFunc(src string, repl func(string) string) string
-(r *Regex) Expand(dst, template []byte, src []byte, match []int) []byte
-(r *Regex) ExpandString(dst []byte, template string, src string, match []int) []byte
 
 // Regex methods - splitting
 (r *Regex) Split(s string, n int) []string
@@ -75,13 +71,38 @@ MatchReader(pattern string, r io.RuneReader) (bool, error)
 (r *Regex) String() string
 (r *Regex) NumSubexp() int
 (r *Regex) SubexpNames() []string
-(r *Regex) SubexpIndex(name string) int
 (r *Regex) LiteralPrefix() (prefix string, complete bool)
 (r *Regex) Longest()
 
 // Utility functions
 QuoteMeta(s string) string
 ```
+
+### Not Yet Implemented
+
+The following stdlib methods are planned but not yet implemented:
+
+```go
+// Reader-based matching (low priority - rarely used)
+MatchReader(pattern string, r io.RuneReader) (bool, error)
+(r *Regex) MatchReader(r io.RuneReader) bool
+(r *Regex) FindReaderIndex(r io.RuneReader) []int
+(r *Regex) FindReaderSubmatchIndex(r io.RuneReader) []int
+
+// Template expansion (medium priority)
+(r *Regex) Expand(dst, template []byte, src []byte, match []int) []byte
+(r *Regex) ExpandString(dst []byte, template string, src string, match []int) []byte
+
+// Named subexpression index (medium priority)
+(r *Regex) SubexpIndex(name string) int
+
+// Serialization (low priority)
+(r *Regex) Copy() *Regex              // Deprecated in Go 1.12
+(r *Regex) MarshalText() ([]byte, error)
+(r *Regex) UnmarshalText(text []byte) error
+```
+
+> **Note**: These methods can be added on request. Most real-world use cases are covered by the implemented API.
 
 ## Known Behavioral Differences
 
