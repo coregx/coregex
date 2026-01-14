@@ -236,3 +236,67 @@ func TestEmptyCharacterClass(t *testing.T) {
 		})
 	}
 }
+
+// TestNegatedUnicodePropertyClass tests that negated Unicode property classes like \P{Han}
+// match complete UTF-8 codepoints, not individual bytes.
+// This is a regression test for issue #91.
+// The bug: \P{Han}+ on "中" (3-byte UTF-8) was returning 3 matches (bytes) instead of 0.
+func TestNegatedUnicodePropertyClass(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+		want    int // expected number of matches for FindAllString
+	}{
+		// \P{Han} matches any codepoint NOT in Han script
+		// "中" is Han, so should NOT match
+		{"han_char_no_match", `\P{Han}`, "中", 0},
+		{"han_plus_no_match", `\P{Han}+`, "中", 0},
+
+		// "abc" are ASCII, not Han, so should match
+		{"ascii_matches", `\P{Han}`, "abc", 3},
+		{"ascii_plus_matches", `\P{Han}+`, "abc", 1},
+
+		// Mixed: "abc中文def" - should match "abc" and "def" but not "中文"
+		{"mixed_han_ascii", `\P{Han}+`, "abc中文def", 2},
+
+		// \P{Latin} matches non-Latin characters
+		// "日本語" are not Latin, so should match
+		{"non_latin_matches", `\P{Latin}`, "日本語", 3},
+		{"non_latin_plus_matches", `\P{Latin}+`, "日本語", 1},
+
+		// Latin text should not match \P{Latin}
+		{"latin_no_match", `\P{Latin}+`, "abc", 0},
+
+		// Emoji (4-byte UTF-8) with negated class
+		{"emoji_not_latin", `\P{Latin}`, "😀", 1},
+		{"emoji_not_han", `\P{Han}`, "😀", 1},
+
+		// Cyrillic (2-byte UTF-8) with negated class
+		{"cyrillic_not_latin", `\P{Latin}`, "Привет", 6},
+		{"cyrillic_not_han", `\P{Han}+`, "Привет", 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+			matches := re.FindAllString(tt.input, -1)
+			got := len(matches)
+
+			if got != tt.want {
+				t.Errorf("coregex.FindAllString(%q, %q) returned %d matches, want %d (matches: %v)",
+					tt.pattern, tt.input, got, tt.want, matches)
+			}
+
+			// Verify against stdlib
+			reStd := regexp.MustCompile(tt.pattern)
+			matchesStd := reStd.FindAllString(tt.input, -1)
+			gotStd := len(matchesStd)
+
+			if got != gotStd {
+				t.Errorf("coregex vs stdlib mismatch: coregex=%d matches %v, stdlib=%d matches %v",
+					got, matches, gotStd, matchesStd)
+			}
+		})
+	}
+}
