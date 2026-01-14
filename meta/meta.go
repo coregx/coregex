@@ -70,8 +70,8 @@ type Engine struct {
 
 	// OnePass DFA for anchored patterns with captures (optional optimization)
 	// This is independent of strategy - used by FindSubmatch when available
-	onepass      *onepass.DFA
-	onepassCache *onepass.Cache
+	// Note: The cache is now stored in pooled SearchState for thread-safety
+	onepass *onepass.DFA
 
 	// statePool provides thread-safe pooling of per-search mutable state.
 	// This enables concurrent searches on the same Engine instance.
@@ -174,17 +174,13 @@ func CompileWithConfig(pattern string, config Config) (*Engine, error) {
 // buildCharClassSearchers creates specialized searchers for character class patterns.
 // Returns (BoundedBacktracker, CharClassSearcher, updatedStrategy).
 // If CharClassSearcher extraction fails, falls back to BoundedBacktracker.
-// onePassResult holds the result of buildOnePassDFA.
-type onePassResult struct {
-	dfa   *onepass.DFA
-	cache *onepass.Cache
-}
 
 // buildOnePassDFA tries to build a OnePass DFA for anchored patterns with captures.
 // This is an optional optimization for FindSubmatch (10-20x faster).
-func buildOnePassDFA(re *syntax.Regexp, nfaEngine *nfa.NFA, config Config) onePassResult {
+// Note: The cache is now created per-search in pooled SearchState for thread-safety.
+func buildOnePassDFA(re *syntax.Regexp, nfaEngine *nfa.NFA, config Config) *onepass.DFA {
 	if !config.EnableDFA || nfaEngine.CaptureCount() <= 1 {
-		return onePassResult{}
+		return nil
 	}
 
 	// Compile anchored NFA for OnePass (requires Anchored: true)
@@ -196,19 +192,16 @@ func buildOnePassDFA(re *syntax.Regexp, nfaEngine *nfa.NFA, config Config) onePa
 	})
 	anchoredNFA, err := anchoredCompiler.CompileRegexp(re)
 	if err != nil {
-		return onePassResult{}
+		return nil
 	}
 
 	// Try to build one-pass DFA
 	onepassDFA, err := onepass.Build(anchoredNFA)
 	if err != nil {
-		return onePassResult{}
+		return nil
 	}
 
-	return onePassResult{
-		dfa:   onepassDFA,
-		cache: onepass.NewCache(onepassDFA.NumCaptures()),
-	}
+	return onepassDFA
 }
 
 // strategyEngines holds all strategy-specific engines built by buildStrategyEngines.
@@ -542,8 +535,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		prefilter:                pf,
 		strategy:                 strategy,
 		config:                   config,
-		onepass:                  onePassRes.dfa,
-		onepassCache:             onePassRes.cache,
+		onepass:                  onePassRes,
 		canMatchEmpty:            canMatchEmpty,
 		isStartAnchored:          isStartAnchored,
 		fatTeddyFallback:         fatTeddyFallback,
@@ -898,12 +890,16 @@ func (e *Engine) FindSubmatch(haystack []byte) *MatchWithCaptures {
 //
 // This method is used by ReplaceAll* operations to correctly handle anchors like ^.
 // Unlike FindSubmatch, it takes the FULL haystack and a starting position.
-// Thread-safe: uses pooled PikeVM instance.
+// Thread-safe: uses pooled state for both OnePass cache and PikeVM.
 func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
+	// Get pooled state first for thread-safe access
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
 	// For position 0, try OnePass DFA if available (10-20x faster for anchored patterns)
-	if at == 0 && e.onepass != nil && e.onepassCache != nil {
+	if at == 0 && e.onepass != nil && state.onepassCache != nil {
 		atomic.AddUint64(&e.stats.OnePassSearches, 1)
-		slots := e.onepass.Search(haystack, e.onepassCache)
+		slots := e.onepass.Search(haystack, state.onepassCache)
 		if slots != nil {
 			// Convert flat slots [start0, end0, start1, end1, ...] to nested captures
 			captures := slotsToCaptures(slots)
@@ -914,10 +910,6 @@ func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
 	}
 
 	atomic.AddUint64(&e.stats.NFASearches, 1)
-
-	// Use pooled PikeVM for capture group extraction
-	state := e.getSearchState()
-	defer e.putSearchState(state)
 
 	nfaMatch := state.pikevm.SearchWithCapturesAt(haystack, at)
 	if nfaMatch == nil {
