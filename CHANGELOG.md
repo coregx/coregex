@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+- CompositeSearcher for concatenated char classes (#72)
+- Look-around assertions
+- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
+- UTF-8 Automata optimization
+
+---
+
+## [0.10.4] - 2026-01-14
+
 ### Fixed
-- **Critical: Panic on concurrent usage of compiled Regexp** (#78)
+- **Critical: Panic on concurrent usage of compiled Regexp** (#78, PR #80)
   - Bug: `index out of range` panic when using same `*Regexp` from multiple goroutines
   - Root cause: BoundedBacktracker and PikeVM had shared mutable state (`visited`, `queue`)
   - Fix: Implemented `sync.Pool` pattern (same as Go stdlib `regexp`)
@@ -17,11 +27,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - All search operations now thread-safe via pooled state
   - New concurrent tests: `TestConcurrentMatch`, `TestConcurrentFind`, etc.
 
-### Planned
-- CompositeSearcher for concatenated char classes (#72)
-- Look-around assertions
-- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
-- UTF-8 Automata optimization
+- **32-bit platform compatibility for atomic operations**
+  - Fixed `unaligned 64-bit atomic operation` panic on Linux 386
+  - Stats struct moved to first field in Engine for 8-byte alignment
+  - All stats counters now use `sync/atomic.AddUint64` for thread-safety
+
+- **OnePass cache thread-safety**
+  - Moved `onepassCache` from shared Engine to pooled `SearchState`
+  - Eliminates data race in `FindSubmatch` operations
+
+### Added
+- **CI benchmarks for new optimizations**
+  - `meta/composite_bench_test.go` - CompositeSearcher benchmarks
+  - `meta/branch_dispatch_bench_test.go` - BranchDispatch benchmarks
+  - Patterns: `[a-zA-Z]+\d+`, `^(\d+|UUID|hex32)`, HTTP methods
+
+### Performance
+- **Geomean: -3.84% improvement** (faster, not regression)
+- Thread-safe operations with minimal overhead via sync.Pool
 
 ---
 
@@ -1259,7 +1282,11 @@ v1.0.0 → Stable release (API frozen)
 
 ---
 
-[Unreleased]: https://github.com/coregx/coregex/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/coregx/coregex/compare/v0.10.4...HEAD
+[0.10.4]: https://github.com/coregx/coregex/releases/tag/v0.10.4
+[0.10.3]: https://github.com/coregx/coregex/releases/tag/v0.10.3
+[0.10.2]: https://github.com/coregx/coregex/releases/tag/v0.10.2
+[0.10.1]: https://github.com/coregx/coregex/releases/tag/v0.10.1
 [0.10.0]: https://github.com/coregx/coregex/releases/tag/v0.10.0
 [0.9.5]: https://github.com/coregx/coregex/releases/tag/v0.9.5
 [0.9.4]: https://github.com/coregx/coregex/releases/tag/v0.9.4

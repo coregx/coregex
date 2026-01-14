@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-01-07 | **Current Version**: v0.10.1 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-01-14 | **Current Version**: v0.10.4 | **Target**: v1.0.0 stable
 
 ---
 
@@ -37,7 +37,9 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 ```
 v0.10.0 ✅ → Fat Teddy 33-64 patterns (AVX2, 9GB/s)
          ↓
-v0.10.1 (Current) ✅ → Version pattern fix, optimization documentation
+v0.10.1 ✅ → Version pattern fix, optimization documentation
+         ↓
+v0.10.4 (Current) ✅ → Thread-safety fix for concurrent Regexp usage (#78)
          ↓
 v0.11.0 → CompositeSearcher (#72) - 5.3x faster on \w+\s+\w+ patterns
          ↓
@@ -253,7 +255,10 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.10.1** | 2026-01-07 | Fix | Version pattern ReverseInner (#70), optimization docs (#71) |
+| **v0.10.4** | 2026-01-14 | Fix | **Thread-safety for concurrent Regexp usage (#78)** |
+| v0.10.3 | 2026-01-08 | Fix | FindStringSubmatch capture groups fix (#77) |
+| v0.10.2 | 2026-01-07 | Fix | Version pattern regression hotfix (#75) |
+| v0.10.1 | 2026-01-07 | Fix | Version pattern ReverseInner (#70), optimization docs (#71) |
 | **v0.10.0** | 2026-01-07 | Feature | **Fat Teddy AVX2, 5 patterns faster than Rust!** |
 | v0.9.5 | 2026-01-06 | Fix | Teddy limit 8→32, literal extraction fix |
 | v0.9.0-v0.9.4 | 2026-01-05 | Performance | DigitPrefilter, Aho-Corasick, 2-byte fingerprint |
@@ -273,4 +278,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.10.1 | Next: v0.11.0 (CompositeSearcher #72) | Target: v1.0.0*
+*Current: v0.10.4 | Next: v0.11.0 (CompositeSearcher #72) | Target: v1.0.0*
