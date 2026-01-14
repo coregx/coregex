@@ -734,6 +734,27 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseReverseAnchored
 	}
 
+	// START-ANCHORED OPTIMIZATION (Rust regex-automata approach)
+	// For patterns anchored at start (^ or \A), skip Lazy DFA overhead.
+	// Rationale: Only position 0 can match, so DFA construction is wasteful.
+	// Rust uses: OnePass → BoundedBacktracker → PikeVM for anchored patterns.
+	//
+	// Benefits:
+	//   - Zero state construction overhead (vs Lazy DFA building states per byte)
+	//   - BoundedBacktracker is optimized for single-position verification
+	//   - 2-5x faster than Lazy DFA for anchored alternations like ^(a|b|c)
+	//
+	// This fixes Issue #79: ^(\d+|UUID|hex32)$ was 10-14x slower than stdlib
+	// because Lazy DFA construction overhead dominated the single-position check.
+	//
+	// Applies to BOTH:
+	//   - Pure start-anchored: ^pattern (can match at pos 0 only)
+	//   - Both-anchored: ^pattern$ (can match at pos 0, must end at end)
+	// Both cases benefit from skipping DFA - match position is fully determined.
+	if isStartAnchored {
+		return UseBoundedBacktracker
+	}
+
 	// Check for inner/suffix literal optimizations (second priority)
 	// Delegated to helper function to reduce cyclomatic complexity
 	if strategy := selectReverseStrategy(n, re, literals, config); strategy != 0 {
@@ -868,6 +889,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 		return "inner literal prefilter + bidirectional DFA (10-100x for patterns like ERROR.*connection.*timeout)"
 
 	case UseBoundedBacktracker:
+		if n.IsAlwaysAnchored() {
+			return "bounded backtracker for start-anchored pattern (Rust approach: skip DFA for single-position check)"
+		}
 		return "bounded backtracker for simple character class pattern (2-4x faster than PikeVM)"
 
 	case UseTeddy:
