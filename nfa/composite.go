@@ -192,31 +192,48 @@ func (c *CompositeSearcher) SearchAt(haystack []byte, at int) (int, int, bool) {
 
 // matchAt tries to match the composite pattern starting at position pos.
 // Returns (end position, success).
+//
+// Uses backtracking to handle overlapping character classes:
+// For pattern `\w+[0-9]+` on "abc123", the first part (\w+) initially
+// consumes all 6 characters. Backtracking gives back digits until
+// [0-9]+ can match its minimum (1 character).
 func (c *CompositeSearcher) matchAt(haystack []byte, pos int) (int, bool) {
-	i := pos
-	n := len(haystack)
+	// matchLengths[i] = how many chars part i consumed
+	matchLengths := make([]int, len(c.parts))
+	return c.matchAtWithBacktrack(haystack, pos, 0, matchLengths)
+}
 
-	for _, part := range c.parts {
-		// Greedy match: consume as many characters as possible
-		matchLen := 0
-		limit := n - i
-		if part.maxMatch > 0 && part.maxMatch < limit {
-			limit = part.maxMatch
-		}
-
-		for matchLen < limit && i+matchLen < n && part.membership[haystack[i+matchLen]] {
-			matchLen++
-		}
-
-		// Check minimum requirement
-		if matchLen < part.minMatch {
-			return -1, false
-		}
-
-		i += matchLen
+// matchAtWithBacktrack recursively matches parts with backtracking support.
+func (c *CompositeSearcher) matchAtWithBacktrack(haystack []byte, pos int, partIdx int, matchLengths []int) (int, bool) {
+	if partIdx >= len(c.parts) {
+		// All parts matched successfully
+		return pos, true
 	}
 
-	return i, true
+	part := c.parts[partIdx]
+	n := len(haystack)
+
+	// Greedy match: consume as many characters as possible
+	maxLen := n - pos
+	if part.maxMatch > 0 && part.maxMatch < maxLen {
+		maxLen = part.maxMatch
+	}
+
+	// Count how many characters we can consume
+	canConsume := 0
+	for canConsume < maxLen && pos+canConsume < n && part.membership[haystack[pos+canConsume]] {
+		canConsume++
+	}
+
+	// Try from greedy (max) down to minimum, backtracking if next parts fail
+	for tryLen := canConsume; tryLen >= part.minMatch; tryLen-- {
+		matchLengths[partIdx] = tryLen
+		if end, ok := c.matchAtWithBacktrack(haystack, pos+tryLen, partIdx+1, matchLengths); ok {
+			return end, true
+		}
+	}
+
+	return -1, false
 }
 
 // IsCompositeCharClassPattern returns true if the pattern is a valid composite char class pattern.
