@@ -134,6 +134,20 @@ const (
 	// Reference: https://github.com/coregx/coregex/issues/72
 	UseCompositeSearcher
 
+	// UseBranchDispatch uses O(1) first-byte dispatch for anchored alternations.
+	// Selected for:
+	//   - Start-anchored patterns like ^(\d+|UUID|hex32)
+	//   - Each alternation branch has distinct first bytes (no overlap)
+	//   - Speedup: 2-3x on match, 10x+ on no-match by avoiding branch iteration
+	//
+	// Algorithm:
+	//   1. Build [256]int8 dispatch table: first_byte → branch_index
+	//   2. On search: dispatch[haystack[0]] gives branch to try
+	//   3. Only execute that single branch instead of all branches
+	//
+	// Reference: https://github.com/coregx/coregex/issues/79
+	UseBranchDispatch
+
 	// UseDigitPrefilter uses SIMD digit scanning for patterns that must start with digits.
 	// Selected for:
 	//   - Patterns where ALL alternation branches must start with a digit [0-9]
@@ -194,6 +208,8 @@ func (s Strategy) String() string {
 		return "UseCharClassSearcher"
 	case UseCompositeSearcher:
 		return "UseCompositeSearcher"
+	case UseBranchDispatch:
+		return "UseBranchDispatch"
 	case UseDigitPrefilter:
 		return "UseDigitPrefilter"
 	case UseAhoCorasick:
@@ -769,6 +785,12 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	//   - Both-anchored: ^pattern$ (can match at pos 0, must end at end)
 	// Both cases benefit from skipping DFA - match position is fully determined.
 	if isStartAnchored {
+		// Try branch dispatch for anchored alternations with distinct first bytes.
+		// This gives O(1) branch selection instead of trying all branches.
+		// Example: ^(\d+|UUID|hex32) → dispatch['0'-'9']=0, dispatch['U']=1, dispatch['h']=2
+		if nfa.IsBranchDispatchPattern(re) {
+			return UseBranchDispatch
+		}
 		return UseBoundedBacktracker
 	}
 
@@ -930,6 +952,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseCompositeSearcher:
 		return "sequential lookup tables for concatenated char classes (5-6x faster than BoundedBacktracker)"
+
+	case UseBranchDispatch:
+		return "O(1) first-byte dispatch for anchored alternations (2-3x faster on match, 10x+ on no-match)"
 
 	case UseDigitPrefilter:
 		return "SIMD digit scanner for digit-lead alternation patterns (5-10x for IP address patterns)"

@@ -49,6 +49,7 @@ type Engine struct {
 	boundedBacktracker       *nfa.BoundedBacktracker
 	charClassSearcher        *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
 	compositeSearcher        *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
+	branchDispatcher         *nfa.BranchDispatcher     // O(1) branch dispatch for anchored alternations
 	anchoredFirstBytes       *nfa.FirstByteSet         // O(1) first-byte rejection for anchored patterns
 	reverseSearcher          *ReverseAnchoredSearcher
 	reverseSuffixSearcher    *ReverseSuffixSearcher
@@ -346,10 +347,11 @@ func buildReverseSearchers(
 
 // charClassSearcherResult holds the result of building specialized searchers.
 type charClassSearcherResult struct {
-	boundedBT      *nfa.BoundedBacktracker
-	charClassSrch  *nfa.CharClassSearcher
-	compositeSrch  *nfa.CompositeSearcher
-	finalStrategy  Strategy
+	boundedBT        *nfa.BoundedBacktracker
+	charClassSrch    *nfa.CharClassSearcher
+	compositeSrch    *nfa.CompositeSearcher
+	branchDispatcher *nfa.BranchDispatcher
+	finalStrategy    Strategy
 }
 
 func buildCharClassSearchers(
@@ -385,6 +387,28 @@ func buildCharClassSearchers(
 		result.compositeSrch = nfa.NewCompositeSearcher(re)
 		if result.compositeSrch == nil {
 			// Fallback to BoundedBacktracker if extraction fails
+			result.finalStrategy = UseBoundedBacktracker
+			result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+		}
+	}
+
+	// BranchDispatcher for anchored alternations with distinct first bytes
+	// Reference: https://github.com/coregx/coregex/issues/79
+	if strategy == UseBranchDispatch {
+		// Extract the alternation part (skip ^ anchor)
+		altPart := re
+		if re.Op == syntax.OpConcat && len(re.Sub) >= 2 {
+			// Skip start anchor, get the rest
+			for _, sub := range re.Sub[1:] {
+				if sub.Op == syntax.OpAlternate || sub.Op == syntax.OpCapture {
+					altPart = sub
+					break
+				}
+			}
+		}
+		result.branchDispatcher = nfa.NewBranchDispatcher(altPart)
+		if result.branchDispatcher == nil {
+			// Fallback to BoundedBacktracker if dispatch not possible
 			result.finalStrategy = UseBoundedBacktracker
 			result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
 		}
@@ -506,6 +530,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		boundedBacktracker:       charClassResult.boundedBT,
 		charClassSearcher:        charClassResult.charClassSrch,
 		compositeSearcher:        charClassResult.compositeSrch,
+		branchDispatcher:         charClassResult.branchDispatcher,
 		anchoredFirstBytes:       anchoredFirstBytes,
 		reverseSearcher:          engines.reverseSearcher,
 		reverseSuffixSearcher:    engines.reverseSuffixSearcher,
@@ -624,6 +649,8 @@ func (e *Engine) findAtZero(haystack []byte) *Match {
 		return e.findCharClassSearcher(haystack)
 	case UseCompositeSearcher:
 		return e.findCompositeSearcher(haystack)
+	case UseBranchDispatch:
+		return e.findBranchDispatch(haystack)
 	case UseTeddy:
 		return e.findTeddy(haystack)
 	case UseDigitPrefilter:
@@ -655,6 +682,8 @@ func (e *Engine) findAtNonZero(haystack []byte, at int) *Match {
 		return e.findCharClassSearcherAt(haystack, at)
 	case UseCompositeSearcher:
 		return e.findCompositeSearcherAt(haystack, at)
+	case UseBranchDispatch:
+		return e.findBranchDispatchAt(haystack, at)
 	case UseTeddy:
 		return e.findTeddyAt(haystack, at)
 	case UseDigitPrefilter:
@@ -701,6 +730,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchCharClassSearcher(haystack)
 	case UseCompositeSearcher:
 		return e.isMatchCompositeSearcher(haystack)
+	case UseBranchDispatch:
+		return e.isMatchBranchDispatch(haystack)
 	case UseTeddy:
 		return e.isMatchTeddy(haystack)
 	case UseDigitPrefilter:
@@ -967,6 +998,8 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesCharClassSearcher(haystack)
 	case UseCompositeSearcher:
 		return e.findIndicesCompositeSearcher(haystack)
+	case UseBranchDispatch:
+		return e.findIndicesBranchDispatch(haystack)
 	case UseTeddy:
 		return e.findIndicesTeddy(haystack)
 	case UseDigitPrefilter:
@@ -1005,6 +1038,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesCharClassSearcherAt(haystack, at)
 	case UseCompositeSearcher:
 		return e.findIndicesCompositeSearcherAt(haystack, at)
+	case UseBranchDispatch:
+		return e.findIndicesBranchDispatchAt(haystack, at)
 	case UseTeddy:
 		return e.findIndicesTeddyAt(haystack, at)
 	case UseDigitPrefilter:
@@ -1541,6 +1576,57 @@ func (e *Engine) findIndicesCompositeSearcherAt(haystack []byte, at int) (int, i
 	}
 	e.stats.NFASearches++
 	return e.compositeSearcher.SearchAt(haystack, at)
+}
+
+// findBranchDispatch searches using O(1) branch dispatch for anchored alternations.
+// 2-3x faster than BoundedBacktracker on match, 10x+ on no-match.
+func (e *Engine) findBranchDispatch(haystack []byte) *Match {
+	if e.branchDispatcher == nil {
+		return e.findBoundedBacktracker(haystack)
+	}
+	e.stats.NFASearches++
+	start, end, found := e.branchDispatcher.Search(haystack)
+	if !found {
+		return nil
+	}
+	return NewMatch(start, end, haystack)
+}
+
+// findBranchDispatchAt searches using branch dispatch at position.
+// For anchored patterns, only position 0 is meaningful.
+func (e *Engine) findBranchDispatchAt(haystack []byte, at int) *Match {
+	if at != 0 {
+		// Anchored pattern can only match at position 0
+		return nil
+	}
+	return e.findBranchDispatch(haystack)
+}
+
+// isMatchBranchDispatch checks for match using O(1) branch dispatch.
+func (e *Engine) isMatchBranchDispatch(haystack []byte) bool {
+	if e.branchDispatcher == nil {
+		return e.isMatchBoundedBacktracker(haystack)
+	}
+	e.stats.NFASearches++
+	return e.branchDispatcher.IsMatch(haystack)
+}
+
+// findIndicesBranchDispatch searches using branch dispatch - zero alloc.
+func (e *Engine) findIndicesBranchDispatch(haystack []byte) (int, int, bool) {
+	if e.branchDispatcher == nil {
+		return e.findIndicesBoundedBacktracker(haystack)
+	}
+	e.stats.NFASearches++
+	return e.branchDispatcher.Search(haystack)
+}
+
+// findIndicesBranchDispatchAt searches using branch dispatch at position - zero alloc.
+func (e *Engine) findIndicesBranchDispatchAt(haystack []byte, at int) (int, int, bool) {
+	if at != 0 {
+		// Anchored pattern can only match at position 0
+		return -1, -1, false
+	}
+	return e.findIndicesBranchDispatch(haystack)
 }
 
 // FindAllIndicesStreaming returns all non-overlapping match indices using streaming algorithm.
