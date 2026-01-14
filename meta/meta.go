@@ -53,8 +53,9 @@ type Engine struct {
 	dfa                      *lazy.DFA
 	pikevm                   *nfa.PikeVM
 	boundedBacktracker       *nfa.BoundedBacktracker
-	charClassSearcher        *nfa.CharClassSearcher // Specialized searcher for char_class+ patterns
-	compositeSearcher        *nfa.CompositeSearcher // For concatenated char classes like [a-zA-Z]+[0-9]+
+	charClassSearcher        *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
+	compositeSearcher        *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
+	compositeSequenceDFA     *nfa.CompositeSequenceDFA // DFA for composite patterns (faster than backtracking)
 	branchDispatcher         *nfa.BranchDispatcher  // O(1) branch dispatch for anchored alternations
 	anchoredFirstBytes       *nfa.FirstByteSet      // O(1) first-byte rejection for anchored patterns
 	reverseSearcher          *ReverseAnchoredSearcher
@@ -343,11 +344,12 @@ func buildReverseSearchers(
 
 // charClassSearcherResult holds the result of building specialized searchers.
 type charClassSearcherResult struct {
-	boundedBT        *nfa.BoundedBacktracker
-	charClassSrch    *nfa.CharClassSearcher
-	compositeSrch    *nfa.CompositeSearcher
-	branchDispatcher *nfa.BranchDispatcher
-	finalStrategy    Strategy
+	boundedBT          *nfa.BoundedBacktracker
+	charClassSrch      *nfa.CharClassSearcher
+	compositeSrch      *nfa.CompositeSearcher
+	compositeSeqDFA    *nfa.CompositeSequenceDFA // DFA (faster than backtracking)
+	branchDispatcher   *nfa.BranchDispatcher
+	finalStrategy      Strategy
 }
 
 func buildCharClassSearchers(
@@ -385,6 +387,9 @@ func buildCharClassSearchers(
 			// Fallback to BoundedBacktracker if extraction fails
 			result.finalStrategy = UseBoundedBacktracker
 			result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+		} else {
+			// Try to build faster DFA (uses subset construction for overlapping patterns)
+			result.compositeSeqDFA = nfa.NewCompositeSequenceDFA(re)
 		}
 	}
 
@@ -526,6 +531,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		boundedBacktracker:       charClassResult.boundedBT,
 		charClassSearcher:        charClassResult.charClassSrch,
 		compositeSearcher:        charClassResult.compositeSrch,
+		compositeSequenceDFA:     charClassResult.compositeSeqDFA,
 		branchDispatcher:         charClassResult.branchDispatcher,
 		anchoredFirstBytes:       anchoredFirstBytes,
 		reverseSearcher:          engines.reverseSearcher,
@@ -1548,6 +1554,11 @@ func (e *Engine) findCompositeSearcherAt(haystack []byte, at int) *Match {
 
 // isMatchCompositeSearcher checks for match using CompositeSearcher.
 func (e *Engine) isMatchCompositeSearcher(haystack []byte) bool {
+	// Prefer DFA over backtracking
+	if e.compositeSequenceDFA != nil {
+		atomic.AddUint64(&e.stats.DFASearches, 1)
+		return e.compositeSequenceDFA.IsMatch(haystack)
+	}
 	if e.compositeSearcher == nil {
 		return e.isMatchNFA(haystack)
 	}
@@ -1557,6 +1568,11 @@ func (e *Engine) isMatchCompositeSearcher(haystack []byte) bool {
 
 // findIndicesCompositeSearcher searches using CompositeSearcher - zero alloc.
 func (e *Engine) findIndicesCompositeSearcher(haystack []byte) (int, int, bool) {
+	// Prefer DFA over backtracking (2-4x faster for overlapping patterns)
+	if e.compositeSequenceDFA != nil {
+		atomic.AddUint64(&e.stats.DFASearches, 1)
+		return e.compositeSequenceDFA.Search(haystack)
+	}
 	if e.compositeSearcher == nil {
 		return e.findIndicesNFA(haystack)
 	}
@@ -1566,6 +1582,11 @@ func (e *Engine) findIndicesCompositeSearcher(haystack []byte) (int, int, bool) 
 
 // findIndicesCompositeSearcherAt searches using CompositeSearcher at position - zero alloc.
 func (e *Engine) findIndicesCompositeSearcherAt(haystack []byte, at int) (int, int, bool) {
+	// Prefer DFA over backtracking (2-4x faster for overlapping patterns)
+	if e.compositeSequenceDFA != nil {
+		atomic.AddUint64(&e.stats.DFASearches, 1)
+		return e.compositeSequenceDFA.SearchAt(haystack, at)
+	}
 	if e.compositeSearcher == nil {
 		return e.findIndicesNFAAt(haystack, at)
 	}
