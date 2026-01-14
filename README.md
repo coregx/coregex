@@ -77,7 +77,7 @@ Cross-language benchmarks on 6MB input ([source](https://github.com/kolkov/regex
 - Inner literals (`.*error.*`, `.*@example\.com`) — bidirectional DFA (900x+)
 - Multi-pattern (`foo|bar|baz|...`) — Slim Teddy (≤32), Fat Teddy (33-64), or Aho-Corasick (>64)
 - Anchored alternations (`^(\d+|UUID|hex32)`) — O(1) branch dispatch (5-20x)
-- Concatenated char classes (`[a-zA-Z]+[0-9]+`) — DFA with byte classes (25x)
+- Concatenated char classes (`[a-zA-Z]+[0-9]+`) — DFA with byte classes (5-7x)
 
 ## Features
 
@@ -90,7 +90,7 @@ coregex automatically selects the optimal engine:
 | ReverseInner | `.*keyword.*` | 100-900x |
 | ReverseSuffix | `.*\.txt` | 100-1100x |
 | BranchDispatch | `^(\d+\|UUID\|hex32)` | 5-20x |
-| CompositeSequenceDFA | `[a-zA-Z]+[0-9]+` | 25x |
+| CompositeSequenceDFA | `[a-zA-Z]+[0-9]+` | 5-7x |
 | LazyDFA | IP, complex patterns | 10-150x |
 | AhoCorasick | `a\|b\|c\|...\|z` (>64 patterns) | 75-113x |
 | CharClassSearcher | `[\w]+`, `\d+` | 4-25x |

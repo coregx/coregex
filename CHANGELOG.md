@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Byte class reduction: 256 bytes → 3-8 equivalence classes
   - First-part skip optimization: O(1) check if position can start match
   - Loop unrolling: 4 bytes per iteration (Rust-inspired)
-  - Performance: 300 MB/s (vs 56 MB/s CompositeSearcher, vs 12 MB/s stdlib)
+  - Internal: 125 MB/s raw DFA (vs 45 MB/s backtracking CompositeSearcher)
 
 - **FindAllIndexCompact API: zero per-match allocations**
   - `FindAllIndexCompact(b []byte, n int, results [][2]int) [][2]int`
@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 60974 → 9 allocations for 1MB input with many matches
 
 ### Performance
-- CompositeSequenceDFA: **25x faster than stdlib** for overlapping patterns
+- CompositeSequenceDFA: **5-7x faster than stdlib** for overlapping patterns (raw DFA: 3x faster than backtracking)
 - FindAllIndexCompact: **99.98% allocation reduction** for FindAllIndex
 
 ---
