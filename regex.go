@@ -474,16 +474,21 @@ func (r *Regex) Longest() {
 	r.engine.SetLongest(true)
 }
 
-// NumSubexp returns the number of parenthesized subexpressions (capture groups).
-// Group 0 is the entire match, so the returned value equals the number of
-// explicit capture groups plus 1.
+// NumSubexp returns the number of parenthesized subexpressions in this Regex.
+// This does NOT include group 0 (the entire match), matching stdlib regexp behavior.
 //
 // Example:
 //
 //	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
-//	println(re.NumSubexp()) // 4 (entire match + 3 groups)
+//	println(re.NumSubexp()) // 3 (just the capture groups)
 func (r *Regex) NumSubexp() int {
-	return r.engine.NumCaptures()
+	// Subtract 1 because NumCaptures() includes group 0 (entire match)
+	// but NumSubexp should only count parenthesized subexpressions
+	n := r.engine.NumCaptures() - 1
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 // SubexpNames returns the names of the parenthesized subexpressions in this Regex.
@@ -871,11 +876,9 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 	}
 
 	// Need to find submatches for expansion
-	numGroups := r.NumSubexp()
-	if numGroups == 0 {
-		// No capture groups, fallback to literal
-		return r.ReplaceAllLiteral(src, repl)
-	}
+	// Use NumCaptures() (includes group 0) for internal buffer sizing
+	// NumSubexp() returns only parenthesized groups (excluding group 0)
+	numCaptures := r.engine.NumCaptures() // includes group 0
 
 	// Pre-allocate result buffer based on input size
 	// Estimate: input size + 25% for replacements
@@ -883,7 +886,8 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 	result := make([]byte, 0, estimatedLen)
 
 	// Pre-allocate matchIndices buffer and reuse it (avoid allocation per match)
-	matchIndices := make([]int, numGroups*2)
+	// This includes group 0 (entire match) plus all capture groups
+	matchIndices := make([]int, numCaptures*2)
 
 	lastEnd := 0
 	pos := 0
@@ -899,7 +903,7 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 
 		// Get match indices (already absolute from FindSubmatchAt)
 		// Reuse pre-allocated buffer (reset values each iteration)
-		for i := 0; i < numGroups; i++ {
+		for i := 0; i < numCaptures; i++ {
 			idx := matchData.GroupIndex(i)
 			if len(idx) >= 2 {
 				matchIndices[i*2] = idx[0]

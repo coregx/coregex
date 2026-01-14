@@ -582,31 +582,124 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 // compileAnyChar compiles '.' matching any character including newlines.
 // This is used for OpAnyChar which the parser generates when DotNL flag is set
 // (either globally via syntax.DotNL or locally via inline flag (?s:...)).
-//
-//nolint:unparam // err is always nil but signature matches other compile methods
 func (c *Compiler) compileAnyChar() (start, end StateID, err error) {
-	// Match any byte (including newlines): [0x00-0xFF]
-	id := c.builder.AddByteRange(0x00, 0xFF, InvalidState)
-	return id, id, nil
+	// Match any UTF-8 codepoint (1-4 bytes) including newlines
+	return c.compileUTF8Any(true)
 }
 
 // compileAnyCharNotNL compiles '.' matching any character except \n
-//
-//nolint:unparam // err is always nil but signature matches other compile methods
 func (c *Compiler) compileAnyCharNotNL() (start, end StateID, err error) {
-	// Match any byte except '\n': [0x00-0x09] | [0x0B-0xFF]
-	// Use sparse transitions which are handled efficiently by PikeVM
-	// Create the sparse state with both byte ranges pointing to a shared end state
-	endEpsilon := c.builder.AddEpsilon(InvalidState)
+	// Match any UTF-8 codepoint (1-4 bytes) except newline
+	return c.compileUTF8Any(false)
+}
 
-	// Create sparse state with multiple transitions to the same target
-	transitions := []Transition{
-		{Lo: 0x00, Hi: 0x09, Next: endEpsilon},
-		{Lo: 0x0B, Hi: 0xFF, Next: endEpsilon},
+// compileUTF8Any compiles an NFA that matches any single UTF-8 codepoint.
+// If includeNL is false, newline (0x0A) is excluded.
+//
+// UTF-8 encoding:
+//   - 1-byte: 0x00-0x7F (ASCII)
+//   - 2-byte: 0xC2-0xDF, 0x80-0xBF
+//   - 3-byte: 0xE0, 0xA0-0xBF, 0x80-0xBF
+//     0xE1-0xEC, 0x80-0xBF, 0x80-0xBF
+//     0xED, 0x80-0x9F, 0x80-0xBF
+//     0xEE-0xEF, 0x80-0xBF, 0x80-0xBF
+//   - 4-byte: 0xF0, 0x90-0xBF, 0x80-0xBF, 0x80-0xBF
+//     0xF1-0xF3, 0x80-0xBF, 0x80-0xBF, 0x80-0xBF
+//     0xF4, 0x80-0x8F, 0x80-0xBF, 0x80-0xBF
+func (c *Compiler) compileUTF8Any(includeNL bool) (start, end StateID, err error) {
+	// Shared end state for all branches
+	endState := c.builder.AddEpsilon(InvalidState)
+
+	// Build alternation of all UTF-8 patterns
+	var branches []StateID
+
+	// 1-byte ASCII (0x00-0x7F), excluding newline if needed
+	if includeNL {
+		// All ASCII including newline
+		ascii := c.builder.AddByteRange(0x00, 0x7F, endState)
+		branches = append(branches, ascii)
+	} else {
+		// ASCII except newline: [0x00-0x09] | [0x0B-0x7F]
+		asciiTrans := []Transition{
+			{Lo: 0x00, Hi: 0x09, Next: endState},
+			{Lo: 0x0B, Hi: 0x7F, Next: endState},
+		}
+		ascii := c.builder.AddSparse(asciiTrans)
+		branches = append(branches, ascii)
 	}
-	id := c.builder.AddSparse(transitions)
 
-	return id, endEpsilon, nil
+	// Continuation byte helper
+	cont := func(next StateID) StateID {
+		return c.builder.AddByteRange(0x80, 0xBF, next)
+	}
+
+	// 2-byte: 0xC2-0xDF, 0x80-0xBF
+	{
+		cont1 := cont(endState)
+		lead := c.builder.AddByteRange(0xC2, 0xDF, cont1)
+		branches = append(branches, lead)
+	}
+
+	// 3-byte sequences
+	{
+		// 0xE0, 0xA0-0xBF, 0x80-0xBF
+		cont2 := cont(endState)
+		cont1 := c.builder.AddByteRange(0xA0, 0xBF, cont2)
+		lead := c.builder.AddByteRange(0xE0, 0xE0, cont1)
+		branches = append(branches, lead)
+	}
+	{
+		// 0xE1-0xEC, 0x80-0xBF, 0x80-0xBF
+		cont2 := cont(endState)
+		cont1 := cont(cont2)
+		lead := c.builder.AddByteRange(0xE1, 0xEC, cont1)
+		branches = append(branches, lead)
+	}
+	{
+		// 0xED, 0x80-0x9F, 0x80-0xBF (avoid surrogates)
+		cont2 := cont(endState)
+		cont1 := c.builder.AddByteRange(0x80, 0x9F, cont2)
+		lead := c.builder.AddByteRange(0xED, 0xED, cont1)
+		branches = append(branches, lead)
+	}
+	{
+		// 0xEE-0xEF, 0x80-0xBF, 0x80-0xBF
+		cont2 := cont(endState)
+		cont1 := cont(cont2)
+		lead := c.builder.AddByteRange(0xEE, 0xEF, cont1)
+		branches = append(branches, lead)
+	}
+
+	// 4-byte sequences
+	{
+		// 0xF0, 0x90-0xBF, 0x80-0xBF, 0x80-0xBF
+		cont3 := cont(endState)
+		cont2 := cont(cont3)
+		cont1 := c.builder.AddByteRange(0x90, 0xBF, cont2)
+		lead := c.builder.AddByteRange(0xF0, 0xF0, cont1)
+		branches = append(branches, lead)
+	}
+	{
+		// 0xF1-0xF3, 0x80-0xBF, 0x80-0xBF, 0x80-0xBF
+		cont3 := cont(endState)
+		cont2 := cont(cont3)
+		cont1 := cont(cont2)
+		lead := c.builder.AddByteRange(0xF1, 0xF3, cont1)
+		branches = append(branches, lead)
+	}
+	{
+		// 0xF4, 0x80-0x8F, 0x80-0xBF, 0x80-0xBF
+		cont3 := cont(endState)
+		cont2 := cont(cont3)
+		cont1 := c.builder.AddByteRange(0x80, 0x8F, cont2)
+		lead := c.builder.AddByteRange(0xF4, 0xF4, cont1)
+		branches = append(branches, lead)
+	}
+
+	// Create split state for alternation
+	startState := c.buildSplitChain(branches)
+
+	return startState, endState, nil
 }
 
 // compileConcat compiles concatenation (e.g., "abc")

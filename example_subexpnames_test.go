@@ -12,6 +12,8 @@ func ExampleRegex_SubexpNames() {
 	re := coregex.MustCompile(`(?P<year>\d{4})-(?P<month>\d{2})-(\d{2})`)
 
 	// Get capture group names
+	// Note: SubexpNames includes group 0 (empty string for full match)
+	// but NumSubexp only counts parenthesized subexpressions (groups 1-3)
 	names := re.SubexpNames()
 	fmt.Printf("Capture groups: %d\n", re.NumSubexp())
 	fmt.Printf("Group 0 (full match): %q\n", names[0])
@@ -20,7 +22,7 @@ func ExampleRegex_SubexpNames() {
 	fmt.Printf("Group 3 (day, unnamed): %q\n", names[3])
 
 	// Output:
-	// Capture groups: 4
+	// Capture groups: 3
 	// Group 0 (full match): ""
 	// Group 1 (year): "year"
 	// Group 2 (month): "month"
