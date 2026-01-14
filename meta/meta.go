@@ -56,8 +56,8 @@ type Engine struct {
 	charClassSearcher        *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
 	compositeSearcher        *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
 	compositeSequenceDFA     *nfa.CompositeSequenceDFA // DFA for composite patterns (faster than backtracking)
-	branchDispatcher         *nfa.BranchDispatcher  // O(1) branch dispatch for anchored alternations
-	anchoredFirstBytes       *nfa.FirstByteSet      // O(1) first-byte rejection for anchored patterns
+	branchDispatcher         *nfa.BranchDispatcher     // O(1) branch dispatch for anchored alternations
+	anchoredFirstBytes       *nfa.FirstByteSet         // O(1) first-byte rejection for anchored patterns
 	reverseSearcher          *ReverseAnchoredSearcher
 	reverseSuffixSearcher    *ReverseSuffixSearcher
 	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
@@ -344,12 +344,12 @@ func buildReverseSearchers(
 
 // charClassSearcherResult holds the result of building specialized searchers.
 type charClassSearcherResult struct {
-	boundedBT          *nfa.BoundedBacktracker
-	charClassSrch      *nfa.CharClassSearcher
-	compositeSrch      *nfa.CompositeSearcher
-	compositeSeqDFA    *nfa.CompositeSequenceDFA // DFA (faster than backtracking)
-	branchDispatcher   *nfa.BranchDispatcher
-	finalStrategy      Strategy
+	boundedBT        *nfa.BoundedBacktracker
+	charClassSrch    *nfa.CharClassSearcher
+	compositeSrch    *nfa.CompositeSearcher
+	compositeSeqDFA  *nfa.CompositeSequenceDFA // DFA (faster than backtracking)
+	branchDispatcher *nfa.BranchDispatcher
+	finalStrategy    Strategy
 }
 
 func buildCharClassSearchers(

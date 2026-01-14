@@ -24,7 +24,7 @@ func generateBenchData() []byte {
 var benchData = generateBenchData()
 
 func BenchmarkWordDigit_1MB_Stdlib(b *testing.B) {
-	re := regexp.MustCompile(`\w+[0-9]+`)
+	re := regexp.MustCompile(`\w+[0-9]+`) //nolint:gocritic // intentional for consistency with coregex tests
 	b.SetBytes(int64(len(benchData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -42,7 +42,7 @@ func BenchmarkWordDigit_1MB_Coregex(b *testing.B) {
 }
 
 func BenchmarkAlphaDigit_1MB_Stdlib(b *testing.B) {
-	re := regexp.MustCompile(`[a-zA-Z]+[0-9]+`)
+	re := regexp.MustCompile(`[a-zA-Z]+[0-9]+`) //nolint:gocritic // intentional for consistency with coregex tests
 	b.SetBytes(int64(len(benchData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

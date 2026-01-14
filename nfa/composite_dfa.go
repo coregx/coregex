@@ -33,13 +33,6 @@ type CompositeSequenceDFA struct {
 	parts []*charClassPart
 }
 
-// nfaConfig represents a position in the composite NFA
-// (partIndex, haveMinMatch) - which part we're in and whether we've met minimum
-type nfaConfig struct {
-	part    int  // which part (0..numParts-1)
-	metMin  bool // have we met minimum match for this part?
-}
-
 // NewCompositeSequenceDFA creates a specialized DFA for composite patterns.
 // Returns nil if the pattern is not suitable for this DFA.
 func NewCompositeSequenceDFA(re *syntax.Regexp) *CompositeSequenceDFA {
@@ -105,6 +98,7 @@ func (c configSet) has(part int, metMin bool) bool {
 	return (c & (1 << idx)) != 0
 }
 
+//nolint:unparam // metMin always true for minMatch>=1 patterns, but keeps API consistent with has()
 func (c configSet) add(part int, metMin bool) configSet {
 	idx := part * 2
 	if metMin {
@@ -137,7 +131,7 @@ func (d *CompositeSequenceDFA) buildDFASubsetConstruction(parts []*charClassPart
 	// we go to state (part0, metMin=true) since minMatch=1 and we consumed 1 char
 	firstCharState := configSet(0).add(0, true) // After consuming 1 char of first part
 	if _, ok := configToState[firstCharState]; !ok {
-		configToState[firstCharState] = uint16(len(states))
+		configToState[firstCharState] = uint16(len(states)) //nolint:gosec // max 8 parts = max 512 states, fits uint16
 		states = append(states, firstCharState)
 		queue = append(queue, firstCharState)
 	}
@@ -173,7 +167,7 @@ func (d *CompositeSequenceDFA) buildDFASubsetConstruction(parts []*charClassPart
 			if nextID, ok := configToState[next]; ok {
 				trans[class] = nextID
 			} else {
-				nextID := uint16(len(states))
+				nextID := uint16(len(states)) //nolint:gosec // max 8 parts = max 512 states, fits uint16
 				configToState[next] = nextID
 				states = append(states, next)
 				queue = append(queue, next)
@@ -192,10 +186,8 @@ func (d *CompositeSequenceDFA) buildDFASubsetConstruction(parts []*charClassPart
 	d.numStates = len(states)
 	d.transitions = make([]uint16, d.numStates*d.numClasses)
 	for stateID, trans := range transitionList {
-		if trans != nil {
-			for class, nextID := range trans {
-				d.transitions[stateID*d.numClasses+class] = nextID
-			}
+		for class, nextID := range trans {
+			d.transitions[stateID*d.numClasses+class] = nextID
 		}
 	}
 
@@ -262,6 +254,8 @@ func (d *CompositeSequenceDFA) Search(haystack []byte) (int, int, bool) {
 
 // SearchAt finds the first match starting at or after position 'at'.
 // Returns (start, end, found).
+//
+//nolint:gocognit // Loop unrolling for performance intentionally increases complexity
 func (d *CompositeSequenceDFA) SearchAt(haystack []byte, at int) (int, int, bool) {
 	n := len(haystack)
 	if n == 0 {
