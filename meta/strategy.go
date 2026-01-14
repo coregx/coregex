@@ -119,6 +119,21 @@ const (
 	// NFA state tracking. Optimal for "find all words" type patterns.
 	UseCharClassSearcher
 
+	// UseCompositeSearcher uses sequential lookup tables for concatenated char class patterns.
+	// Selected for:
+	//   - Patterns like [a-zA-Z]+[0-9]+, \d+\s+\w+, [a-z]+[A-Z]+
+	//   - Concatenation of 2+ quantified character classes
+	//   - No anchors, captures, or alternations within
+	//   - Speedup: 5-6x over BoundedBacktracker by using O(1) lookup tables
+	//
+	// Algorithm:
+	//   1. Each char class part has [256]bool membership table
+	//   2. Greedy matching: consume max chars for each part
+	//   3. Backtrack if min requirement not met
+	//
+	// Reference: https://github.com/coregx/coregex/issues/72
+	UseCompositeSearcher
+
 	// UseDigitPrefilter uses SIMD digit scanning for patterns that must start with digits.
 	// Selected for:
 	//   - Patterns where ALL alternation branches must start with a digit [0-9]
@@ -177,6 +192,8 @@ func (s Strategy) String() string {
 		return "UseReverseSuffixSet"
 	case UseCharClassSearcher:
 		return "UseCharClassSearcher"
+	case UseCompositeSearcher:
+		return "UseCompositeSearcher"
 	case UseDigitPrefilter:
 		return "UseDigitPrefilter"
 	case UseAhoCorasick:
@@ -778,6 +795,14 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseCharClassSearcher
 	}
 
+	// Check for concatenated char class patterns like [a-zA-Z]+[0-9]+
+	// Uses sequential lookup tables for 5-6x speedup over BoundedBacktracker.
+	// Must come AFTER CharClassSearcher (single char class) but BEFORE BoundedBacktracker.
+	// Reference: https://github.com/coregx/coregex/issues/72
+	if !litAnalysis.hasGoodLiterals && !litAnalysis.hasTeddyLiterals && nfa.IsCompositeCharClassPattern(re) {
+		return UseCompositeSearcher
+	}
+
 	// Check for complex character class patterns (concatenations, captures) without literals
 	// Patterns like [0-9]+[a-z]+ or (a|b|c)+ benefit from BoundedBacktracker:
 	// 2-4x faster than PikeVM due to bit-vector visited tracking instead of SparseSet.
@@ -902,6 +927,9 @@ func StrategyReason(strategy Strategy, n *nfa.NFA, literals *literal.Seq, config
 
 	case UseCharClassSearcher:
 		return "specialized lookup-table searcher for char_class+ patterns (14-17x faster than BoundedBacktracker)"
+
+	case UseCompositeSearcher:
+		return "sequential lookup tables for concatenated char classes (5-6x faster than BoundedBacktracker)"
 
 	case UseDigitPrefilter:
 		return "SIMD digit scanner for digit-lead alternation patterns (5-10x for IP address patterns)"

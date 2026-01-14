@@ -47,7 +47,8 @@ type Engine struct {
 	dfa                      *lazy.DFA
 	pikevm                   *nfa.PikeVM
 	boundedBacktracker       *nfa.BoundedBacktracker
-	charClassSearcher        *nfa.CharClassSearcher // Specialized searcher for char_class+ patterns
+	charClassSearcher        *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
+	compositeSearcher        *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
 	reverseSearcher          *ReverseAnchoredSearcher
 	reverseSuffixSearcher    *ReverseSuffixSearcher
 	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
@@ -338,16 +339,23 @@ func buildReverseSearchers(
 	return result
 }
 
+// charClassSearcherResult holds the result of building specialized searchers.
+type charClassSearcherResult struct {
+	boundedBT      *nfa.BoundedBacktracker
+	charClassSrch  *nfa.CharClassSearcher
+	compositeSrch  *nfa.CompositeSearcher
+	finalStrategy  Strategy
+}
+
 func buildCharClassSearchers(
 	strategy Strategy,
 	re *syntax.Regexp,
 	nfaEngine *nfa.NFA,
-) (*nfa.BoundedBacktracker, *nfa.CharClassSearcher, Strategy) {
-	var boundedBT *nfa.BoundedBacktracker
-	var charClassSrch *nfa.CharClassSearcher
+) charClassSearcherResult {
+	result := charClassSearcherResult{finalStrategy: strategy}
 
 	if strategy == UseBoundedBacktracker {
-		boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+		result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
 	}
 
 	if strategy == UseCharClassSearcher {
@@ -358,11 +366,22 @@ func buildCharClassSearchers(
 			if re.Op == syntax.OpStar {
 				minMatch = 0
 			}
-			charClassSrch = nfa.NewCharClassSearcher(ranges, minMatch)
+			result.charClassSrch = nfa.NewCharClassSearcher(ranges, minMatch)
 		} else {
 			// Fallback to BoundedBacktracker if extraction fails
-			strategy = UseBoundedBacktracker
-			boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+			result.finalStrategy = UseBoundedBacktracker
+			result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+		}
+	}
+
+	// CompositeSearcher for concatenated char classes like [a-zA-Z]+[0-9]+
+	// Reference: https://github.com/coregx/coregex/issues/72
+	if strategy == UseCompositeSearcher {
+		result.compositeSrch = nfa.NewCompositeSearcher(re)
+		if result.compositeSrch == nil {
+			// Fallback to BoundedBacktracker if extraction fails
+			result.finalStrategy = UseBoundedBacktracker
+			result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
 		}
 	}
 
@@ -370,11 +389,11 @@ func buildCharClassSearchers(
 	// BoundedBacktracker is 2-3x faster than PikeVM on small inputs due to
 	// generation-based visited tracking (O(1) reset) vs PikeVM's thread queues.
 	// This is similar to how stdlib uses backtracking for simple patterns.
-	if strategy == UseNFA && boundedBT == nil && nfaEngine.States() < 50 {
-		boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+	if result.finalStrategy == UseNFA && result.boundedBT == nil && nfaEngine.States() < 50 {
+		result.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
 	}
 
-	return boundedBT, charClassSrch, strategy
+	return result
 }
 
 // CompileRegexp compiles a parsed syntax.Regexp with default configuration.
@@ -437,7 +456,8 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	strategy = engines.finalStrategy
 
 	// Build specialized searchers for character class patterns
-	boundedBT, charClassSrch, strategy := buildCharClassSearchers(strategy, re, nfaEngine)
+	charClassResult := buildCharClassSearchers(strategy, re, nfaEngine)
+	strategy = charClassResult.finalStrategy
 
 	// Check if pattern can match empty string.
 	// If true, BoundedBacktracker cannot be used for Find operations
@@ -467,8 +487,9 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		nfa:                      nfaEngine,
 		dfa:                      engines.dfa,
 		pikevm:                   pikevm,
-		boundedBacktracker:       boundedBT,
-		charClassSearcher:        charClassSrch,
+		boundedBacktracker:       charClassResult.boundedBT,
+		charClassSearcher:        charClassResult.charClassSrch,
+		compositeSearcher:        charClassResult.compositeSrch,
 		reverseSearcher:          engines.reverseSearcher,
 		reverseSuffixSearcher:    engines.reverseSuffixSearcher,
 		reverseSuffixSetSearcher: engines.reverseSuffixSetSearcher,
@@ -583,6 +604,8 @@ func (e *Engine) findAtZero(haystack []byte) *Match {
 		return e.findBoundedBacktracker(haystack)
 	case UseCharClassSearcher:
 		return e.findCharClassSearcher(haystack)
+	case UseCompositeSearcher:
+		return e.findCompositeSearcher(haystack)
 	case UseTeddy:
 		return e.findTeddy(haystack)
 	case UseDigitPrefilter:
@@ -612,6 +635,8 @@ func (e *Engine) findAtNonZero(haystack []byte, at int) *Match {
 		return e.findBoundedBacktrackerAt(haystack, at)
 	case UseCharClassSearcher:
 		return e.findCharClassSearcherAt(haystack, at)
+	case UseCompositeSearcher:
+		return e.findCompositeSearcherAt(haystack, at)
 	case UseTeddy:
 		return e.findTeddyAt(haystack, at)
 	case UseDigitPrefilter:
@@ -656,6 +681,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchBoundedBacktracker(haystack)
 	case UseCharClassSearcher:
 		return e.isMatchCharClassSearcher(haystack)
+	case UseCompositeSearcher:
+		return e.isMatchCompositeSearcher(haystack)
 	case UseTeddy:
 		return e.isMatchTeddy(haystack)
 	case UseDigitPrefilter:
@@ -911,6 +938,8 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesBoundedBacktracker(haystack)
 	case UseCharClassSearcher:
 		return e.findIndicesCharClassSearcher(haystack)
+	case UseCompositeSearcher:
+		return e.findIndicesCompositeSearcher(haystack)
 	case UseTeddy:
 		return e.findIndicesTeddy(haystack)
 	case UseDigitPrefilter:
@@ -947,6 +976,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesBoundedBacktrackerAt(haystack, at)
 	case UseCharClassSearcher:
 		return e.findIndicesCharClassSearcherAt(haystack, at)
+	case UseCompositeSearcher:
+		return e.findIndicesCompositeSearcherAt(haystack, at)
 	case UseTeddy:
 		return e.findIndicesTeddyAt(haystack, at)
 	case UseDigitPrefilter:
@@ -1413,6 +1444,59 @@ func (e *Engine) findIndicesCharClassSearcherAt(haystack []byte, at int) (int, i
 	}
 	e.stats.NFASearches++
 	return e.charClassSearcher.SearchAt(haystack, at)
+}
+
+// findCompositeSearcher searches using CompositeSearcher for concatenated char classes.
+func (e *Engine) findCompositeSearcher(haystack []byte) *Match {
+	if e.compositeSearcher == nil {
+		return e.findNFA(haystack)
+	}
+	e.stats.NFASearches++ // Count as NFA-family for stats
+	start, end, found := e.compositeSearcher.Search(haystack)
+	if !found {
+		return nil
+	}
+	return NewMatch(start, end, haystack)
+}
+
+// findCompositeSearcherAt searches using CompositeSearcher at position.
+func (e *Engine) findCompositeSearcherAt(haystack []byte, at int) *Match {
+	if e.compositeSearcher == nil {
+		return e.findNFAAt(haystack, at)
+	}
+	e.stats.NFASearches++
+	start, end, found := e.compositeSearcher.SearchAt(haystack, at)
+	if !found {
+		return nil
+	}
+	return NewMatch(start, end, haystack)
+}
+
+// isMatchCompositeSearcher checks for match using CompositeSearcher.
+func (e *Engine) isMatchCompositeSearcher(haystack []byte) bool {
+	if e.compositeSearcher == nil {
+		return e.isMatchNFA(haystack)
+	}
+	e.stats.NFASearches++
+	return e.compositeSearcher.IsMatch(haystack)
+}
+
+// findIndicesCompositeSearcher searches using CompositeSearcher - zero alloc.
+func (e *Engine) findIndicesCompositeSearcher(haystack []byte) (int, int, bool) {
+	if e.compositeSearcher == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	e.stats.NFASearches++
+	return e.compositeSearcher.Search(haystack)
+}
+
+// findIndicesCompositeSearcherAt searches using CompositeSearcher at position - zero alloc.
+func (e *Engine) findIndicesCompositeSearcherAt(haystack []byte, at int) (int, int, bool) {
+	if e.compositeSearcher == nil {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	e.stats.NFASearches++
+	return e.compositeSearcher.SearchAt(haystack, at)
 }
 
 // FindAllIndicesStreaming returns all non-overlapping match indices using streaming algorithm.
