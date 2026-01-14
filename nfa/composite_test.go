@@ -152,11 +152,11 @@ func TestCompositeSearcher_OverlappingCharClasses(t *testing.T) {
 		{"[0-9a-z]+[0-9]+[0-9a-z]+", "12", false, -1, -1}, // Need 3 chars minimum
 
 		// Complex overlap with different quantifiers
-		{"[0-9]+[0-9]*", "123", true, 0, 3},   // First needs 1+, second can be 0
-		{"[0-9]*[0-9]+", "123", true, 0, 3},   // First can be 0, second needs 1+
-		{"[0-9]+[0-9]+", "12", true, 0, 2},    // Each needs at least 1
-		{"[0-9]+[0-9]+", "1", false, -1, -1},  // Can't split 1 char into two 1+ parts
-		{"[0-9]+[0-9]+[0-9]+", "123", true, 0, 3}, // Three parts, need 3 chars
+		{"[0-9]+[0-9]*", "123", true, 0, 3},         // First needs 1+, second can be 0
+		{"[0-9]*[0-9]+", "123", true, 0, 3},         // First can be 0, second needs 1+
+		{"[0-9]+[0-9]+", "12", true, 0, 2},          // Each needs at least 1
+		{"[0-9]+[0-9]+", "1", false, -1, -1},        // Can't split 1 char into two 1+ parts
+		{"[0-9]+[0-9]+[0-9]+", "123", true, 0, 3},   // Three parts, need 3 chars
 		{"[0-9]+[0-9]+[0-9]+", "12", false, -1, -1}, // Three parts, only 2 chars
 
 		// Embedded in text
@@ -164,8 +164,8 @@ func TestCompositeSearcher_OverlappingCharClasses(t *testing.T) {
 		{"[a-zA-Z0-9]+[0-9]+", "test99end", true, 0, 6},
 
 		// Edge cases with star (can match 0)
-		{"[0-9]*[0-9]+", "5", true, 0, 1},     // Star takes 0, plus takes 1
-		{"[0-9]+[0-9]*", "5", true, 0, 1},     // Plus takes 1, star takes 0
+		{"[0-9]*[0-9]+", "5", true, 0, 1}, // Star takes 0, plus takes 1
+		{"[0-9]+[0-9]*", "5", true, 0, 1}, // Plus takes 1, star takes 0
 	}
 
 	for _, tt := range tests {

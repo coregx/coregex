@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-01-14 | **Current Version**: v0.10.4 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-01-14 | **Current Version**: v0.10.5 | **Target**: v1.0.0 stable
 
 ---
 
@@ -39,9 +39,11 @@ v0.10.0 ✅ → Fat Teddy 33-64 patterns (AVX2, 9GB/s)
          ↓
 v0.10.1 ✅ → Version pattern fix, optimization documentation
          ↓
-v0.10.4 (Current) ✅ → Thread-safety fix for concurrent Regexp usage (#78)
+v0.10.4 ✅ → Thread-safety fix for concurrent Regexp usage (#78)
          ↓
-v0.11.0 → CompositeSearcher (#72) - 5.3x faster on \w+\s+\w+ patterns
+v0.10.5 (Current) ✅ → CompositeSearcher backtracking fix (#81)
+         ↓
+v0.11.0 → CompositeSearcher integration (#72) - 5.3x faster on \w+\s+\w+ patterns
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
@@ -255,7 +257,8 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.10.4** | 2026-01-14 | Fix | **Thread-safety for concurrent Regexp usage (#78)** |
+| **v0.10.5** | 2026-01-14 | Fix | **CompositeSearcher backtracking for overlapping char classes (#81)** |
+| v0.10.4 | 2026-01-14 | Fix | Thread-safety for concurrent Regexp usage (#78) |
 | v0.10.3 | 2026-01-08 | Fix | FindStringSubmatch capture groups fix (#77) |
 | v0.10.2 | 2026-01-07 | Fix | Version pattern regression hotfix (#75) |
 | v0.10.1 | 2026-01-07 | Fix | Version pattern ReverseInner (#70), optimization docs (#71) |
@@ -278,4 +281,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.10.4 | Next: v0.11.0 (CompositeSearcher #72) | Target: v1.0.0*
+*Current: v0.10.5 | Next: v0.11.0 (CompositeSearcher integration #72) | Target: v1.0.0*

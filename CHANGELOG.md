@@ -15,6 +15,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.5] - 2026-01-14
+
+### Fixed
+- **Critical: CompositeSearcher failed on overlapping character classes** (#81)
+  - Bug: Patterns like `\w+[0-9]+` returned 0 matches (`\w` includes digits)
+  - Root cause: Greedy `\w+` consumed all characters including digits, leaving nothing for `[0-9]+`
+  - Fix: Implemented recursive backtracking in `matchAt()` function
+  - Algorithm: Try greedy (max) first, reduce match length if next parts fail
+  - O(n) worst case, minimal overhead for non-overlapping patterns
+  - Rust comparison: PikeVM uses parallel state simulation (more complex); our approach uses O(1) membership tables + backtracking
+
+### Added
+- **Regression tests for overlapping character classes**
+  - `TestCompositeSearcher_OverlappingCharClasses` - 17 test cases
+  - Patterns: `[a-zA-Z0-9]+[0-9]+`, triple overlap, edge cases with `*` quantifier
+  - `BenchmarkCompositeSearcher_Overlapping` - performance tracking
+
+---
+
 ## [0.10.4] - 2026-01-14
 
 ### Fixed
