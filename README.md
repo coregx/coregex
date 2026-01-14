@@ -72,10 +72,12 @@ Cross-language benchmarks on 6MB input ([source](https://github.com/kolkov/regex
 | Char class `[\w]+` | 932 ms | 113 ms | **8x** |
 
 **Where coregex excels:**
-- IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — optimized DFA strategy
-- Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search optimization
-- Inner literals (`.*error.*`, `.*@example\.com`) — bidirectional DFA
+- IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — SIMD digit prefilter skips non-digit regions
+- Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search optimization (1000x+)
+- Inner literals (`.*error.*`, `.*@example\.com`) — bidirectional DFA (900x+)
 - Multi-pattern (`foo|bar|baz|...`) — Slim Teddy (≤32), Fat Teddy (33-64), or Aho-Corasick (>64)
+- Anchored alternations (`^(\d+|UUID|hex32)`) — O(1) branch dispatch (5-20x)
+- Concatenated char classes (`[a-zA-Z]+[0-9]+`) — sequential lookup tables (5x)
 
 ## Features
 
@@ -85,8 +87,10 @@ coregex automatically selects the optimal engine:
 
 | Strategy | Pattern Type | Speedup |
 |----------|--------------|---------|
-| ReverseInner | `.*keyword.*` | 100-200x |
-| ReverseSuffix | `.*\.txt` | 100-220x |
+| ReverseInner | `.*keyword.*` | 100-900x |
+| ReverseSuffix | `.*\.txt` | 100-1100x |
+| BranchDispatch | `^(\d+\|UUID\|hex32)` | 5-20x |
+| CompositeSearcher | `[a-zA-Z]+[0-9]+` | 5x |
 | LazyDFA | IP, complex patterns | 10-150x |
 | AhoCorasick | `a\|b\|c\|...\|z` (>64 patterns) | 75-113x |
 | CharClassSearcher | `[\w]+`, `\d+` | 4-25x |

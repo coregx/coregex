@@ -745,6 +745,8 @@ func analyzeLiterals(literals *literal.Seq, config Config) literalAnalysis {
 //	case meta.UseBoth:
 //	    // Adaptive
 //	}
+//
+//nolint:cyclop // Strategy selection has many cases by design
 func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config Config) Strategy {
 	// Check for end-anchored patterns (highest priority optimization)
 	// Pattern must:

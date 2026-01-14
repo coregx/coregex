@@ -91,7 +91,7 @@ func NewBranchDispatcher(re *syntax.Regexp) *BranchDispatcher {
 					// Overlap detected - branches not mutually exclusive
 					return nil
 				}
-				dispatch[b] = int8(i)
+				dispatch[b] = int8(i) //nolint:gosec // i < 127 checked above
 			}
 		}
 
@@ -108,6 +108,8 @@ func NewBranchDispatcher(re *syntax.Regexp) *BranchDispatcher {
 }
 
 // buildBranchMatcher creates an optimized matcher for a single branch.
+//
+//nolint:gocognit // Pattern matching naturally has high branching factor
 func buildBranchMatcher(re *syntax.Regexp) branchMatcher {
 	var m branchMatcher
 

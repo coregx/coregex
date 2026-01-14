@@ -28,10 +28,10 @@ func TestBranchDispatcher_Basic(t *testing.T) {
 		{`\d+|UUID|hex32`, "", false},
 
 		// Edge cases
-		{`\d+|UUID|hex32`, "U", false},       // "U" doesn't match "UUID"
-		{`\d+|UUID|hex32`, "UUI", false},     // "UUI" doesn't match "UUID"
-		{`\d+|UUID|hex32`, "hex3", false},    // "hex3" doesn't match "hex32"
-		{`\d+|UUID|hex32`, "hex321", true},   // "hex321" matches "hex32" prefix
+		{`\d+|UUID|hex32`, "U", false},     // "U" doesn't match "UUID"
+		{`\d+|UUID|hex32`, "UUI", false},   // "UUI" doesn't match "UUID"
+		{`\d+|UUID|hex32`, "hex3", false},  // "hex3" doesn't match "hex32"
+		{`\d+|UUID|hex32`, "hex321", true}, // "hex321" matches "hex32" prefix
 
 		// Simple alternations
 		{`foo|bar|baz`, "foo", true},
@@ -97,11 +97,11 @@ func TestBranchDispatcher_Search(t *testing.T) {
 
 func TestBranchDispatcher_Unsuitable(t *testing.T) {
 	unsuitable := []string{
-		`abc`,              // Not alternation
-		`a|a`,              // Overlapping first bytes
-		`[a-z]+|abc`,       // Overlapping (both start with a-z)
-		`\d+|\d\d`,         // Overlapping (both start with digits)
-		`.+|foo`,           // . matches everything
+		`abc`,        // Not alternation
+		`a|a`,        // Overlapping first bytes
+		`[a-z]+|abc`, // Overlapping (both start with a-z)
+		`\d+|\d\d`,   // Overlapping (both start with digits)
+		`.+|foo`,     // . matches everything
 	}
 
 	for _, pattern := range unsuitable {

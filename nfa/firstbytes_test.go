@@ -7,10 +7,10 @@ import (
 
 func TestExtractFirstBytes(t *testing.T) {
 	tests := []struct {
-		pattern     string
-		wantBytes   string // Expected first bytes as string
-		wantUseful  bool
-		wantNil     bool
+		pattern    string
+		wantBytes  string // Expected first bytes as string
+		wantUseful bool
+		wantNil    bool
 	}{
 		// Literals
 		{"hello", "h", true, false},

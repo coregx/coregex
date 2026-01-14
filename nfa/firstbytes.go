@@ -63,6 +63,8 @@ const maxFirstBytesDepth = 20
 
 // extractFirstBytesRecursive recursively extracts first bytes from a pattern.
 // Returns false if extraction fails (pattern too complex or can match empty).
+//
+//nolint:gocognit,gocyclo,cyclop // Pattern matching naturally has high branching factor
 func extractFirstBytesRecursive(re *syntax.Regexp, result *FirstByteSet, depth int) bool {
 	if depth > maxFirstBytesDepth {
 		return false

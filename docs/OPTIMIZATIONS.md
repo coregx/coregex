@@ -1,20 +1,24 @@
 # coregex Optimizations that Beat Rust regex
 
-This document describes the 6 key optimizations in coregex that outperform the Rust regex crate.
+This document describes the 8 key optimizations in coregex that outperform the Rust regex crate.
 These algorithms are critical to coregex's competitive advantage and **MUST NOT REGRESS**.
 
 ## Summary
 
-| Optimization | File | Pattern Type | vs Rust | Benchmark |
-|--------------|------|--------------|---------|-----------|
-| CharClassSearcher | `nfa/charclass_searcher.go` | `[\w]+`, `[a-z]+` | **35% faster** | char_class |
-| DigitPrefilter | `prefilter/digit.go` | IP addresses, `\d+` | **3.3x faster** | ip |
-| ReverseSuffixSet | `meta/reverse_suffix_set.go` | `.*\.(txt\|log\|md)` | **27% faster** | suffix |
-| ReverseInner | `meta/reverse_inner.go` | `.*email@.*` | **16% faster** | email |
-| NFA for small patterns | `meta/strategy.go` | `^pattern$` | **2x faster** | anchored |
-| AVX2 Slim Teddy | `prefilter/teddy_slim_avx2_amd64.s` | `foo\|bar\|baz` | **2.93x vs SSSE3** | literal_alt |
+| Optimization | File | Pattern Type | vs stdlib | Benchmark |
+|--------------|------|--------------|-----------|-----------|
+| CharClassSearcher | `nfa/charclass_searcher.go` | `[\w]+`, `[a-z]+` | **23x faster** | char_class |
+| CompositeSearcher | `nfa/composite.go` | `[a-zA-Z]+[0-9]+` | **5x faster** | composite |
+| BranchDispatch | `nfa/branch_dispatch.go` | `^(\d+\|UUID\|hex32)` | **5-20x faster** | anchored_alt |
+| DigitPrefilter | `prefilter/digit.go` | IP addresses, `\d+` | **3324x faster**\* | ip |
+| ReverseSuffixSet | `meta/reverse_suffix_set.go` | `.*\.(txt\|log\|md)` | **260x faster** | suffix |
+| ReverseInner | `meta/reverse_inner.go` | `.*email@.*` | **909x faster** | email |
+| ReverseSuffix | `meta/reverse_suffix.go` | `.*\.txt` | **1124x faster** | suffix |
+| AVX2 Slim Teddy | `prefilter/teddy_slim_avx2_amd64.s` | `foo\|bar\|baz` | **242x faster** | literal_alt |
 
-**Benchmark source**: regex-bench v0.10.1 on AMD Ryzen 9 5900X
+<sub>\* No-match case on large input where SIMD prefilter skips entire input</sub>
+
+**Benchmark source**: regex-bench v0.10.2 on Intel Core i7-1255U
 
 ---
 
@@ -79,7 +83,122 @@ Speedup:    35% faster
 
 ---
 
-## 2. DigitPrefilter (3.3x faster than Rust)
+## 2. CompositeSearcher (5x faster than stdlib)
+
+**File**: `nfa/composite.go`
+
+**Pattern types**: Concatenated character class patterns like `[a-zA-Z]+[0-9]+`, `\d+\s+\w+`
+
+### Algorithm
+
+CompositeSearcher uses **sequential lookup tables** for patterns that concatenate multiple character classes.
+Each part has its own [256]bool membership table for O(1) byte classification.
+
+```go
+type CompositeSearcher struct {
+    parts []*charClassPart
+}
+
+type charClassPart struct {
+    membership [256]bool  // O(1) character classification
+    minMatch   int        // 1 for +, 0 for *
+    maxMatch   int        // 0 = unlimited
+}
+
+func (c *CompositeSearcher) matchAt(haystack []byte, pos int) (int, bool) {
+    i := pos
+    for _, part := range c.parts {
+        // Greedy match: consume as many characters as possible
+        matchLen := 0
+        for i+matchLen < len(haystack) && part.membership[haystack[i+matchLen]] {
+            matchLen++
+        }
+        if matchLen < part.minMatch {
+            return -1, false
+        }
+        i += matchLen
+    }
+    return i, true
+}
+```
+
+### Why faster than stdlib
+
+1. **No NFA state machine**: Direct table lookup instead of state transitions
+2. **Greedy single-pass**: No backtracking between parts
+3. **Cache-friendly**: Sequential memory access through lookup tables
+
+### Benchmark data
+
+```
+Pattern: [a-zA-Z]+[0-9]+
+Input: "The quick brown fox123 jumps over456 lazy dog789"
+
+stdlib:  808 ns/op
+coregex: 170 ns/op
+Speedup: 4.75x faster
+```
+
+---
+
+## 3. BranchDispatch (5-20x faster than stdlib)
+
+**File**: `nfa/branch_dispatch.go`
+
+**Pattern types**: Anchored alternations with distinct first bytes like `^(\d+|UUID|hex32)`
+
+### Algorithm
+
+BranchDispatch uses **O(1) first-byte dispatch** for anchored alternation patterns.
+Instead of trying all branches sequentially, it builds a dispatch table that maps
+each possible first byte to the correct branch.
+
+```go
+type BranchDispatcher struct {
+    dispatch [256]int8  // first_byte → branch_index (-1 = no match)
+    branches []*syntax.Regexp
+}
+
+// For pattern ^(\d+|UUID|hex32):
+// dispatch['0'-'9'] = 0  (digit branch)
+// dispatch['U'] = 1       (UUID branch)
+// dispatch['h'] = 2       (hex32 branch)
+// dispatch[others] = -1   (no match)
+
+func (d *BranchDispatcher) IsMatch(haystack []byte) bool {
+    if len(haystack) == 0 {
+        return d.canMatchEmpty
+    }
+    branchIdx := d.dispatch[haystack[0]]  // O(1) lookup
+    if branchIdx < 0 {
+        return false  // Early rejection
+    }
+    // Only try the selected branch
+    return d.matchBranch(branchIdx, haystack)
+}
+```
+
+### Why faster than stdlib
+
+1. **O(1) branch selection**: Single array lookup vs O(branches) iteration
+2. **Early rejection**: Non-matching first bytes rejected immediately
+3. **Specialized matchers**: Each branch has optimized literal/charclass matcher
+
+### Benchmark data
+
+```
+Pattern: ^(\d+|UUID|hex32)
+Input: Various test cases
+
+Case        stdlib    coregex   Speedup
+Digits      225 ns    42 ns     5.4x faster
+UUID        173 ns    39 ns     4.4x faster
+No match    101 ns    4.9 ns    20.7x faster
+```
+
+---
+
+## 4. DigitPrefilter (3324x faster on no-match)
 
 **File**: `prefilter/digit.go`
 

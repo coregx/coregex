@@ -42,7 +42,7 @@ type charClassPart struct {
 // Valid patterns are concatenations of character classes with +, *, ?, or {n,m} quantifiers.
 func NewCompositeSearcher(re *syntax.Regexp) *CompositeSearcher {
 	parts := extractCompositeCharClassParts(re)
-	if parts == nil || len(parts) == 0 {
+	if len(parts) == 0 {
 		return nil
 	}
 
@@ -84,12 +84,11 @@ func extractSinglePart(re *syntax.Regexp) *charClassPart {
 	}
 
 	var charClass *syntax.Regexp
-	minMatch := 1
-	maxMatch := 0 // 0 means unlimited
+	var minMatch, maxMatch int
 
 	switch re.Op {
 	case syntax.OpPlus:
-		// cc+ → minMatch=1, maxMatch=unlimited
+		// cc+ → minMatch=1, maxMatch=unlimited (0 means unlimited)
 		if len(re.Sub) != 1 {
 			return nil
 		}
