@@ -1095,6 +1095,17 @@ func (r *Regex) Split(s string, n int) []string {
 
 	lastEnd := 0
 	for _, idx := range indices {
+		// Skip empty match at the beginning (position 0 with zero-width match)
+		// This matches stdlib behavior: Split("", "abc") = ["a", "b", "c"], not ["", "a", "b", "c", ""]
+		if lastEnd == 0 && idx[0] == 0 && idx[1] == 0 {
+			continue
+		}
+
+		// Skip empty match at the very end of string
+		if idx[0] == len(s) && idx[1] == len(s) {
+			break
+		}
+
 		// Add substring before match
 		result = append(result, s[lastEnd:idx[0]])
 		lastEnd = idx[1]
@@ -1108,6 +1119,7 @@ func (r *Regex) Split(s string, n int) []string {
 	}
 
 	// Add remaining text after last match
+	// Always add even if empty (matches stdlib behavior)
 	result = append(result, s[lastEnd:])
 	return result
 }

@@ -119,9 +119,13 @@ func (e *Extractor) ExtractPrefixes(re *syntax.Regexp) *Seq {
 
 // extractPrefixes is the internal recursive implementation.
 // The depth parameter prevents infinite recursion on malformed patterns.
+//
+//nolint:cyclop // complexity 26 vs 25 limit due to FoldCase check (Issue #87 fix)
 func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 	// Guard against excessive recursion (malformed or deeply nested patterns)
-	if depth > 100 {
+	// Also skip case-insensitive patterns because prefilter does case-sensitive
+	// byte matching which would miss matches. Issue #87
+	if depth > 100 || re.Flags&syntax.FoldCase != 0 {
 		return NewSeq()
 	}
 
@@ -251,9 +255,11 @@ func (e *Extractor) ExtractSuffixes(re *syntax.Regexp) *Seq {
 }
 
 // extractSuffixes is the internal recursive implementation for suffix extraction.
+//
+//nolint:cyclop // complexity 26 vs 25 limit due to FoldCase check (Issue #87 fix)
 func (e *Extractor) extractSuffixes(re *syntax.Regexp, depth int) *Seq {
-	// Guard against excessive recursion
-	if depth > 100 {
+	// Guard against excessive recursion and skip case-insensitive patterns (Issue #87)
+	if depth > 100 || re.Flags&syntax.FoldCase != 0 {
 		return NewSeq()
 	}
 
@@ -392,8 +398,8 @@ func (e *Extractor) ExtractInner(re *syntax.Regexp) *Seq {
 
 // extractInner is the internal recursive implementation for inner literal extraction.
 func (e *Extractor) extractInner(re *syntax.Regexp, depth int) *Seq {
-	// Guard against excessive recursion
-	if depth > 100 {
+	// Guard against excessive recursion and skip case-insensitive patterns (Issue #87)
+	if depth > 100 || re.Flags&syntax.FoldCase != 0 {
 		return NewSeq()
 	}
 

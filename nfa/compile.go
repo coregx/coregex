@@ -363,7 +363,8 @@ func toLowerASCII(r rune) rune {
 // compileCharClass compiles a character class like [a-zA-Z0-9]
 func (c *Compiler) compileCharClass(ranges []rune) (start, end StateID, err error) {
 	if len(ranges) == 0 {
-		return c.compileEmptyMatch()
+		// Empty character class (e.g., [^\S\s]) should never match
+		return c.compileNoMatch()
 	}
 
 	// Character class ranges are pairs: [lo1, hi1, lo2, hi2, ...]
@@ -422,7 +423,8 @@ func (c *Compiler) compileUnicodeClass(ranges []rune) (start, end StateID, err e
 	// Full implementation would use UTF-8 range compilation
 
 	if len(ranges) == 0 {
-		return c.compileEmptyMatch()
+		// Empty character class (e.g., [^\S\s]) should never match
+		return c.compileNoMatch()
 	}
 
 	// Count total characters first to avoid explosion
@@ -973,6 +975,19 @@ func (c *Compiler) compileRepeatRange(sub *syntax.Regexp, minCount, maxCount int
 func (c *Compiler) compileEmptyMatch() (start, end StateID, err error) {
 	id := c.builder.AddEpsilon(InvalidState)
 	return id, id, nil
+}
+
+// compileNoMatch compiles an NFA fragment that never matches.
+// This is used for empty character classes like [^\S\s] which logically match nothing.
+// The resulting NFA has a start state with no transitions to the end state,
+// making it impossible to reach a match state.
+func (c *Compiler) compileNoMatch() (start, end StateID, err error) {
+	// Create start and end states that are not connected
+	// The start state has no transitions, so the NFA can never progress
+	start = c.builder.AddEpsilon(InvalidState)
+	end = c.builder.AddEpsilon(InvalidState)
+	// Don't connect start to end - this makes it impossible to match
+	return start, end, nil
 }
 
 // encodeRune encodes a rune as UTF-8 into buf and returns the number of bytes written.

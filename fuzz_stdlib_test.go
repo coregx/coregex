@@ -162,22 +162,22 @@ func hasUTF8CodepointDifference(pattern, input string) bool {
 
 	// Patterns that match at byte level vs codepoint level
 	codepointPatterns := map[string]bool{
-		`.`:      true, // dot matches any codepoint in stdlib, any byte in coregex
-		`\D`:     true, // non-digit
-		`\W`:     true, // non-word
-		`\S`:     true, // non-space
-		`[^a-z]`: true, // negated class
-		`[^0-9]`: true, // negated class
+		`.`:         true, // dot matches any codepoint in stdlib, any byte in coregex
+		`\D`:        true, // non-digit
+		`\W`:        true, // non-word
+		`\S`:        true, // non-space
+		`[^a-z]`:    true, // negated class
+		`[^0-9]`:    true, // negated class
 		`[^a-zA-Z]`: true,
 		// Empty-match patterns step by codepoint in stdlib, by byte in coregex
-		``:     true, // empty pattern
-		`a*`:   true, // can match empty
-		`a?`:   true, // can match empty
-		`a*?`:  true, // can match empty
-		`a??`:  true, // can match empty
-		`.*`:   true, // can match empty
-		`.*?`:  true, // can match empty
-		`.?`:   true, // can match empty
+		``:    true, // empty pattern
+		`a*`:  true, // can match empty
+		`a?`:  true, // can match empty
+		`a*?`: true, // can match empty
+		`a??`: true, // can match empty
+		`.*`:  true, // can match empty
+		`.*?`: true, // can match empty
+		`.?`:  true, // can match empty
 		// Dot with captures also has codepoint differences
 		`(.)`:  true,
 		`(.)+`: true,

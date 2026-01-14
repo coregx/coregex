@@ -66,12 +66,12 @@ func build(n int, x ...int) [][]int {
 var _ = map[string]string{
 	// Negated character class containing both a class and its negation.
 	// RE2/stdlib treats [^\S\s] as "nothing" (empty set), coregex does not fully optimize this.
-	`[^\S\s]`:          "negated class containing inverse class",
-	`[^\S[:space:]]`:   "negated class containing inverse class",
-	`[^\D\d]`:          "negated class containing inverse class",
-	`[^\D[:digit:]]`:   "negated class containing inverse class",
-	`(?:A|(?:A|a))`:    "nested non-capturing alternation",
-	"[a-c]*\u65e5":     "empty match on multibyte boundary", // pattern + text
+	`[^\S\s]`:        "negated class containing inverse class",
+	`[^\S[:space:]]`: "negated class containing inverse class",
+	`[^\D\d]`:        "negated class containing inverse class",
+	`[^\D[:digit:]]`: "negated class containing inverse class",
+	`(?:A|(?:A|a))`:  "nested non-capturing alternation",
+	"[a-c]*\u65e5":   "empty match on multibyte boundary", // pattern + text
 }
 
 var findTests = []FindTest{
@@ -742,13 +742,13 @@ var replaceLiteralTests = []ReplaceTest{
 
 // replacePatternsWithDiffs contains patterns that have known differences in ReplaceAll behavior.
 var replacePatternsWithDiffs = map[string]bool{
-	"":        true, // empty pattern
-	"b":       true, // issues with empty input
-	"y":       true, // issues with empty input
-	"^[a-c]+": true, // anchor with empty input
-	"[a-c]+$": true, // anchor with empty input
+	"":         true, // empty pattern
+	"b":        true, // issues with empty input
+	"y":        true, // issues with empty input
+	"^[a-c]+":  true, // anchor with empty input
+	"[a-c]+$":  true, // anchor with empty input
 	"^[a-c]+$": true, // anchor with empty input
-	"abc":     true, // issues with empty input
+	"abc":      true, // issues with empty input
 }
 
 func hasReplaceDifference(pattern, input string) bool {
@@ -1588,11 +1588,11 @@ func TestStdlibCompat_LiteralMatch(t *testing.T) {
 		input   string
 	}{
 		{"hello", "say hello world"},
-		{".", "a.b.c"},  // . is special, test with QuoteMeta
-		{"$", "a$b"},    // $ is special
-		{"^", "a^b"},    // ^ is special
-		{"*", "a*b"},    // * is special
-		{"[", "a[b]"},   // [ is special
+		{".", "a.b.c"}, // . is special, test with QuoteMeta
+		{"$", "a$b"},   // $ is special
+		{"^", "a^b"},   // ^ is special
+		{"*", "a*b"},   // * is special
+		{"[", "a[b]"},  // [ is special
 	}
 
 	for _, tc := range patterns {

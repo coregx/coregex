@@ -201,3 +201,38 @@ func TestDotSMatchesAll(t *testing.T) {
 		})
 	}
 }
+
+// TestEmptyCharacterClass tests that empty character classes like [^\S\s] never match.
+// This is a regression test for issue #88.
+// The bug: empty char classes were compiled as compileEmptyMatch() which matches empty string,
+// but they should use compileNoMatch() to never match.
+func TestEmptyCharacterClass(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+	}{
+		{"negated_all_1", `[^\S\s]`, "abc"},
+		{"negated_all_2", `[^\D\d]`, "abc123"},
+		{"negated_all_3", `[^\W\w]`, "abc_123"},
+		{"negated_all_unicode", `[^\S\s]`, "日本語"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+
+			// Empty character class should never match
+			if re.MatchString(tt.input) {
+				t.Errorf("coregex.MatchString(%q, %q) = true, want false (empty class should never match)",
+					tt.pattern, tt.input)
+			}
+
+			// Verify against stdlib
+			reStd := regexp.MustCompile(tt.pattern)
+			if reStd.MatchString(tt.input) != re.MatchString(tt.input) {
+				t.Errorf("coregex vs stdlib mismatch for %q on %q", tt.pattern, tt.input)
+			}
+		})
+	}
+}
