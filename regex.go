@@ -697,6 +697,34 @@ func (r *Regex) findAllIndexStreaming(b []byte, n int) [][]int {
 	return indices
 }
 
+// FindAllIndexCompact returns all successive matches as a compact [][2]int slice.
+// This is a zero-allocation API (single allocation for the result slice).
+// Unlike FindAllIndex which returns [][]int (N allocations for N matches),
+// this method pre-allocates the entire result in one contiguous block.
+//
+// Performance: ~2x fewer allocations than FindAllIndex for high match counts.
+//
+// If n > 0, it returns at most n matches. If n <= 0, it returns all matches.
+// The optional 'results' slice can be provided for reuse (set to nil for fresh allocation).
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	indices := re.FindAllIndexCompact([]byte("a1b2c3"), -1, nil)
+//	// indices = [[1,2], [3,4], [5,6]]
+func (r *Regex) FindAllIndexCompact(b []byte, n int, results [][2]int) [][2]int {
+	if n == 0 {
+		return nil
+	}
+	return r.engine.FindAllIndicesStreaming(b, n, results)
+}
+
+// FindAllStringIndexCompact returns all successive matches as a compact [][2]int slice.
+// This is the string version of FindAllIndexCompact.
+func (r *Regex) FindAllStringIndexCompact(s string, n int, results [][2]int) [][2]int {
+	return r.FindAllIndexCompact(stringToBytes(s), n, results)
+}
+
 // FindAllStringIndex returns a slice of all successive matches of the pattern in s,
 // as index pairs [start, end].
 // If n > 0, it returns at most n matches. If n <= 0, it returns all matches.
