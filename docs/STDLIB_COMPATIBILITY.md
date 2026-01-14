@@ -87,6 +87,12 @@ QuoteMeta(s string) string
 
 The following edge cases have documented behavioral differences from stdlib. These are marked as "known differences" in the test suite and are unlikely to affect typical use cases.
 
+> **Note:** As of v0.10.7, several previously documented differences have been fixed:
+> - ~~Negated Unicode Property Classes~~ → Fixed in #91
+> - ~~Negated Inverse Character Classes~~ → Fixed in #88
+> - ~~Empty Pattern Split~~ → Fixed in #90
+> - ~~Case-Insensitive Literal Prefilters~~ → Fixed in #87
+
 ### 1. Empty Match Handling
 
 **Affected patterns:** `[a-c]*`, `.*`, `\b`, `^`, etc. (patterns that can match empty strings)
@@ -103,58 +109,7 @@ input := "abracadabra"
 
 **Recommendation:** If your application relies on exact empty match behavior, test thoroughly with your specific patterns.
 
-### 2. Negated Unicode Property Classes
-
-**Affected patterns:** `\P{Script}+` (negated Unicode script classes)
-
-**Behavior:** Boundary detection for negated Unicode property classes may produce different match positions.
-
-**Example:**
-```go
-pattern := `\P{Han}+`
-input := "abc中文def"
-// May have different match boundaries
-```
-
-### 3. Case-Insensitive Overlapping Matches
-
-**Affected patterns:** `(?i)pattern` with overlapping potential matches
-
-**Behavior:** When case-insensitive patterns have overlapping matches, the specific matches returned may differ.
-
-**Example:**
-```go
-pattern := `(?i)abc`
-input := "ABCabcABC"
-// Both find all matches, but boundary handling may differ
-```
-
-### 4. Combined Perl Flags
-
-**Affected patterns:** `(?im)`, `(?ms)`, etc.
-
-**Behavior:** Some combined flag patterns with case-insensitivity may have minor differences.
-
-**Example:**
-```go
-pattern := `(?im)^HELLO`
-input := "world\nhello\ntest"
-// May have different behavior with combined flags
-```
-
-### 5. Negated Inverse Character Classes
-
-**Affected patterns:** `[^\S\s]`, `[^\D\d]` (double-negated classes)
-
-**Behavior:** These logically-empty character classes may be handled differently.
-
-**Example:**
-```go
-pattern := `[^\S\s]`  // Matches nothing in stdlib (empty set)
-// coregex may handle this edge case differently
-```
-
-### 6. Repeated Capture Groups
+### 2. Repeated Capture Groups
 
 **Affected patterns:** `(a)*`, `(a)+`, `(a)?`, `((a|b)*)` (capture groups with repetition)
 
@@ -168,19 +123,20 @@ input := "aaa"
 // coregex: may return different capture group content
 ```
 
-### 7. Empty Pattern Split
+### 3. Case-Insensitive Edge Cases
 
-**Affected patterns:** Empty pattern `""` with Split function
+**Affected patterns:** `(?i)pattern` with complex overlapping or combined flags
 
-**Behavior:** Splitting by empty pattern has different semantics between the engines.
+**Behavior:** Some case-insensitive patterns with combined flags (`(?im)`, `(?ms)`) may have minor boundary differences in edge cases.
 
 **Example:**
 ```go
-pattern := ``
-input := "abc"
-// stdlib: Split returns ["a", "b", "c"]
-// coregex: may return different result
+pattern := `(?im)^HELLO`
+input := "world\nhello\ntest"
+// May have minor differences in specific edge cases
 ```
+
+**Note:** Common case-insensitive patterns work correctly. This affects only complex edge cases with overlapping matches.
 
 ## Migration Guide
 
@@ -291,6 +247,7 @@ Minor edge case differences are accepted when:
 
 | coregex Version | Go stdlib Version | Compatibility Level |
 |-----------------|-------------------|---------------------|
+| v0.10.7+ | Go 1.21+ | High (UTF-8/Unicode fixes) |
 | v0.10.x | Go 1.21+ | High |
 | v1.0.x (planned) | Go 1.21+ | Production-ready |
 
