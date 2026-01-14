@@ -18,9 +18,15 @@ import (
 //   - \d+\s+\w+        → digits, whitespace, word chars
 //   - [a-z]+[A-Z]+     → lowercase then uppercase
 //
+// Thread safety: NOT thread-safe. For concurrent usage, each goroutine needs its own instance.
+//
 // Reference: https://github.com/coregx/coregex/issues/72
 type CompositeSearcher struct {
 	parts []*charClassPart
+
+	// matchLengths is pre-allocated scratch space for backtracking.
+	// Reused across calls to avoid per-match allocations.
+	matchLengths []int
 }
 
 // charClassPart represents one segment of a composite pattern.
@@ -47,7 +53,8 @@ func NewCompositeSearcher(re *syntax.Regexp) *CompositeSearcher {
 	}
 
 	return &CompositeSearcher{
-		parts: parts,
+		parts:        parts,
+		matchLengths: make([]int, len(parts)), // Pre-allocate to avoid per-match allocation
 	}
 }
 
@@ -198,9 +205,11 @@ func (c *CompositeSearcher) SearchAt(haystack []byte, at int) (int, int, bool) {
 // consumes all 6 characters. Backtracking gives back digits until
 // [0-9]+ can match its minimum (1 character).
 func (c *CompositeSearcher) matchAt(haystack []byte, pos int) (int, bool) {
-	// matchLengths[i] = how many chars part i consumed
-	matchLengths := make([]int, len(c.parts))
-	return c.matchAtWithBacktrack(haystack, pos, 0, matchLengths)
+	// Reset pre-allocated matchLengths (faster than allocating new slice)
+	for i := range c.matchLengths {
+		c.matchLengths[i] = 0
+	}
+	return c.matchAtWithBacktrack(haystack, pos, 0, c.matchLengths)
 }
 
 // matchAtWithBacktrack recursively matches parts with backtracking support.

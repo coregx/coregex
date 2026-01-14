@@ -8,10 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
-- CompositeSearcher for concatenated char classes (#72)
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
 - UTF-8 Automata optimization
+- SIMD prefilter for CompositeSequenceDFA (#83)
+
+---
+
+## [0.10.6] - 2026-01-14
+
+### Added
+- **CompositeSequenceDFA: 5x speedup for overlapping char class patterns** (#83)
+  - Patterns like `\w+[0-9]+`, `[a-zA-Z0-9]+[0-9]+` where char classes overlap
+  - Uses NFA subset construction for correct overlap handling
+  - Byte class reduction: 256 bytes → 3-8 equivalence classes
+  - First-part skip optimization: O(1) check if position can start match
+  - Loop unrolling: 4 bytes per iteration (Rust-inspired)
+  - Performance: 300 MB/s (vs 56 MB/s CompositeSearcher, vs 12 MB/s stdlib)
+
+- **FindAllIndexCompact API: zero per-match allocations**
+  - `FindAllIndexCompact(b []byte, n int, results [][2]int) [][2]int`
+  - Returns `[][2]int` instead of `[][]int` (single allocation vs N allocations)
+  - Supports buffer reuse for repeated searches
+  - 60974 → 9 allocations for 1MB input with many matches
+
+### Performance
+- CompositeSequenceDFA: **25x faster than stdlib** for overlapping patterns
+- FindAllIndexCompact: **99.98% allocation reduction** for FindAllIndex
 
 ---
 
