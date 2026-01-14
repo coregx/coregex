@@ -49,6 +49,7 @@ type Engine struct {
 	boundedBacktracker       *nfa.BoundedBacktracker
 	charClassSearcher        *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
 	compositeSearcher        *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
+	anchoredFirstBytes       *nfa.FirstByteSet         // O(1) first-byte rejection for anchored patterns
 	reverseSearcher          *ReverseAnchoredSearcher
 	reverseSuffixSearcher    *ReverseSuffixSearcher
 	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
@@ -82,6 +83,10 @@ type Engine struct {
 	// When true, BoundedBacktracker cannot be used for Find operations
 	// because its greedy semantics give wrong results for patterns like (?:|a)*
 	canMatchEmpty bool
+
+	// isStartAnchored is true if the pattern is anchored at start (^).
+	// Used for first-byte prefilter optimization.
+	isStartAnchored bool
 
 	// Statistics (useful for debugging and tuning)
 	stats Stats
@@ -464,6 +469,17 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// because its greedy semantics give wrong results for patterns like (?:|a)*
 	canMatchEmpty := pikevm.IsMatch(nil)
 
+	// Extract first-byte prefilter for anchored patterns.
+	// This enables O(1) early rejection for non-matching inputs.
+	// Only useful for start-anchored patterns where we only check position 0.
+	var anchoredFirstBytes *nfa.FirstByteSet
+	if isStartAnchored && strategy == UseBoundedBacktracker {
+		fb := nfa.ExtractFirstBytes(re)
+		if fb != nil && fb.IsUseful() {
+			anchoredFirstBytes = fb
+		}
+	}
+
 	// Build Aho-Corasick fallback for Fat Teddy patterns.
 	// Fat Teddy's AVX2 SIMD has setup overhead that makes it slower than Aho-Corasick
 	// for small haystacks (< 64 bytes). This matches Rust regex's minimum_len() approach.
@@ -490,6 +506,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		boundedBacktracker:       charClassResult.boundedBT,
 		charClassSearcher:        charClassResult.charClassSrch,
 		compositeSearcher:        charClassResult.compositeSrch,
+		anchoredFirstBytes:       anchoredFirstBytes,
 		reverseSearcher:          engines.reverseSearcher,
 		reverseSuffixSearcher:    engines.reverseSuffixSearcher,
 		reverseSuffixSetSearcher: engines.reverseSuffixSetSearcher,
@@ -502,6 +519,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		onepass:                  onePassRes.dfa,
 		onepassCache:             onePassRes.cache,
 		canMatchEmpty:            canMatchEmpty,
+		isStartAnchored:          isStartAnchored,
 		fatTeddyFallback:         fatTeddyFallback,
 		statePool:                newSearchStatePool(nfaEngine, numCaptures),
 		stats:                    Stats{},
@@ -798,6 +816,15 @@ func (e *Engine) isMatchBoundedBacktracker(haystack []byte) bool {
 	if e.boundedBacktracker == nil {
 		return e.isMatchNFA(haystack)
 	}
+
+	// O(1) early rejection for anchored patterns using first-byte prefilter.
+	// For ^(\d+|UUID|hex32), quickly reject inputs not starting with valid byte.
+	if e.anchoredFirstBytes != nil && len(haystack) > 0 {
+		if !e.anchoredFirstBytes.Contains(haystack[0]) {
+			return false
+		}
+	}
+
 	e.stats.NFASearches++ // Count as NFA-family search for stats
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		// Input too large for bounded backtracker, fall back to PikeVM
@@ -1340,6 +1367,14 @@ func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool)
 	if e.boundedBacktracker == nil {
 		return e.findIndicesNFA(haystack)
 	}
+
+	// O(1) early rejection for anchored patterns using first-byte prefilter.
+	if e.anchoredFirstBytes != nil && len(haystack) > 0 {
+		if !e.anchoredFirstBytes.Contains(haystack[0]) {
+			return -1, -1, false
+		}
+	}
+
 	e.stats.NFASearches++
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		return e.pikevm.Search(haystack)
@@ -1372,6 +1407,15 @@ func (e *Engine) findBoundedBacktracker(haystack []byte) *Match {
 	if e.boundedBacktracker == nil {
 		return e.findNFA(haystack)
 	}
+
+	// O(1) early rejection for anchored patterns using first-byte prefilter.
+	// For ^(\d+|UUID|hex32), quickly reject inputs not starting with valid byte.
+	if e.anchoredFirstBytes != nil && len(haystack) > 0 {
+		if !e.anchoredFirstBytes.Contains(haystack[0]) {
+			return nil
+		}
+	}
+
 	e.stats.NFASearches++
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		return e.findNFA(haystack)
