@@ -262,8 +262,6 @@ func (d *CompositeSequenceDFA) Search(haystack []byte) (int, int, bool) {
 
 // SearchAt finds the first match starting at or after position 'at'.
 // Returns (start, end, found).
-//
-//go:nosplit
 func (d *CompositeSequenceDFA) SearchAt(haystack []byte, at int) (int, int, bool) {
 	n := len(haystack)
 	if n == 0 {
@@ -275,49 +273,133 @@ func (d *CompositeSequenceDFA) SearchAt(haystack []byte, at int) (int, int, bool
 	transitions := d.transitions
 	numClasses := d.numClasses
 	accepting := d.accepting
-	numStates := len(accepting)
 
-	// Bounds check elimination hints
-	_ = transitions[numStates*numClasses-1]
+	// Skip positions where first byte doesn't match first part
+	// Find the first byte class that can start a match
+	firstPartClass := d.firstPartClasses()
 
 	for start := at; start < n; start++ {
-		state := 0 // Dead state (use int to avoid conversions)
-		matchStart := -1
+		// Fast skip: check if this position can start a match
+		if !firstPartClass[haystack[start]] {
+			continue
+		}
+
+		state := 0 // Dead state
+		matchStart := start
 		lastAcceptEnd := -1
 
-		// Inner loop - this is the hot path
-		for pos := start; pos < n; pos++ {
+		// First transition (we know first byte matches)
+		class := int(byteToClass[haystack[start]])
+		state = int(transitions[class]) // From dead state (0)
+
+		if accepting[state] {
+			lastAcceptEnd = start + 1
+		}
+
+		pos := start + 1
+
+		// Unrolled loop: process 4 bytes at a time when possible
+		for pos+3 < n {
+			// Byte 1
+			b0 := haystack[pos]
+			class0 := int(byteToClass[b0])
+			state = int(transitions[state*numClasses+class0])
+			if state == 0 {
+				if lastAcceptEnd > 0 {
+					return matchStart, lastAcceptEnd, true
+				}
+				goto nextStart
+			}
+			if accepting[state] {
+				lastAcceptEnd = pos + 1
+			}
+
+			// Byte 2
+			b1 := haystack[pos+1]
+			class1 := int(byteToClass[b1])
+			state = int(transitions[state*numClasses+class1])
+			if state == 0 {
+				if lastAcceptEnd > 0 {
+					return matchStart, lastAcceptEnd, true
+				}
+				goto nextStart
+			}
+			if accepting[state] {
+				lastAcceptEnd = pos + 2
+			}
+
+			// Byte 3
+			b2 := haystack[pos+2]
+			class2 := int(byteToClass[b2])
+			state = int(transitions[state*numClasses+class2])
+			if state == 0 {
+				if lastAcceptEnd > 0 {
+					return matchStart, lastAcceptEnd, true
+				}
+				goto nextStart
+			}
+			if accepting[state] {
+				lastAcceptEnd = pos + 3
+			}
+
+			// Byte 4
+			b3 := haystack[pos+3]
+			class3 := int(byteToClass[b3])
+			state = int(transitions[state*numClasses+class3])
+			if state == 0 {
+				if lastAcceptEnd > 0 {
+					return matchStart, lastAcceptEnd, true
+				}
+				goto nextStart
+			}
+			if accepting[state] {
+				lastAcceptEnd = pos + 4
+			}
+
+			pos += 4
+		}
+
+		// Handle remaining bytes
+		for pos < n {
 			b := haystack[pos]
 			class := int(byteToClass[b])
 			idx := state*numClasses + class
 			nextState := int(transitions[idx])
 
 			if nextState == 0 {
-				// Dead state
 				if lastAcceptEnd > 0 {
 					return matchStart, lastAcceptEnd, true
 				}
-				break // Start from next position
-			}
-
-			if state == 0 {
-				matchStart = pos // Record match start
+				break
 			}
 
 			state = nextState
 
 			if accepting[state] {
-				lastAcceptEnd = pos + 1 // Record potential match end
+				lastAcceptEnd = pos + 1
 			}
+			pos++
 		}
 
 		// End of input - check if we have an accepting position
 		if lastAcceptEnd > 0 {
 			return matchStart, lastAcceptEnd, true
 		}
+
+	nextStart:
 	}
 
 	return -1, -1, false
+}
+
+// firstPartClasses returns a lookup table indicating which bytes can start a match.
+func (d *CompositeSequenceDFA) firstPartClasses() [256]bool {
+	var result [256]bool
+	if len(d.parts) == 0 {
+		return result
+	}
+	// First part membership tells us which bytes can start a match
+	return d.parts[0].membership
 }
 
 // IsCompositeSequenceDFAPattern checks if a pattern is suitable for CompositeSequenceDFA.
