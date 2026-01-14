@@ -328,9 +328,9 @@ func sortStateIDs(states []nfa.StateID) {
 // The sparse set also preserves insertion order, which enables deterministic
 // DFA construction and consistent state keys.
 type StateSet struct {
-	sparse []uint32     // Maps state -> index in dense
+	sparse []uint32      // Maps state -> index in dense
 	dense  []nfa.StateID // Stores states in insertion order
-	size   int          // Number of elements
+	size   int           // Number of elements
 }
 
 // defaultStateSetCapacity is the initial capacity for state sets.
@@ -365,6 +365,7 @@ func (ss *StateSet) Add(state nfa.StateID) {
 	}
 	// Direct assignment (O(1))
 	ss.dense[ss.size] = state
+	//nolint:gosec // G115: ss.size is bounded by slice length, always non-negative
 	ss.sparse[state] = uint32(ss.size)
 	ss.size++
 }
@@ -445,13 +446,6 @@ func acquireStateSet() *StateSet {
 	ss := stateSetPool.Get().(*StateSet)
 	ss.Clear() // O(1) with sparse set!
 	return ss
-}
-
-// acquireStateSetWithCapacity gets a StateSet from the pool.
-// Note: The capacity hint is ignored since pooled objects have pre-allocated arrays.
-// This function exists for API compatibility with NewStateSetWithCapacity.
-func acquireStateSetWithCapacity(_ int) *StateSet {
-	return acquireStateSet()
 }
 
 // releaseStateSet returns a StateSet to the pool for reuse.

@@ -115,4 +115,3 @@ func (p *searchStatePool) put(state *SearchState) {
 	state.reset()
 	p.pool.Put(state)
 }
-

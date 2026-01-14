@@ -108,10 +108,10 @@ func TestIsCompositeCharClassPattern(t *testing.T) {
 	}
 
 	invalid := []string{
-		"[a-z]+",        // Single char class
-		"abc",           // Literal
-		"[a-z]+|[0-9]+", // Alternation
-		"^[a-z]+[0-9]+", // Anchored
+		"[a-z]+",         // Single char class
+		"abc",            // Literal
+		"[a-z]+|[0-9]+",  // Alternation
+		"^[a-z]+[0-9]+",  // Anchored
 		"([a-z]+)[0-9]+", // With capture
 	}
 

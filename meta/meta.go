@@ -47,10 +47,10 @@ type Engine struct {
 	dfa                      *lazy.DFA
 	pikevm                   *nfa.PikeVM
 	boundedBacktracker       *nfa.BoundedBacktracker
-	charClassSearcher        *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
-	compositeSearcher        *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
-	branchDispatcher         *nfa.BranchDispatcher     // O(1) branch dispatch for anchored alternations
-	anchoredFirstBytes       *nfa.FirstByteSet         // O(1) first-byte rejection for anchored patterns
+	charClassSearcher        *nfa.CharClassSearcher // Specialized searcher for char_class+ patterns
+	compositeSearcher        *nfa.CompositeSearcher // For concatenated char classes like [a-zA-Z]+[0-9]+
+	branchDispatcher         *nfa.BranchDispatcher  // O(1) branch dispatch for anchored alternations
+	anchoredFirstBytes       *nfa.FirstByteSet      // O(1) first-byte rejection for anchored patterns
 	reverseSearcher          *ReverseAnchoredSearcher
 	reverseSuffixSearcher    *ReverseSuffixSearcher
 	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
