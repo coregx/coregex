@@ -85,6 +85,7 @@ type Engine struct {
 	reverseInnerSearcher     *ReverseInnerSearcher
 	digitPrefilter           *prefilter.DigitPrefilter // For digit-lead patterns like IP addresses
 	ahoCorasick              *ahocorasick.Automaton    // For large literal alternations (>32 patterns)
+	anchoredLiteralInfo      *AnchoredLiteralInfo      // For ^prefix.*suffix$ patterns (Issue #79)
 	prefilter                prefilter.Prefilter
 	strategy                 Strategy
 	config                   Config
@@ -584,6 +585,21 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		}
 	}
 
+	// Extract AnchoredLiteralInfo for UseAnchoredLiteral strategy.
+	// This enables O(1) specialized matching for ^prefix.*suffix$ patterns.
+	// The detection was already done in SelectStrategy, but we need the info
+	// for the execution path.
+	// Reference: https://github.com/coregx/coregex/issues/79
+	var anchoredLiteralInfo *AnchoredLiteralInfo
+	if strategy == UseAnchoredLiteral {
+		anchoredLiteralInfo = DetectAnchoredLiteral(re)
+		// Fallback if detection fails (shouldn't happen since SelectStrategy checked)
+		if anchoredLiteralInfo == nil {
+			strategy = UseBoundedBacktracker
+			charClassResult.boundedBT = nfa.NewBoundedBacktracker(nfaEngine)
+		}
+	}
+
 	// Initialize state pool for thread-safe concurrent searches
 	numCaptures := nfaEngine.CaptureCount()
 
@@ -606,6 +622,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		reverseInnerSearcher:     engines.reverseInnerSearcher,
 		digitPrefilter:           engines.digitPrefilter,
 		ahoCorasick:              engines.ahoCorasick,
+		anchoredLiteralInfo:      anchoredLiteralInfo,
 		prefilter:                pf,
 		strategy:                 strategy,
 		config:                   config,
@@ -724,9 +741,24 @@ func (e *Engine) findAtZero(haystack []byte) *Match {
 		return e.findDigitPrefilter(haystack)
 	case UseAhoCorasick:
 		return e.findAhoCorasick(haystack)
+	case UseAnchoredLiteral:
+		return e.findAnchoredLiteral(haystack)
 	default:
 		return e.findNFA(haystack)
 	}
+}
+
+// findAnchoredLiteral uses O(1) specialized matching for ^prefix.*suffix$ patterns.
+// Returns a Match spanning the entire input if it matches (since pattern is fully anchored).
+func (e *Engine) findAnchoredLiteral(haystack []byte) *Match {
+	if MatchAnchoredLiteral(haystack, e.anchoredLiteralInfo) {
+		return &Match{
+			start:    0,
+			end:      len(haystack),
+			haystack: haystack,
+		}
+	}
+	return nil
 }
 
 // findAtNonZero dispatches to the appropriate strategy for non-zero positions.
@@ -757,6 +789,10 @@ func (e *Engine) findAtNonZero(haystack []byte, at int) *Match {
 		return e.findDigitPrefilterAt(haystack, at)
 	case UseAhoCorasick:
 		return e.findAhoCorasickAt(haystack, at)
+	case UseAnchoredLiteral:
+		// Start-anchored patterns can only match at position 0
+		// This case should not be reached due to early check in FindAt
+		return nil
 	default:
 		return e.findNFAAt(haystack, at)
 	}
@@ -805,9 +841,22 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchDigitPrefilter(haystack)
 	case UseAhoCorasick:
 		return e.isMatchAhoCorasick(haystack)
+	case UseAnchoredLiteral:
+		return e.isMatchAnchoredLiteral(haystack)
 	default:
 		return e.isMatchNFA(haystack)
 	}
+}
+
+// isMatchAnchoredLiteral uses O(1) specialized matching for ^prefix.*suffix$ patterns.
+// This is the fastest path for URL/path patterns like ^/.*[\w-]+\.php$.
+// Algorithm:
+//  1. O(1) length check
+//  2. O(k) prefix check
+//  3. O(k) suffix check
+//  4. O(m) charclass bridge verification (if required)
+func (e *Engine) isMatchAnchoredLiteral(haystack []byte) bool {
+	return MatchAnchoredLiteral(haystack, e.anchoredLiteralInfo)
 }
 
 // isMatchNFA checks for match using NFA (PikeVM or BoundedBacktracker) with early termination.
