@@ -599,6 +599,81 @@ func BenchmarkFind(b *testing.B) {
 	}
 }
 
+// TestAnchoredSuffixPrefilter tests O(1) early rejection for fully-anchored patterns.
+// This tests patterns with both ^ and $ anchors using suffix prefilter.
+func TestAnchoredSuffixPrefilter(t *testing.T) {
+	tests := []struct {
+		name     string
+		pattern  string
+		haystack string
+		want     bool
+	}{
+		// Fully-anchored patterns (both ^ and $) - suffix prefilter applies
+		{"php_match", `^/.*\.php$`, "/index.php", true},
+		{"php_no_match_suffix", `^/.*\.php$`, "/index.txt", false},
+		{"php_no_match_prefix", `^/.*\.php$`, "X/index.php", false},
+		{"txt_match", `^.*\.txt$`, "readme.txt", true},
+		{"txt_no_match", `^.*\.txt$`, "readme.md", false},
+		{"complex_suffix", `^[\w/]+\.log$`, "app/debug.log", true},
+		{"complex_suffix_no_match", `^[\w/]+\.log$`, "app/debug.txt", false},
+		// Empty input
+		{"empty_input", `^.*\.php$`, "", false},
+		// Multiple dots
+		{"multi_dot_match", `^.*\.tar\.gz$`, "archive.tar.gz", true},
+		{"multi_dot_no_match", `^.*\.tar\.gz$`, "archive.tar.bz2", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine, err := Compile(tt.pattern)
+			if err != nil {
+				t.Fatalf("Compile() failed: %v", err)
+			}
+
+			got := engine.IsMatch([]byte(tt.haystack))
+			if got != tt.want {
+				t.Errorf("IsMatch(%q) = %v, want %v", tt.haystack, got, tt.want)
+			}
+		})
+	}
+}
+
+// BenchmarkAnchoredSuffixPrefilter benchmarks suffix prefilter performance.
+// The suffix prefilter should provide O(1) rejection for non-matching suffixes.
+func BenchmarkAnchoredSuffixPrefilter(b *testing.B) {
+	tests := []struct {
+		name     string
+		pattern  string
+		haystack string
+		match    bool
+	}{
+		{"suffix_match", `^/.*\.php$`, "/path/to/index.php", true},
+		{"suffix_reject", `^/.*\.php$`, "/path/to/index.txt", false},
+		{"long_input_match", `^/.*\.php$`, "/" + string(make([]byte, 1000)) + ".php", true},
+		{"long_input_reject", `^/.*\.php$`, "/" + string(make([]byte, 1000)) + ".txt", false},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			engine, err := Compile(tt.pattern)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			haystack := []byte(tt.haystack)
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				got := engine.IsMatch(haystack)
+				if got != tt.match {
+					b.Fatalf("IsMatch() = %v, want %v", got, tt.match)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkIsMatch benchmarks IsMatch (boolean match check) performance.
 // GoAWK patterns are critical for small string performance regression testing.
 func BenchmarkIsMatch(b *testing.B) {
