@@ -14,6 +14,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.9] - 2026-01-15
+
+### Added
+- **UTF-8 suffix sharing for dot NFA** - Performance optimization (#79)
+  - Dot metacharacter NFA states reduced from 39 to 28
+  - Based on Rust regex-automata approach
+
+- **Anchored suffix prefilter** - O(1) rejection for suffix patterns (#79)
+  - Patterns ending with literal suffix get O(1) rejection when suffix not found
+
+### Fixed
+- **CharClassSearcher now excludes `*` patterns** - Zero-width match bug fix
+  - Bug: `[0-9]*` on "A" returned false instead of true (zero-width match)
+  - Root cause: CharClassSearcher doesn't support zero-width matches
+  - Fix: Only use CharClassSearcher for `+` patterns, `*` uses BoundedBacktracker
+
+- **Invalid UTF-8 handling for negated char classes** - stdlib compatibility
+  - `\D`, `\S`, `\W`, `[^x]` now match invalid UTF-8 bytes (0x80-0xFF)
+  - Multi-byte paths take precedence for valid UTF-8 (longer match wins)
+  - Note: Partial Unicode classes like `\P{Han}` don't get this fix to avoid
+    incorrectly matching bytes of valid UTF-8 sequences
+
+- **ReverseInner whitelist** - Strategy safety
+  - Bug: `A*20*` on "2" returned false instead of true
+  - Root cause: ReverseInner strategy unsafe for patterns with Star of Literal
+  - Fix: Only allow AnyChar wildcards (`.*`) or CharClass Plus (`[\w]+`) prefixes
+
+- **ReverseSuffix whitelist** - Strategy safety
+  - Bug: `0?0` on "0", `0?^0` on "0" returned wrong results
+  - Root cause: Reverse NFA bug with optional elements and internal anchors
+  - Fix: Only enable ReverseSuffix for patterns with AnyChar wildcards
+
+---
+
 ## [0.10.8] - 2026-01-15
 
 ### Fixed
