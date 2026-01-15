@@ -14,6 +14,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.8] - 2026-01-15
+
+### Added
+- **100% stdlib regexp API compatibility** - All remaining methods now implemented:
+  - `CompilePOSIX`, `MustCompilePOSIX` - POSIX ERE compilation with leftmost-longest semantics
+  - `Match(pattern, b)`, `MatchString(pattern, s)` - Package-level matching functions
+  - `MatchReader(pattern, r)` - Package-level reader matching
+  - `SubexpIndex(name)` - Find named capture group index
+  - `LiteralPrefix()` - Extract literal prefix from pattern
+  - `Expand`, `ExpandString` - Template expansion with `$n` substitution
+  - `Copy()` - Regex duplication (deprecated since Go 1.12)
+  - `MarshalText`, `UnmarshalText` - encoding.TextMarshaler/TextUnmarshaler interface
+  - `MatchReader`, `FindReaderIndex`, `FindReaderSubmatchIndex` - io.RuneReader methods
+
+- **New stdlib compatibility tests** (`regex_stdlib_compat_test.go`):
+  - Tests for all newly added methods
+  - Direct comparison with stdlib behavior
+  - Edge case coverage for LiteralPrefix with anchors
+
+### Changed
+- Documentation updated to reflect 100% API coverage
+- `STDLIB_COMPATIBILITY.md` now lists all methods as implemented
+
+---
+
 ## [0.10.7] - 2026-01-15
 
 ### Fixed

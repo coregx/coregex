@@ -10,7 +10,7 @@ This document describes the compatibility of coregex with Go's standard library 
 
 | Category | Status |
 |----------|--------|
-| **API Surface** | 90%+ (core methods implemented, see below) |
+| **API Surface** | **100%** (all stdlib methods implemented) |
 | **Pattern Syntax** | Full RE2 syntax support |
 | **Core Semantics** | Compatible for typical use cases |
 | **Edge Case Behavior** | Minor differences documented below |
@@ -71,38 +71,30 @@ MatchString(pattern string, s string) (bool, error)
 (r *Regex) String() string
 (r *Regex) NumSubexp() int
 (r *Regex) SubexpNames() []string
+(r *Regex) SubexpIndex(name string) int
 (r *Regex) LiteralPrefix() (prefix string, complete bool)
 (r *Regex) Longest()
 
-// Utility functions
-QuoteMeta(s string) string
-```
+// Regex methods - template expansion
+(r *Regex) Expand(dst, template []byte, src []byte, match []int) []byte
+(r *Regex) ExpandString(dst []byte, template string, src string, match []int) []byte
 
-### Not Yet Implemented
-
-The following stdlib methods are planned but not yet implemented:
-
-```go
-// Reader-based matching (low priority - rarely used)
+// Reader-based matching
 MatchReader(pattern string, r io.RuneReader) (bool, error)
 (r *Regex) MatchReader(r io.RuneReader) bool
 (r *Regex) FindReaderIndex(r io.RuneReader) []int
 (r *Regex) FindReaderSubmatchIndex(r io.RuneReader) []int
 
-// Template expansion (medium priority)
-(r *Regex) Expand(dst, template []byte, src []byte, match []int) []byte
-(r *Regex) ExpandString(dst []byte, template string, src string, match []int) []byte
-
-// Named subexpression index (medium priority)
-(r *Regex) SubexpIndex(name string) int
-
-// Serialization (low priority)
+// Serialization
 (r *Regex) Copy() *Regex              // Deprecated in Go 1.12
 (r *Regex) MarshalText() ([]byte, error)
 (r *Regex) UnmarshalText(text []byte) error
+
+// Utility functions
+QuoteMeta(s string) string
 ```
 
-> **Note**: These methods can be added on request. Most real-world use cases are covered by the implemented API.
+> **Note:** As of v0.10.8, coregex implements **100% of the stdlib regexp API**. All methods are fully functional.
 
 ## Known Behavioral Differences
 
