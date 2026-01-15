@@ -476,32 +476,39 @@ func shouldUseDigitPrefilter(re *syntax.Regexp, nfaSize int, config Config) bool
 // Safe patterns (whitelist approach):
 //   - `.*suffix` - AnyChar Star followed by literal
 //   - `.+suffix` - AnyChar Plus followed by literal
+//   - `[charclass]+suffix` - CharClass Plus followed by literal (e.g., `[^\s]+\.txt`)
 //   - `prefix.*suffix` - literal, AnyChar Star, literal
 //
 // Unsafe patterns (blacklist - excluded):
 //   - Quest (?) before suffix: `0?0`, `a?b` - reverse NFA bug with optional
 //   - Internal anchors: `0?^0`, `a$b` - position constraints don't reverse
-//   - Short patterns without wildcard: may have edge cases
+//   - Star of CharClass: `[^\s]*suffix` - zero-width match edge cases
 func isSafeForReverseSuffix(re *syntax.Regexp) bool {
 	switch re.Op {
 	case syntax.OpConcat:
 		if len(re.Sub) < 2 {
 			return false
 		}
-		// Check for .*suffix or .+suffix pattern
-		// Look for AnyChar Star/Plus anywhere in concat
+		// Check for wildcard patterns: .*suffix, .+suffix, [charclass]+suffix
+		// Look for AnyChar Star/Plus or CharClass Plus anywhere in concat
 		hasWildcard := false
 		for i := 0; i < len(re.Sub)-1; i++ {
 			sub := re.Sub[i]
+			// AnyChar Star/Plus: .* or .+
 			if (sub.Op == syntax.OpStar || sub.Op == syntax.OpPlus) &&
 				len(sub.Sub) > 0 &&
 				(sub.Sub[0].Op == syntax.OpAnyChar || sub.Sub[0].Op == syntax.OpAnyCharNotNL) {
 				hasWildcard = true
 				break
 			}
+			// CharClass Plus: [^\s]+, [\w]+, etc. (requires at least one char match)
+			if sub.Op == syntax.OpPlus && len(sub.Sub) > 0 && sub.Sub[0].Op == syntax.OpCharClass {
+				hasWildcard = true
+				break
+			}
 		}
 		if !hasWildcard {
-			return false // No .* or .+ - not safe
+			return false // No wildcard pattern - not safe
 		}
 		// Check for internal anchors (^ or $ not at expected positions)
 		for i := 1; i < len(re.Sub)-1; i++ {

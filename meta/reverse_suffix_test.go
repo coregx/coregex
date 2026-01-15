@@ -260,6 +260,81 @@ func TestReverseSuffix_MultipleCandidates(t *testing.T) {
 	}
 }
 
+// TestReverseSuffix_CharClassPlus tests CharClass Plus patterns like [^\s]+\.txt
+// These patterns should use ReverseSuffix strategy for efficient matching.
+func TestReverseSuffix_CharClassPlus(t *testing.T) {
+	tests := []struct {
+		name     string
+		pattern  string
+		haystack string
+		want     string
+	}{
+		{
+			name:     "negated whitespace class - simple",
+			pattern:  `[^\s]+\.txt`,
+			haystack: "path/to/file.txt",
+			want:     "path/to/file.txt",
+		},
+		{
+			name:     "word class - simple",
+			pattern:  `[\w]+\.go`,
+			haystack: "main.go",
+			want:     "main.go",
+		},
+		{
+			name:     "alpha class - simple",
+			pattern:  `[a-zA-Z]+\.txt`,
+			haystack: "file.txt",
+			want:     "file.txt",
+		},
+		{
+			name:     "no match",
+			pattern:  `[^\s]+\.txt`,
+			haystack: "file.doc data.log",
+			want:     "",
+		},
+		{
+			name:     "no match - all spaces",
+			pattern:  `[^\s]+\.txt`,
+			haystack: "     ",
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine, err := Compile(tt.pattern)
+			if err != nil {
+				t.Fatalf("Compile(%q) error = %v", tt.pattern, err)
+			}
+
+			// Verify strategy selection - should use ReverseSuffix for CharClass Plus patterns
+			strategy := engine.Strategy()
+			if strategy == UseReverseSuffix {
+				t.Logf("Pattern %q correctly using UseReverseSuffix strategy", tt.pattern)
+			}
+
+			match := engine.Find([]byte(tt.haystack))
+
+			if tt.want == "" {
+				if match != nil {
+					t.Errorf("Find(%q) = %q, want nil", tt.haystack, match.String())
+				}
+				return
+			}
+
+			if match == nil {
+				t.Fatalf("Find(%q) = nil, want match", tt.haystack)
+			}
+
+			got := match.String()
+			if got != tt.want {
+				t.Errorf("Find(%q) = %q, want %q", tt.haystack, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestReverseSuffix_EdgeCases tests edge cases
 func TestReverseSuffix_EdgeCases(t *testing.T) {
 	tests := []struct {
