@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.10] - 2026-01-15
+
+### Fixed
+- **ReverseSuffix whitelist includes CharClass Plus** - Performance regression fix
+  - Bug: `[^\s]+\.txt` pattern caused extreme slowdown (266ms/MB instead of µs)
+  - Root cause: `isSafeForReverseSuffix` only recognized `.*` and `.+` wildcards
+  - Fix: CharClass Plus patterns (`[^\s]+`, `[\w]+`) now qualify for reverse suffix optimization
+  - Result: `suffix_find` pattern now completes in 398µs (was timing out)
+
+---
+
 ## [0.10.9] - 2026-01-15
 
 ### Added
