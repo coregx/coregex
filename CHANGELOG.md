@@ -14,6 +14,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.0] - 2026-01-15
+
+### Added
+- **UseAnchoredLiteral Strategy** - O(1) specialized matching for `^prefix.*suffix$` patterns (Fixes #79)
+  - Pattern `^/.*[\w-]+\.php$`: **32-133x faster** than stdlib (was 5.3x slower)
+  - Algorithm: O(1) length check → O(k) prefix match → O(k) suffix match → O(m) charclass bridge
+  - Supports patterns with: prefix literals, `.*/+` wildcards, charclass+ bridge, suffix literals
+  - New 17th strategy in meta-engine
+  - Files: `meta/anchored_literal.go` (350 lines), `meta/anchored_literal_test.go` (495 lines)
+
+- **V11-002 ASCII Runtime Detection** - SIMD-accelerated input classification
+  - Dual NFA compilation: UTF-8 NFA (28 states) + ASCII NFA (2 states) for patterns with `.`
+  - Runtime ASCII detection using AVX2/SSE2/SWAR (3-4ns overhead)
+  - ASCII input: up to 1.6x faster match time
+  - Config option: `EnableASCIIOptimization` (default: true)
+
+### Fixed
+- **OnePass DFA handles StateLook anchors** - `^`, `$`, `\A`, `\z` transitions now work correctly
+- **Suffix extraction skips trailing anchors** - O(1) rejection for suffix patterns improved
+
+### Changed
+- **meta.go refactored into 6 focused files** (internal, no API changes)
+  - `engine.go` (230): Engine struct, Stats, core API
+  - `compile.go` (526): Compilation, builders
+  - `find.go` (749): Find methods returning *Match
+  - `find_indices.go` (733): Zero-alloc FindIndices methods
+  - `ismatch.go` (353): IsMatch boolean methods
+  - `findall.go` (285): FindAll*, Count, FindSubmatch
+  - `meta.go` (81): Package documentation only
+
+### Performance (Issue #79 pattern `^/.*[\w-]+\.php$`)
+
+| Input | coregex | stdlib | Speedup |
+|-------|---------|--------|---------|
+| Short (24B) | 7.6 ns | 241 ns | **32x** |
+| Medium (45B) | 7.8 ns | 347 ns | **44x** |
+| Long (78B) | 7.9 ns | 516 ns | **65x** |
+| No match (45B) | 4.4 ns | 590 ns | **133x** |
+
+---
+
 ## [0.10.10] - 2026-01-15
 
 ### Fixed
@@ -1410,7 +1451,8 @@ v0.8.14-18 → GoAWK integration, Teddy, BoundedBacktracker (DONE ✅)
 v0.8.19 → FindAll ReverseSuffix optimization (DONE ✅)
 v0.8.20 → ReverseSuffixSet for multi-suffix patterns (DONE ✅)
 v0.9.x → Performance tuning, Teddy 2-byte fingerprint (DONE ✅)
-v0.10.0 → Fat Teddy 33-64 patterns, AVX2 SIMD (DONE ✅) ← CURRENT
+v0.10.0 → Fat Teddy 33-64 patterns, AVX2 SIMD (DONE ✅)
+v0.11.0 → UseAnchoredLiteral, Issue #79 fix (DONE ✅) ← CURRENT
 v1.0.0 → Stable release (API frozen)
 ```
 
@@ -1440,7 +1482,14 @@ v1.0.0 → Stable release (API frozen)
 
 ---
 
-[Unreleased]: https://github.com/coregx/coregex/compare/v0.10.4...HEAD
+[Unreleased]: https://github.com/coregx/coregex/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/coregx/coregex/releases/tag/v0.11.0
+[0.10.10]: https://github.com/coregx/coregex/releases/tag/v0.10.10
+[0.10.9]: https://github.com/coregx/coregex/releases/tag/v0.10.9
+[0.10.8]: https://github.com/coregx/coregex/releases/tag/v0.10.8
+[0.10.7]: https://github.com/coregx/coregex/releases/tag/v0.10.7
+[0.10.6]: https://github.com/coregx/coregex/releases/tag/v0.10.6
+[0.10.5]: https://github.com/coregx/coregex/releases/tag/v0.10.5
 [0.10.4]: https://github.com/coregx/coregex/releases/tag/v0.10.4
 [0.10.3]: https://github.com/coregx/coregex/releases/tag/v0.10.3
 [0.10.2]: https://github.com/coregx/coregex/releases/tag/v0.10.2

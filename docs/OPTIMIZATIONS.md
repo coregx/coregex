@@ -1,12 +1,13 @@
 # coregex Optimizations that Beat Rust regex
 
-This document describes the 8 key optimizations in coregex that outperform the Rust regex crate.
+This document describes the 9 key optimizations in coregex that outperform the Rust regex crate.
 These algorithms are critical to coregex's competitive advantage and **MUST NOT REGRESS**.
 
 ## Summary
 
 | Optimization | File | Pattern Type | vs stdlib | Benchmark |
 |--------------|------|--------------|-----------|-----------|
+| **AnchoredLiteral** | `meta/anchored_literal.go` | `^prefix.*suffix$` | **32-133x faster** | anchored_literal |
 | CharClassSearcher | `nfa/charclass_searcher.go` | `[\w]+`, `[a-z]+` | **23x faster** | char_class |
 | CompositeSearcher | `nfa/composite.go` | `[a-zA-Z]+[0-9]+` | **5x faster** | composite |
 | BranchDispatch | `nfa/branch_dispatch.go` | `^(\d+\|UUID\|hex32)` | **5-20x faster** | anchored_alt |
@@ -22,7 +23,81 @@ These algorithms are critical to coregex's competitive advantage and **MUST NOT 
 
 ---
 
-## 1. CharClassSearcher (35% faster than Rust)
+## 1. AnchoredLiteral (32-133x faster than stdlib) - NEW in v0.11.0
+
+**File**: `meta/anchored_literal.go`
+
+**Pattern types**: Anchored patterns with prefix literals, wildcards, and suffix literals like `^/.*[\w-]+\.php$`
+
+### Algorithm
+
+AnchoredLiteral uses **O(1) specialized matching** for patterns that match the form `^prefix.*charclass*suffix$`.
+
+```go
+type AnchoredLiteralInfo struct {
+    Prefix         []byte       // Required prefix literal (e.g., "/")
+    Suffix         []byte       // Required suffix literal (e.g., ".php")
+    CharClassTable *[256]bool   // Optional char class bridge (e.g., [\w-])
+    CharClassMin   int          // Minimum chars for bridge
+    WildcardMin    int          // Minimum wildcard length
+    MinLength      int          // Total minimum length
+}
+
+func MatchAnchoredLiteral(info *AnchoredLiteralInfo, haystack []byte) bool {
+    // O(1) length check
+    if len(haystack) < info.MinLength {
+        return false
+    }
+    // O(k) prefix check
+    if !bytes.HasPrefix(haystack, info.Prefix) {
+        return false
+    }
+    // O(k) suffix check
+    if !bytes.HasSuffix(haystack, info.Suffix) {
+        return false
+    }
+    // O(m) charclass bridge verification
+    if info.CharClassTable != nil {
+        // Verify bridge characters satisfy char class
+    }
+    return true
+}
+```
+
+### Why faster than stdlib (and Rust)
+
+1. **No NFA/DFA execution**: Direct byte comparisons vs state machine
+2. **Early rejection**: Length check rejects 99%+ of non-matches in O(1)
+3. **No backtracking**: Deterministic O(n) worst case
+4. **Cache-friendly**: Sequential memory access for prefix/suffix
+
+### Pattern detection
+
+Strategy selection (`meta/strategy.go`) detects anchored literal patterns:
+
+```go
+func DetectAnchoredLiteral(re *syntax.Regexp) *AnchoredLiteralInfo {
+    // Returns non-nil if pattern matches ^prefix.*charclass*suffix$ form
+    // Supports: literal prefix, .*/+ wildcard, charclass+ bridge, literal suffix
+}
+```
+
+### Benchmark data
+
+```
+Pattern: ^/.*[\w-]+\.php$
+Input: Various URL paths
+
+Case           stdlib    coregex   Speedup
+Short (24B)    241 ns    7.6 ns    32x faster
+Medium (45B)   347 ns    7.8 ns    44x faster
+Long (78B)     516 ns    7.9 ns    65x faster
+No match       590 ns    4.4 ns    133x faster
+```
+
+---
+
+## 2. CharClassSearcher (35% faster than Rust)
 
 **File**: `nfa/charclass_searcher.go`
 
@@ -83,7 +158,7 @@ Speedup:    35% faster
 
 ---
 
-## 2. CompositeSearcher (5x faster than stdlib)
+## 3. CompositeSearcher (5x faster than stdlib)
 
 **File**: `nfa/composite.go`
 
@@ -141,7 +216,7 @@ Speedup: 4.75x faster
 
 ---
 
-## 3. BranchDispatch (5-20x faster than stdlib)
+## 4. BranchDispatch (5-20x faster than stdlib)
 
 **File**: `nfa/branch_dispatch.go`
 
@@ -198,7 +273,7 @@ No match    101 ns    4.9 ns    20.7x faster
 
 ---
 
-## 4. DigitPrefilter (3324x faster on no-match)
+## 5. DigitPrefilter (3324x faster on no-match)
 
 **File**: `prefilter/digit.go`
 
@@ -250,7 +325,7 @@ Speedup:    3.3x faster
 
 ---
 
-## 3. ReverseSuffixSet (27% faster than Rust) - UNIQUE TO COREGEX
+## 6. ReverseSuffixSet (27% faster than Rust) - UNIQUE TO COREGEX
 
 **File**: `meta/reverse_suffix_set.go`
 
@@ -301,7 +376,7 @@ Speedup:    27% faster
 
 ---
 
-## 4. ReverseInner (16% faster than Rust)
+## 7. ReverseInner (16% faster than Rust)
 
 **File**: `meta/reverse_inner.go`
 
@@ -347,7 +422,7 @@ Speedup:    16% faster
 
 ---
 
-## 5. NFA for Small Patterns (2x faster than Rust)
+## 8. NFA for Small Patterns (2x faster than Rust)
 
 **File**: `meta/strategy.go` (strategy selection)
 
@@ -393,7 +468,7 @@ Speedup:    2x faster
 
 ---
 
-## 6. AVX2 Slim Teddy with Shift Algorithm (2x faster than SSSE3 in direct benchmarks)
+## 9. AVX2 Slim Teddy with Shift Algorithm (2x faster than SSSE3 in direct benchmarks)
 
 **File**: `prefilter/teddy_slim_avx2_amd64.s`
 
@@ -508,6 +583,7 @@ bash scripts/bench.sh --compare baseline current
 
 | Optimization | Benchmark | Target |
 |--------------|-----------|--------|
+| AnchoredLiteral | `BenchmarkAnchoredLiteral` | <10 ns/op |
 | CharClassSearcher | `BenchmarkCharClass` | <35 ms/MB |
 | DigitPrefilter | `BenchmarkIP` | <4 ms/MB |
 | ReverseSuffixSet | `BenchmarkSuffix` | <1.1 ms/MB |
@@ -527,6 +603,6 @@ bash scripts/bench.sh --compare baseline current
 
 ---
 
-*Document version: 1.1.0*
-*Last updated: 2026-01-07*
-*Benchmark data: regex-bench v0.10.1*
+*Document version: 1.2.0*
+*Last updated: 2026-01-15*
+*Benchmark data: regex-bench v0.11.0*

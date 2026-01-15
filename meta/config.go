@@ -62,6 +62,25 @@ type Config struct {
 	// MaxRecursionDepth limits recursion during NFA compilation.
 	// Default: 100
 	MaxRecursionDepth int
+
+	// EnableASCIIOptimization enables ASCII runtime detection (V11-002 optimization).
+	// When true and the pattern contains '.', two NFAs are compiled:
+	//   - UTF-8 NFA: handles all valid UTF-8 codepoints (~28 states per '.')
+	//   - ASCII NFA: optimized for ASCII-only input (1-2 states per '.')
+	//
+	// At runtime, input is checked using SIMD (AVX2 on x86-64) to determine if
+	// all bytes are ASCII. If so, the faster ASCII NFA is used.
+	//
+	// Performance impact for Issue #79 pattern ^/.*[\w-]+\.php:
+	//   - Compile time: ~1.5x longer (compiling two NFAs)
+	//   - Match time: up to 1.6x faster on ASCII input
+	//   - Memory: ~1.4x more (two NFAs stored)
+	//
+	// The check adds ~3-4ns overhead per search but saves significantly more
+	// on patterns with '.' when input is ASCII-only.
+	//
+	// Default: true
+	EnableASCIIOptimization bool
 }
 
 // DefaultConfig returns a configuration with sensible defaults.
@@ -80,13 +99,14 @@ type Config struct {
 //	config.MaxDFAStates = 50000 // Increase cache for better hit rate
 func DefaultConfig() Config {
 	return Config{
-		EnableDFA:            true,
-		EnablePrefilter:      true,
-		MaxDFAStates:         10000,
-		DeterminizationLimit: 1000,
-		MinLiteralLen:        1,   // Allow single-byte prefilters (memchr) like Rust
-		MaxLiterals:          256, // Allow detecting >64 literals for Aho-Corasick
-		MaxRecursionDepth:    100,
+		EnableDFA:               true,
+		EnablePrefilter:         true,
+		MaxDFAStates:            10000,
+		DeterminizationLimit:    1000,
+		MinLiteralLen:           1,   // Allow single-byte prefilters (memchr) like Rust
+		MaxLiterals:             256, // Allow detecting >64 literals for Aho-Corasick
+		MaxRecursionDepth:       100,
+		EnableASCIIOptimization: true, // V11-002: ASCII runtime detection for '.' patterns
 	}
 }
 
