@@ -9,68 +9,68 @@ import (
 // TestDetectAnchoredLiteral tests the pattern detection for UseAnchoredLiteral strategy.
 func TestDetectAnchoredLiteral(t *testing.T) {
 	tests := []struct {
-		pattern        string
-		wantDetected   bool
-		wantPrefix     string
-		wantSuffix     string
-		wantCharClass  bool
+		pattern         string
+		wantDetected    bool
+		wantPrefix      string
+		wantSuffix      string
+		wantCharClass   bool
 		wantWildcardMin int
-		wantMinLength  int
+		wantMinLength   int
 	}{
 		// Should be detected (eligible patterns)
 		{
-			pattern:        `^/.*[\w-]+\.php$`,
-			wantDetected:   true,
-			wantPrefix:     "/",
-			wantSuffix:     ".php",
-			wantCharClass:  true,
+			pattern:         `^/.*[\w-]+\.php$`,
+			wantDetected:    true,
+			wantPrefix:      "/",
+			wantSuffix:      ".php",
+			wantCharClass:   true,
 			wantWildcardMin: 0,
-			wantMinLength:  6, // "/" + 0 + 1 + ".php"
+			wantMinLength:   6, // "/" + 0 + 1 + ".php"
 		},
 		{
-			pattern:        `^/.*\.txt$`,
-			wantDetected:   true,
-			wantPrefix:     "/",
-			wantSuffix:     ".txt",
-			wantCharClass:  false,
+			pattern:         `^/.*\.txt$`,
+			wantDetected:    true,
+			wantPrefix:      "/",
+			wantSuffix:      ".txt",
+			wantCharClass:   false,
 			wantWildcardMin: 0,
-			wantMinLength:  5, // "/" + 0 + 0 + ".txt"
+			wantMinLength:   5, // "/" + 0 + 0 + ".txt"
 		},
 		{
-			pattern:        `^.*\.log$`,
-			wantDetected:   true,
-			wantPrefix:     "",
-			wantSuffix:     ".log",
-			wantCharClass:  false,
+			pattern:         `^.*\.log$`,
+			wantDetected:    true,
+			wantPrefix:      "",
+			wantSuffix:      ".log",
+			wantCharClass:   false,
 			wantWildcardMin: 0,
-			wantMinLength:  4, // "" + 0 + 0 + ".log"
+			wantMinLength:   4, // "" + 0 + 0 + ".log"
 		},
 		{
-			pattern:        `^prefix.*[a-z]+suffix$`,
-			wantDetected:   true,
-			wantPrefix:     "prefix",
-			wantSuffix:     "suffix",
-			wantCharClass:  true,
+			pattern:         `^prefix.*[a-z]+suffix$`,
+			wantDetected:    true,
+			wantPrefix:      "prefix",
+			wantSuffix:      "suffix",
+			wantCharClass:   true,
 			wantWildcardMin: 0,
-			wantMinLength:  13, // "prefix" + 0 + 1 + "suffix"
+			wantMinLength:   13, // "prefix" + 0 + 1 + "suffix"
 		},
 		{
-			pattern:        `^/.+\.php$`, // .+ instead of .*
-			wantDetected:   true,
-			wantPrefix:     "/",
-			wantSuffix:     ".php",
-			wantCharClass:  false,
+			pattern:         `^/.+\.php$`, // .+ instead of .*
+			wantDetected:    true,
+			wantPrefix:      "/",
+			wantSuffix:      ".php",
+			wantCharClass:   false,
 			wantWildcardMin: 1,
-			wantMinLength:  6, // "/" + 1 + 0 + ".php"
+			wantMinLength:   6, // "/" + 1 + 0 + ".php"
 		},
 		{
-			pattern:        `^api/v1/.*\.json$`,
-			wantDetected:   true,
-			wantPrefix:     "api/v1/",
-			wantSuffix:     ".json",
-			wantCharClass:  false,
+			pattern:         `^api/v1/.*\.json$`,
+			wantDetected:    true,
+			wantPrefix:      "api/v1/",
+			wantSuffix:      ".json",
+			wantCharClass:   false,
 			wantWildcardMin: 0,
-			wantMinLength:  12, // "api/v1/" + 0 + 0 + ".json"
+			wantMinLength:   12, // "api/v1/" + 0 + 0 + ".json"
 		},
 
 		// Should NOT be detected (ineligible patterns)
@@ -133,10 +133,8 @@ func TestDetectAnchoredLiteral(t *testing.T) {
 				if info.MinLength != tc.wantMinLength {
 					t.Errorf("MinLength = %d, want %d", info.MinLength, tc.wantMinLength)
 				}
-			} else {
-				if info != nil {
-					t.Errorf("Expected pattern to NOT be detected, got info: %+v", info)
-				}
+			} else if info != nil {
+				t.Errorf("Expected pattern to NOT be detected, got info: %+v", info)
 			}
 		})
 	}
@@ -169,14 +167,14 @@ func TestMatchAnchoredLiteral(t *testing.T) {
 		{"/123.php", true},
 
 		// Should NOT match
-		{"", false},                     // Too short
-		{".php", false},                 // No prefix
-		{"/.php", false},                // No charclass before suffix
-		{"/test.txt", false},            // Wrong suffix
-		{"test.php", false},             // No prefix
-		{"/", false},                    // Too short
-		{"/test", false},                // No suffix
-		{"///.php", false},              // No charclass (slashes don't match [\w-])
+		{"", false},          // Too short
+		{".php", false},      // No prefix
+		{"/.php", false},     // No charclass before suffix
+		{"/test.txt", false}, // Wrong suffix
+		{"test.php", false},  // No prefix
+		{"/", false},         // Too short
+		{"/test", false},     // No suffix
+		{"///.php", false},   // No charclass (slashes don't match [\w-])
 	}
 
 	for _, tc := range phpTests {

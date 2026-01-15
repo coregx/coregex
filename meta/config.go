@@ -103,8 +103,8 @@ func DefaultConfig() Config {
 		EnablePrefilter:         true,
 		MaxDFAStates:            10000,
 		DeterminizationLimit:    1000,
-		MinLiteralLen:           1,    // Allow single-byte prefilters (memchr) like Rust
-		MaxLiterals:             256,  // Allow detecting >64 literals for Aho-Corasick
+		MinLiteralLen:           1,   // Allow single-byte prefilters (memchr) like Rust
+		MaxLiterals:             256, // Allow detecting >64 literals for Aho-Corasick
 		MaxRecursionDepth:       100,
 		EnableASCIIOptimization: true, // V11-002: ASCII runtime detection for '.' patterns
 	}

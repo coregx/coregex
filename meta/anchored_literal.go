@@ -100,7 +100,7 @@ func DetectAnchoredLiteral(re *syntax.Regexp) *AnchoredLiteralInfo {
 	// Search for wildcard (.* or .+) between start anchor and suffix
 	// Also collect any prefix literals and charclass bridge
 	var prefix []byte
-	var wildcardIdx int = -1
+	var wildcardIdx = -1
 	var wildcardMin int
 	var charClassTable *[256]bool
 	var charClassMin int
@@ -109,6 +109,7 @@ func DetectAnchoredLiteral(re *syntax.Regexp) *AnchoredLiteralInfo {
 	for i := 1; i < suffixIdx; i++ {
 		sub := subs[i]
 
+		//nolint:gocritic // ifElseChain: conditions are on different expressions, switch not appropriate
 		if isGreedyWildcard(sub) {
 			if wildcardIdx != -1 {
 				// Multiple wildcards - too complex
@@ -230,6 +231,9 @@ func extractLiteral(re *syntax.Regexp) []byte {
 
 // encodeRuneToBytes encodes a rune as UTF-8 into buf.
 // Returns the number of bytes written.
+// buf must be at least 4 bytes.
+//
+//nolint:gosec // G602: buf is always 4 bytes (passed from extractLiteralSuffix)
 func encodeRuneToBytes(r rune, buf []byte) int {
 	if r < 0x80 {
 		buf[0] = byte(r)
