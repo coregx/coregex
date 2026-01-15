@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-01-15 | **Current Version**: v0.11.0 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-01-16 | **Current Version**: v0.11.1 | **Target**: v1.0.0 stable
 
 ---
 
@@ -47,7 +47,9 @@ v0.10.7 ✅ → UTF-8 fixes + 100% stdlib API compatibility
          ↓
 v0.10.8-10 ✅ → FindAll perf fix, ReverseSuffix improvements
          ↓
-v0.11.0 (Current) ✅ → UseAnchoredLiteral 32-133x speedup (#79), ASCII runtime detection
+v0.11.0 ✅ → UseAnchoredLiteral 32-133x speedup (#79), ASCII runtime detection
+         ↓
+v0.11.1 (Current) ✅ → UseMultilineReverseSuffix 3.5-5.7x speedup (#97)
          ↓
 v0.12.0 → CompositeSearcher integration (#72) - 5.3x faster on \w+\s+\w+ patterns
          ↓
@@ -74,6 +76,7 @@ v1.0.0 STABLE → Production release with API stability guarantee
 - ✅ **v0.9.x**: DigitPrefilter, Aho-Corasick integration, Teddy 2-byte fingerprint
 - ✅ **v0.10.0**: Fat Teddy 16-bucket SIMD (33-64 patterns, 9+ GB/s), **5 patterns faster than Rust!**
 - ✅ **v0.11.0**: UseAnchoredLiteral strategy (32-133x speedup), Issue #79 resolved
+- ✅ **v0.11.1**: UseMultilineReverseSuffix strategy (3.5-5.7x speedup), Issue #97 resolved
 
 ---
 
@@ -165,7 +168,7 @@ v1.0.0 STABLE → Production release with API stability guarantee
 
 ## Feature Comparison Matrix
 
-| Feature | RE2 | rust-regex | coregex v0.11.0 | coregex v1.0 |
+| Feature | RE2 | rust-regex | coregex v0.11.1 | coregex v1.0 |
 |---------|-----|------------|-----------------|--------------|
 | Lazy DFA | ✅ | ✅ | ✅ | ✅ |
 | Thompson NFA | ✅ | ✅ | ✅ | ✅ |
@@ -227,7 +230,27 @@ Reference implementations available locally:
 
 ---
 
-## v0.11.0 - UseAnchoredLiteral (Current) ✅
+## v0.11.1 - UseMultilineReverseSuffix (Current) ✅
+
+**Goal**: Line-aware suffix search for multiline patterns (Issue #97)
+
+| Pattern | stdlib | coregex | Speedup |
+|---------|--------|---------|---------|
+| `(?m)^/.*\.php` IsMatch (0.5MB) | 72.2 µs | 20.6 µs | **3.5x** |
+| `(?m)^/.*\.php` Find (0.5MB) | 68.7 µs | 15.3 µs | **4.5x** |
+| `(?m)^/.*\.php` CountAll (200 matches) | 14.6 ms | 2.56 ms | **5.7x** |
+| No-match (small) | 1.1 µs | 90 ns | **12x** |
+| No-match (2KB) | 24 µs | 184 ns | **130x** |
+
+**Completed**:
+- [x] `UseMultilineReverseSuffix` strategy (18th strategy)
+- [x] `meta/reverse_suffix_multiline.go` implementation
+- [x] Line-boundary detection algorithm
+- [x] Backward newline scan + forward PikeVM verification
+
+---
+
+## v0.11.0 - UseAnchoredLiteral ✅
 
 **Goal**: O(1) matching for `^prefix.*suffix$` patterns (Issue #79)
 
@@ -282,7 +305,8 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.11.0** | 2026-01-15 | Feature | **UseAnchoredLiteral 32-133x speedup (#79), ASCII runtime detection** |
+| **v0.11.1** | 2026-01-16 | Feature | **UseMultilineReverseSuffix 3.5-5.7x speedup (#97)** |
+| v0.11.0 | 2026-01-15 | Feature | UseAnchoredLiteral 32-133x speedup (#79), ASCII runtime detection |
 | v0.10.10 | 2026-01-15 | Fix | ReverseSuffix CharClass Plus whitelist |
 | v0.10.9 | 2026-01-15 | Feature | UTF-8 suffix sharing, anchored suffix prefilter |
 | v0.10.8 | 2026-01-15 | Performance | FindAll 600x faster for anchored patterns (#92) |
@@ -312,4 +336,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.11.0 | Next: v0.12.0 (CompositeSearcher integration #72) | Target: v1.0.0*
+*Current: v0.11.1 | Next: v0.12.0 (CompositeSearcher integration #72) | Target: v1.0.0*

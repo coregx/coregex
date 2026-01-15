@@ -97,14 +97,15 @@ func buildOnePassDFA(re *syntax.Regexp, nfaEngine *nfa.NFA, config Config) *onep
 
 // strategyEngines holds all strategy-specific engines built by buildStrategyEngines.
 type strategyEngines struct {
-	dfa                      *lazy.DFA
-	reverseSearcher          *ReverseAnchoredSearcher
-	reverseSuffixSearcher    *ReverseSuffixSearcher
-	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
-	reverseInnerSearcher     *ReverseInnerSearcher
-	digitPrefilter           *prefilter.DigitPrefilter
-	ahoCorasick              *ahocorasick.Automaton
-	finalStrategy            Strategy
+	dfa                            *lazy.DFA
+	reverseSearcher                *ReverseAnchoredSearcher
+	reverseSuffixSearcher          *ReverseSuffixSearcher
+	reverseSuffixSetSearcher       *ReverseSuffixSetSearcher
+	reverseInnerSearcher           *ReverseInnerSearcher
+	multilineReverseSuffixSearcher *MultilineReverseSuffixSearcher // Issue #97
+	digitPrefilter                 *prefilter.DigitPrefilter
+	ahoCorasick                    *ahocorasick.Automaton
+	finalStrategy                  Strategy
 }
 
 // buildStrategyEngines builds all strategy-specific engines based on the selected strategy.
@@ -140,7 +141,7 @@ func buildStrategyEngines(
 	needsDFA := strategy == UseDFA || strategy == UseBoth ||
 		strategy == UseReverseAnchored || strategy == UseReverseSuffix ||
 		strategy == UseReverseSuffixSet || strategy == UseReverseInner ||
-		strategy == UseDigitPrefilter
+		strategy == UseMultilineReverseSuffix || strategy == UseDigitPrefilter
 
 	if !needsDFA {
 		return result
@@ -224,6 +225,17 @@ func buildReverseSearchers(
 			} else {
 				result.reverseInnerSearcher = searcher
 			}
+		}
+
+	case UseMultilineReverseSuffix:
+		// Issue #97: Build multiline-aware reverse suffix searcher for (?m)^.*suffix patterns
+		suffixLiterals := extractor.ExtractSuffixes(re)
+		searcher, err := NewMultilineReverseSuffixSearcher(nfaEngine, suffixLiterals, dfaConfig)
+		if err != nil {
+			// Fallback to regular ReverseSuffix or DFA
+			result.finalStrategy = UseDFA
+		} else {
+			result.multilineReverseSuffixSearcher = searcher
 		}
 	}
 
@@ -470,34 +482,35 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	numCaptures := nfaEngine.CaptureCount()
 
 	return &Engine{
-		nfa:                      nfaEngine,
-		asciiNFA:                 asciiNFAEngine,
-		asciiBoundedBacktracker:  asciiBT,
-		dfa:                      engines.dfa,
-		pikevm:                   pikevm,
-		boundedBacktracker:       charClassResult.boundedBT,
-		charClassSearcher:        charClassResult.charClassSrch,
-		compositeSearcher:        charClassResult.compositeSrch,
-		compositeSequenceDFA:     charClassResult.compositeSeqDFA,
-		branchDispatcher:         charClassResult.branchDispatcher,
-		anchoredFirstBytes:       anchoredFirstBytes,
-		anchoredSuffix:           anchoredSuffix,
-		reverseSearcher:          engines.reverseSearcher,
-		reverseSuffixSearcher:    engines.reverseSuffixSearcher,
-		reverseSuffixSetSearcher: engines.reverseSuffixSetSearcher,
-		reverseInnerSearcher:     engines.reverseInnerSearcher,
-		digitPrefilter:           engines.digitPrefilter,
-		ahoCorasick:              engines.ahoCorasick,
-		anchoredLiteralInfo:      anchoredLiteralInfo,
-		prefilter:                pf,
-		strategy:                 strategy,
-		config:                   config,
-		onepass:                  onePassRes,
-		canMatchEmpty:            canMatchEmpty,
-		isStartAnchored:          isStartAnchored,
-		fatTeddyFallback:         fatTeddyFallback,
-		statePool:                newSearchStatePool(nfaEngine, numCaptures),
-		stats:                    Stats{},
+		nfa:                            nfaEngine,
+		asciiNFA:                       asciiNFAEngine,
+		asciiBoundedBacktracker:        asciiBT,
+		dfa:                            engines.dfa,
+		pikevm:                         pikevm,
+		boundedBacktracker:             charClassResult.boundedBT,
+		charClassSearcher:              charClassResult.charClassSrch,
+		compositeSearcher:              charClassResult.compositeSrch,
+		compositeSequenceDFA:           charClassResult.compositeSeqDFA,
+		branchDispatcher:               charClassResult.branchDispatcher,
+		anchoredFirstBytes:             anchoredFirstBytes,
+		anchoredSuffix:                 anchoredSuffix,
+		reverseSearcher:                engines.reverseSearcher,
+		reverseSuffixSearcher:          engines.reverseSuffixSearcher,
+		reverseSuffixSetSearcher:       engines.reverseSuffixSetSearcher,
+		reverseInnerSearcher:           engines.reverseInnerSearcher,
+		multilineReverseSuffixSearcher: engines.multilineReverseSuffixSearcher,
+		digitPrefilter:                 engines.digitPrefilter,
+		ahoCorasick:                    engines.ahoCorasick,
+		anchoredLiteralInfo:            anchoredLiteralInfo,
+		prefilter:                      pf,
+		strategy:                       strategy,
+		config:                         config,
+		onepass:                        onePassRes,
+		canMatchEmpty:                  canMatchEmpty,
+		isStartAnchored:                isStartAnchored,
+		fatTeddyFallback:               fatTeddyFallback,
+		statePool:                      newSearchStatePool(nfaEngine, numCaptures),
+		stats:                          Stats{},
 	}, nil
 }
 

@@ -65,27 +65,28 @@ type Engine struct {
 	// This field is nil if:
 	//   - Pattern doesn't contain '.' (no benefit from ASCII optimization)
 	//   - ASCII optimization is disabled via config
-	asciiNFA                 *nfa.NFA
-	asciiBoundedBacktracker  *nfa.BoundedBacktracker // BoundedBacktracker for asciiNFA
-	dfa                      *lazy.DFA
-	pikevm                   *nfa.PikeVM
-	boundedBacktracker       *nfa.BoundedBacktracker
-	charClassSearcher        *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
-	compositeSearcher        *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
-	compositeSequenceDFA     *nfa.CompositeSequenceDFA // DFA for composite patterns (faster than backtracking)
-	branchDispatcher         *nfa.BranchDispatcher     // O(1) branch dispatch for anchored alternations
-	anchoredFirstBytes       *nfa.FirstByteSet         // O(1) first-byte rejection for anchored patterns
-	anchoredSuffix           []byte                    // O(1) suffix rejection for anchored patterns
-	reverseSearcher          *ReverseAnchoredSearcher
-	reverseSuffixSearcher    *ReverseSuffixSearcher
-	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
-	reverseInnerSearcher     *ReverseInnerSearcher
-	digitPrefilter           *prefilter.DigitPrefilter // For digit-lead patterns like IP addresses
-	ahoCorasick              *ahocorasick.Automaton    // For large literal alternations (>32 patterns)
-	anchoredLiteralInfo      *AnchoredLiteralInfo      // For ^prefix.*suffix$ patterns (Issue #79)
-	prefilter                prefilter.Prefilter
-	strategy                 Strategy
-	config                   Config
+	asciiNFA                       *nfa.NFA
+	asciiBoundedBacktracker        *nfa.BoundedBacktracker // BoundedBacktracker for asciiNFA
+	dfa                            *lazy.DFA
+	pikevm                         *nfa.PikeVM
+	boundedBacktracker             *nfa.BoundedBacktracker
+	charClassSearcher              *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
+	compositeSearcher              *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
+	compositeSequenceDFA           *nfa.CompositeSequenceDFA // DFA for composite patterns (faster than backtracking)
+	branchDispatcher               *nfa.BranchDispatcher     // O(1) branch dispatch for anchored alternations
+	anchoredFirstBytes             *nfa.FirstByteSet         // O(1) first-byte rejection for anchored patterns
+	anchoredSuffix                 []byte                    // O(1) suffix rejection for anchored patterns
+	reverseSearcher                *ReverseAnchoredSearcher
+	reverseSuffixSearcher          *ReverseSuffixSearcher
+	reverseSuffixSetSearcher       *ReverseSuffixSetSearcher
+	reverseInnerSearcher           *ReverseInnerSearcher
+	multilineReverseSuffixSearcher *MultilineReverseSuffixSearcher // For (?m)^.*suffix patterns
+	digitPrefilter                 *prefilter.DigitPrefilter       // For digit-lead patterns like IP addresses
+	ahoCorasick                    *ahocorasick.Automaton          // For large literal alternations (>32 patterns)
+	anchoredLiteralInfo            *AnchoredLiteralInfo            // For ^prefix.*suffix$ patterns (Issue #79)
+	prefilter                      prefilter.Prefilter
+	strategy                       Strategy
+	config                         Config
 
 	// fatTeddyFallback is an Aho-Corasick automaton used as fallback for small haystacks
 	// when the main prefilter is Fat Teddy (33-64 patterns). Fat Teddy's AVX2 SIMD setup
