@@ -1594,6 +1594,19 @@ func hasInternalEndAnchor(re *syntax.Regexp) bool {
 	return false
 }
 
+// HasImpossibleEndAnchor checks if the pattern contains an end anchor ($, \z)
+// that is NOT at the end of the pattern. Such patterns like `$00` can never match
+// because nothing can follow the end-of-string assertion.
+//
+// Examples:
+//   - `$00` → true ($ followed by "00" - impossible)
+//   - `00$` → false ($ at end - valid end-anchored pattern)
+//   - `a$b` → true ($ followed by "b" - impossible)
+//   - `(a$)` → false ($ at end of group - valid)
+func HasImpossibleEndAnchor(re *syntax.Regexp) bool {
+	return containsEndAnchor(re) && !isEndAnchored(re)
+}
+
 // containsEndAnchor checks if the AST contains any end anchor ($ or \z)
 func containsEndAnchor(re *syntax.Regexp) bool {
 	switch re.Op {

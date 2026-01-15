@@ -82,9 +82,9 @@ func TestUtf8SuffixCache_GetOrCreate(t *testing.T) {
 func TestCompileUTF8Any_StateCount(t *testing.T) {
 	// Verify that suffix sharing reduces state count
 	tests := []struct {
-		pattern       string
-		maxStates     int // Upper bound after optimization
-		description   string
+		pattern     string
+		maxStates   int // Upper bound after optimization
+		description string
 	}{
 		{".", 30, "dot should have suffix sharing"},
 		{".*", 32, "dot-star should have suffix sharing"},
@@ -131,18 +131,18 @@ func TestCompileUTF8Any_Correctness(t *testing.T) {
 		{"\n", false}, // dot doesn't match newline by default
 
 		// UTF-8 2-byte
-		{"ä", true},  // U+00E4
-		{"é", true},  // U+00E9
-		{"ñ", true},  // U+00F1
-		{"ß", true},  // U+00DF
+		{"ä", true}, // U+00E4
+		{"é", true}, // U+00E9
+		{"ñ", true}, // U+00F1
+		{"ß", true}, // U+00DF
 
 		// UTF-8 3-byte
-		{"中", true},  // U+4E2D Chinese
-		{"日", true},  // U+65E5 Japanese
-		{"€", true},  // U+20AC Euro sign
+		{"中", true}, // U+4E2D Chinese
+		{"日", true}, // U+65E5 Japanese
+		{"€", true}, // U+20AC Euro sign
 
 		// UTF-8 4-byte
-		{"𝕳", true},  // U+1D573 Mathematical H
+		{"𝕳", true}, // U+1D573 Mathematical H
 		{"🎉", true}, // U+1F389 Party popper
 		{"😀", true}, // U+1F600 Emoji
 

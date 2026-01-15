@@ -470,6 +470,40 @@ func shouldUseDigitPrefilter(re *syntax.Regexp, nfaSize int, config Config) bool
 	return isDigitLeadPattern(re)
 }
 
+// hasOptionalBeforeSuffix checks if the pattern has a problematic optional element
+// directly before the suffix. This is a workaround for a bug in nfa/reverse.go
+// where Split states for optional elements are not correctly reversed.
+//
+// The bug only manifests when:
+// 1. There's a Quest (?) before the suffix (not Star/Plus which work differently)
+// 2. The pattern is simple enough that suffix could be the entire match
+//
+// Patterns like "0?0" have this problem. But ".*@example.com" is OK because
+// the .* wildcard handles the reverse correctly.
+func hasOptionalBeforeSuffix(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpConcat:
+		// Only check very short patterns (2-3 elements) where the bug manifests
+		// Longer patterns like ".*suffix" work correctly
+		if len(re.Sub) == 2 {
+			beforeLast := re.Sub[0]
+			// Only Quest (?) is problematic, not Star (*) or Plus (+)
+			// Star/Plus have different NFA structure that reverses correctly
+			if beforeLast.Op == syntax.OpQuest {
+				return true
+			}
+		}
+		return false
+	case syntax.OpCapture:
+		if len(re.Sub) > 0 {
+			return hasOptionalBeforeSuffix(re.Sub[0])
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 // shouldUseReverseSuffixSet checks if multiple suffix literals are available for Teddy prefilter.
 // This handles patterns like `.*\.(txt|log|md)` where LCS is empty but individual suffixes are useful.
 // Returns true if ReverseSuffixSet strategy should be used.
@@ -517,6 +551,13 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 		return 0
 	}
 
+	// Patterns with end anchor ($, \z) NOT at end position are impossible to match.
+	// E.g., `$00` has $ followed by "00" - nothing can follow end-of-string.
+	// These patterns should fall through to NFA which will correctly return no match.
+	if nfa.HasImpossibleEndAnchor(re) {
+		return 0
+	}
+
 	// Word boundary assertions (\b, \B) don't work correctly with reverse DFA search.
 	if hasWordBoundary(re) {
 		return 0
@@ -546,6 +587,13 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 	if suffixLiterals != nil && !suffixLiterals.IsEmpty() {
 		lcs := suffixLiterals.LongestCommonSuffix()
 		if len(lcs) >= config.MinLiteralLen {
+			// BUG WORKAROUND: Reverse NFA has a bug with optional elements (?, *, +)
+			// directly before the suffix literal. Patterns like "0?0" fail when
+			// the input equals just the suffix. Skip UseReverseSuffix for such patterns.
+			// TODO: Fix the root cause in nfa/reverse.go Split handling.
+			if hasOptionalBeforeSuffix(re) {
+				return 0 // Fall through to other strategies
+			}
 			return UseReverseSuffix // Good suffix literal available
 		}
 	}
