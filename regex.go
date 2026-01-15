@@ -394,12 +394,22 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 		}
 
 		// Lazy allocation: only allocate once we find the first match
+		//nolint:nestif // Allocation logic requires checking multiple conditions
 		if matches == nil {
-			// Pre-allocate with estimated capacity
-			// Heuristic: for typical patterns, estimate ~10 matches per 1KB
-			estimatedCap := len(b) / 100
-			if estimatedCap < 4 {
-				estimatedCap = 4
+			// Smart allocation: anchored patterns have max 1 match, others use capped heuristic.
+			// This avoids huge allocations on large inputs (6MB → 62k capacity was causing 170µs overhead).
+			var estimatedCap int
+			if r.engine.IsStartAnchored() {
+				estimatedCap = 1 // Start-anchored patterns match at most once (position 0 only)
+			} else {
+				// Estimate ~1 match per 100 bytes, but cap at reasonable size
+				estimatedCap = len(b) / 100
+				if estimatedCap < 4 {
+					estimatedCap = 4
+				}
+				if estimatedCap > 256 {
+					estimatedCap = 256 // Cap to limit allocation overhead; append will grow if needed
+				}
 			}
 			if n > 0 && estimatedCap > n {
 				estimatedCap = n

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Performance: FindAll 600x faster for anchored patterns on large inputs**
+  - Bug: `FindAll("^HTTP/[12]\.[01]", 6MB)` took 346µs instead of <1µs
+  - Root cause: Allocation heuristic `make([][2]int, 0, len(haystack)/100+1)` created 1MB buffer for 1 match
+  - Fix: Smart allocation - anchored patterns use cap=1, others capped at 256
+  - Result: Now matches stdlib performance (~500ns for anchored patterns)
+  - Added `Engine.IsStartAnchored()` method for allocation optimization
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
