@@ -228,6 +228,18 @@ func (b *Builder) epsilonClosureOnePass(root nfa.StateID) ([]closureEntry, bool,
 				return nil, false, err
 			}
 
+		case nfa.StateLook:
+			// Handle anchors (^, $, \A, \z) as epsilon transitions.
+			// For onepass DFA (which is always anchored at start):
+			// - Start anchors (^, \A): Always satisfied - follow epsilon
+			// - End anchors ($, \z): Follow epsilon; match checked at input end
+			_, next := state.Look()
+			if next != nfa.InvalidState {
+				if err := b.stackPush(next, slots); err != nil {
+					return nil, false, err
+				}
+			}
+
 			// ByteRange and Sparse are not epsilon transitions
 			// They will be handled in buildTransitions
 		}
