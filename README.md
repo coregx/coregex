@@ -63,13 +63,13 @@ Cross-language benchmarks on 6MB input ([source](https://github.com/kolkov/regex
 
 | Pattern | Go stdlib | coregex | vs stdlib |
 |---------|-----------|---------|-----------|
-| IP validation | 600 ms | 5 ms | **120x** |
-| Inner `.*keyword.*` | 408 ms | 3 ms | **136x** |
-| Suffix `.*\.txt` | 441 ms | 2 ms | **220x** |
-| Literal alternation | 435 ms | 29 ms | **15x** |
-| Email validation | 352 ms | 2 ms | **176x** |
-| URL extraction | 319 ms | 2 ms | **160x** |
-| Char class `[\w]+` | 932 ms | 113 ms | **8x** |
+| Literal alternation | 600 ms | 5 ms | **113x** |
+| Inner `.*keyword.*` | 453 ms | 2 ms | **285x** |
+| Suffix `.*\.txt` | 350 ms | <1 ms | **350x+** |
+| Email validation | 389 ms | <1 ms | **389x+** |
+| URL extraction | 350 ms | <1 ms | **350x+** |
+| IP address | 825 ms | 10 ms | **82x** |
+| Char class `[\w]+` | 670 ms | 112 ms | **6x** |
 
 **Where coregex excels:**
 - IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — SIMD digit prefilter skips non-digit regions
