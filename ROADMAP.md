@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-01-15 | **Current Version**: v0.10.8 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-01-15 | **Current Version**: v0.11.0 | **Target**: v1.0.0 stable
 
 ---
 
@@ -45,9 +45,11 @@ v0.10.6 ✅ → CompositeSequenceDFA (5x for overlapping patterns), FindAllIndex
          ↓
 v0.10.7 ✅ → UTF-8 fixes + 100% stdlib API compatibility
          ↓
-v0.10.8 (Current) ✅ → FindAll 600x perf fix for anchored patterns (#92)
+v0.10.8-10 ✅ → FindAll perf fix, ReverseSuffix improvements
          ↓
-v0.11.0 → CompositeSearcher integration (#72) - 5.3x faster on \w+\s+\w+ patterns
+v0.11.0 (Current) ✅ → UseAnchoredLiteral 32-133x speedup (#79), ASCII runtime detection
+         ↓
+v0.12.0 → CompositeSearcher integration (#72) - 5.3x faster on \w+\s+\w+ patterns
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
@@ -71,6 +73,7 @@ v1.0.0 STABLE → Production release with API stability guarantee
 - ✅ **v0.8.22**: Small string optimization (1.4-20x faster on ~44B inputs)
 - ✅ **v0.9.x**: DigitPrefilter, Aho-Corasick integration, Teddy 2-byte fingerprint
 - ✅ **v0.10.0**: Fat Teddy 16-bucket SIMD (33-64 patterns, 9+ GB/s), **5 patterns faster than Rust!**
+- ✅ **v0.11.0**: UseAnchoredLiteral strategy (32-133x speedup), Issue #79 resolved
 
 ---
 
@@ -162,7 +165,7 @@ v1.0.0 STABLE → Production release with API stability guarantee
 
 ## Feature Comparison Matrix
 
-| Feature | RE2 | rust-regex | coregex v0.10.0 | coregex v1.0 |
+| Feature | RE2 | rust-regex | coregex v0.11.0 | coregex v1.0 |
 |---------|-----|------------|-----------------|--------------|
 | Lazy DFA | ✅ | ✅ | ✅ | ✅ |
 | Thompson NFA | ✅ | ✅ | ✅ | ✅ |
@@ -224,7 +227,25 @@ Reference implementations available locally:
 
 ---
 
-## v0.11.0 - CompositeSearcher (Next)
+## v0.11.0 - UseAnchoredLiteral (Current) ✅
+
+**Goal**: O(1) matching for `^prefix.*suffix$` patterns (Issue #79)
+
+| Pattern | stdlib | coregex | Speedup |
+|---------|--------|---------|---------|
+| `^/.*[\w-]+\.php$` (short) | 241 ns | 7.6 ns | **32x** |
+| `^/.*[\w-]+\.php$` (long) | 516 ns | 7.9 ns | **65x** |
+| `^/.*[\w-]+\.php$` (no match) | 590 ns | 4.4 ns | **133x** |
+
+**Completed**:
+- [x] `UseAnchoredLiteral` strategy
+- [x] `meta/anchored_literal.go` implementation (350 lines)
+- [x] V11-002 ASCII runtime detection optimization
+- [x] meta.go refactoring (2821 lines → 6 focused files)
+
+---
+
+## v0.12.0 - CompositeSearcher (Next)
 
 **Goal**: Optimize concatenated character class patterns
 
@@ -261,7 +282,10 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.10.8** | 2026-01-15 | Performance | **FindAll 600x faster for anchored patterns (#92)** |
+| **v0.11.0** | 2026-01-15 | Feature | **UseAnchoredLiteral 32-133x speedup (#79), ASCII runtime detection** |
+| v0.10.10 | 2026-01-15 | Fix | ReverseSuffix CharClass Plus whitelist |
+| v0.10.9 | 2026-01-15 | Feature | UTF-8 suffix sharing, anchored suffix prefilter |
+| v0.10.8 | 2026-01-15 | Performance | FindAll 600x faster for anchored patterns (#92) |
 | v0.10.7 | 2026-01-15 | Feature | UTF-8 fixes + 100% stdlib API compatibility |
 | v0.10.6 | 2026-01-14 | Feature | CompositeSequenceDFA (5x overlapping patterns), FindAllIndexCompact API |
 | v0.10.5 | 2026-01-14 | Fix | CompositeSearcher backtracking for overlapping char classes (#81) |
@@ -288,4 +312,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.10.8 | Next: v0.11.0 (CompositeSearcher integration #72) | Target: v1.0.0*
+*Current: v0.11.0 | Next: v0.12.0 (CompositeSearcher integration #72) | Target: v1.0.0*

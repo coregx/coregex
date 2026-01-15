@@ -87,6 +87,7 @@ coregex automatically selects the optimal engine:
 
 | Strategy | Pattern Type | Speedup |
 |----------|--------------|---------|
+| **AnchoredLiteral** | `^prefix.*suffix$` | **32-133x** |
 | ReverseInner | `.*keyword.*` | 100-900x |
 | ReverseSuffix | `.*\.txt` | 100-1100x |
 | BranchDispatch | `^(\d+\|UUID\|hex32)` | 5-20x |
@@ -181,13 +182,14 @@ Uses Go's `regexp/syntax` parser:
 Pattern → Parse → NFA → Literal Extract → Strategy Select
                                                ↓
                          ┌─────────────────────────────────┐
-                         │ Engines (13 strategies):        │
+                         │ Engines (17 strategies):        │
                          │  LazyDFA, PikeVM, OnePass,      │
                          │  BoundedBacktracker,            │
                          │  ReverseInner, ReverseSuffix,   │
-                         │  ReverseSuffixSet,              │
+                         │  ReverseSuffixSet, AnchoredLiteral, │
                          │  CharClassSearcher, Teddy,      │
-                         │  DigitPrefilter, AhoCorasick    │
+                         │  DigitPrefilter, AhoCorasick,   │
+                         │  CompositeSearcher, BranchDispatch │
                          └─────────────────────────────────┘
                                                ↓
 Input → Prefilter (SIMD) → Engine → Match Result
