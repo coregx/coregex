@@ -1028,6 +1028,18 @@ func (c *Compiler) compileUTF8Any(includeNL bool) (start, end StateID, err error
 		branches = append(branches, target)
 	}
 
+	// Invalid UTF-8 bytes - match as single bytes for stdlib compatibility.
+	// Go regexp's . matches invalid UTF-8 bytes as single characters.
+	// Invalid bytes: 0x80-0xBF (standalone continuation), 0xC0-0xC1 (overlong),
+	// 0xF5-0xFF (out of range for Unicode).
+	invalidTrans := []Transition{
+		{Lo: 0x80, Hi: 0xBF, Next: endState}, // standalone continuation bytes
+		{Lo: 0xC0, Hi: 0xC1, Next: endState}, // overlong 2-byte encodings
+		{Lo: 0xF5, Hi: 0xFF, Next: endState}, // out of Unicode range
+	}
+	invalidUTF8 := c.builder.AddSparse(invalidTrans)
+	branches = append(branches, invalidUTF8)
+
 	// Create split state for alternation
 	startState := c.buildSplitChain(branches)
 
