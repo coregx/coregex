@@ -914,7 +914,7 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 
 	// START-ANCHORED OPTIMIZATION (Rust regex-automata approach)
 	// For patterns anchored at start (^ or \A), skip Lazy DFA overhead.
-	// Rationale: Only position 0 can match, so DFA construction is wasteful.
+	// Rationale: Only position 0 can match, so DFA construction overhead is wasteful.
 	// Rust uses: OnePass → BoundedBacktracker → PikeVM for anchored patterns.
 	//
 	// Benefits:
@@ -922,8 +922,10 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	//   - BoundedBacktracker is optimized for single-position verification
 	//   - 2-5x faster than Lazy DFA for anchored alternations like ^(a|b|c)
 	//
-	// This fixes Issue #79: ^(\d+|UUID|hex32)$ was 10-14x slower than stdlib
-	// because Lazy DFA construction overhead dominated the single-position check.
+	// Note on Issue #79: ^/.*[\w-]+\.php is slower than stdlib due to UTF-8 state
+	// explosion (39 NFA states for `.`). This requires V11-002 (ASCII runtime detection)
+	// or V11-003 (Daciuk's algorithm) to fix - not DFA (which is actually slower due
+	// to lazy state construction overhead).
 	//
 	// Applies to BOTH:
 	//   - Pure start-anchored: ^pattern (can match at pos 0 only)

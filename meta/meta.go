@@ -12,6 +12,7 @@ import (
 	"github.com/coregx/coregex/literal"
 	"github.com/coregx/coregex/nfa"
 	"github.com/coregx/coregex/prefilter"
+	"github.com/coregx/coregex/simd"
 )
 
 // Engine is the meta-engine that orchestrates all regex execution strategies.
@@ -50,7 +51,25 @@ type Engine struct {
 	// This ensures atomic operations on uint64 fields work correctly.
 	stats Stats
 
-	nfa                      *nfa.NFA
+	nfa *nfa.NFA
+
+	// asciiNFA is an NFA compiled in ASCII-only mode (V11-002 optimization).
+	// When the pattern contains '.' and input is ASCII-only (all bytes < 0x80),
+	// this NFA is used instead of the main NFA. ASCII mode compiles '.' to
+	// a single byte range (0x00-0x7F) instead of ~28 UTF-8 states.
+	//
+	// Performance impact for Issue #79 pattern ^/.*[\w-]+\.php:
+	//   - UTF-8 NFA: ~39 states, BoundedBacktracker walks all states per byte
+	//   - ASCII NFA: ~14 states, 2.8x state reduction
+	//
+	// Runtime detection uses SIMD (AVX2 on x86-64) to check if input is ASCII,
+	// achieving ~20-40 GB/s throughput.
+	//
+	// This field is nil if:
+	//   - Pattern doesn't contain '.' (no benefit from ASCII optimization)
+	//   - ASCII optimization is disabled via config
+	asciiNFA                 *nfa.NFA
+	asciiBoundedBacktracker  *nfa.BoundedBacktracker // BoundedBacktracker for asciiNFA
 	dfa                      *lazy.DFA
 	pikevm                   *nfa.PikeVM
 	boundedBacktracker       *nfa.BoundedBacktracker
@@ -452,6 +471,26 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		}
 	}
 
+	// Compile ASCII-only NFA for patterns with '.' (V11-002 optimization).
+	// This enables runtime ASCII detection: if input is all ASCII, use the faster
+	// ASCII NFA which has ~2.8x fewer states for '.'-heavy patterns.
+	var asciiNFAEngine *nfa.NFA
+	var asciiBT *nfa.BoundedBacktracker
+	if nfa.ContainsDot(re) && config.EnableASCIIOptimization {
+		asciiCompiler := nfa.NewCompiler(nfa.CompilerConfig{
+			UTF8:              true,
+			Anchored:          false,
+			DotNewline:        false,
+			ASCIIOnly:         true, // Key: compile '.' as single byte range
+			MaxRecursionDepth: config.MaxRecursionDepth,
+		})
+		asciiNFAEngine, err = asciiCompiler.CompileRegexp(re)
+		if err == nil {
+			asciiBT = nfa.NewBoundedBacktracker(asciiNFAEngine)
+		}
+		// If ASCII NFA compilation fails, we fall back to UTF-8 NFA (asciiNFAEngine stays nil)
+	}
+
 	// Extract literals for prefiltering
 	// NOTE: Don't build prefilter for start-anchored patterns (^...).
 	// A prefilter for "^abc" would find "abc" anywhere in input, bypassing the anchor.
@@ -550,6 +589,8 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 
 	return &Engine{
 		nfa:                      nfaEngine,
+		asciiNFA:                 asciiNFAEngine,
+		asciiBoundedBacktracker:  asciiBT,
 		dfa:                      engines.dfa,
 		pikevm:                   pikevm,
 		boundedBacktracker:       charClassResult.boundedBT,
@@ -869,6 +910,9 @@ func (e *Engine) isMatchAdaptive(haystack []byte) bool {
 // isMatchBoundedBacktracker checks for match using bounded backtracker.
 // 2-4x faster than PikeVM for simple character class patterns.
 // Thread-safe: uses pooled state.
+//
+// V11-002 ASCII optimization: When pattern contains '.' and input is ASCII-only,
+// uses the faster ASCII NFA with ~2.8x fewer states.
 func (e *Engine) isMatchBoundedBacktracker(haystack []byte) bool {
 	if e.boundedBacktracker == nil {
 		return e.isMatchNFA(haystack)
@@ -889,6 +933,18 @@ func (e *Engine) isMatchBoundedBacktracker(haystack []byte) bool {
 	}
 
 	atomic.AddUint64(&e.stats.NFASearches, 1) // Count as NFA-family search for stats
+
+	// V11-002 ASCII optimization: use ASCII NFA when input is ASCII-only.
+	// SIMD isASCII check runs at ~20-40 GB/s, adding minimal overhead (~3-4ns).
+	// For Issue #79 pattern ^/.*[\w-]+\.php, ASCII NFA has 14 states vs 39 states.
+	if e.asciiBoundedBacktracker != nil && simd.IsASCII(haystack) {
+		if !e.asciiBoundedBacktracker.CanHandle(len(haystack)) {
+			return e.pikevm.IsMatch(haystack)
+		}
+		// Use ASCII backtracker directly (no pooled state needed - it's independent)
+		return e.asciiBoundedBacktracker.IsMatch(haystack)
+	}
+
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		// Input too large for bounded backtracker, fall back to PikeVM
 		return e.pikevm.IsMatch(haystack)
@@ -1454,11 +1510,23 @@ func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool)
 
 // findIndicesBoundedBacktrackerAt searches using bounded backtracker at position.
 // Thread-safe: uses pooled state.
+//
+// V11-002 ASCII optimization: When pattern contains '.' and input is ASCII-only,
+// uses the faster ASCII NFA.
 func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, int, bool) {
 	if e.boundedBacktracker == nil {
 		return e.findIndicesNFAAt(haystack, at)
 	}
 	atomic.AddUint64(&e.stats.NFASearches, 1)
+
+	// V11-002 ASCII optimization
+	if e.asciiBoundedBacktracker != nil && simd.IsASCII(haystack) {
+		if !e.asciiBoundedBacktracker.CanHandle(len(haystack)) {
+			return e.pikevm.SearchAt(haystack, at)
+		}
+		return e.asciiBoundedBacktracker.SearchAt(haystack, at)
+	}
+
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		return e.pikevm.SearchAt(haystack, at)
 	}
@@ -1470,6 +1538,9 @@ func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, 
 
 // findBoundedBacktracker searches using bounded backtracker.
 // Thread-safe: uses pooled state.
+//
+// V11-002 ASCII optimization: When pattern contains '.' and input is ASCII-only,
+// uses the faster ASCII NFA.
 func (e *Engine) findBoundedBacktracker(haystack []byte) *Match {
 	if e.boundedBacktracker == nil {
 		return e.findNFA(haystack)
@@ -1484,6 +1555,19 @@ func (e *Engine) findBoundedBacktracker(haystack []byte) *Match {
 	}
 
 	atomic.AddUint64(&e.stats.NFASearches, 1)
+
+	// V11-002 ASCII optimization
+	if e.asciiBoundedBacktracker != nil && simd.IsASCII(haystack) {
+		if !e.asciiBoundedBacktracker.CanHandle(len(haystack)) {
+			return e.findNFA(haystack)
+		}
+		start, end, found := e.asciiBoundedBacktracker.Search(haystack)
+		if !found {
+			return nil
+		}
+		return NewMatch(start, end, haystack)
+	}
+
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		return e.findNFA(haystack)
 	}

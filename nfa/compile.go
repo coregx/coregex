@@ -19,6 +19,17 @@ type CompilerConfig struct {
 	// DotNewline determines whether '.' matches '\n'
 	DotNewline bool
 
+	// ASCIIOnly when true, compiles '.' to match only ASCII bytes (0x00-0x7F).
+	// This dramatically reduces NFA state count (1 state vs ~28 states) and
+	// improves performance for patterns with '.' when input is known to be ASCII.
+	//
+	// When false (default), '.' compiles to match any valid UTF-8 codepoint,
+	// requiring ~28 NFA states to handle all valid UTF-8 byte sequences.
+	//
+	// This is used for ASCII runtime detection optimization (V11-002):
+	// compile both ASCII and UTF-8 NFAs, select at runtime based on input.
+	ASCIIOnly bool
+
 	// MaxRecursionDepth limits recursion during compilation to prevent stack overflow
 	// Default: 100
 	MaxRecursionDepth int
@@ -955,14 +966,55 @@ func (c *Compiler) utf8Cont2HiFull(leadVal, cont1Val, hiLead, hiCont1, hiCont2 b
 // This is used for OpAnyChar which the parser generates when DotNL flag is set
 // (either globally via syntax.DotNL or locally via inline flag (?s:...)).
 func (c *Compiler) compileAnyChar() (start, end StateID, err error) {
+	// ASCII-only mode: match any single ASCII byte (0x00-0x7F)
+	// This reduces ~28 UTF-8 states to just 1 state.
+	if c.config.ASCIIOnly {
+		return c.compileASCIIAny(true)
+	}
 	// Match any UTF-8 codepoint (1-4 bytes) including newlines
 	return c.compileUTF8Any(true)
 }
 
 // compileAnyCharNotNL compiles '.' matching any character except \n
 func (c *Compiler) compileAnyCharNotNL() (start, end StateID, err error) {
+	// ASCII-only mode: match any single ASCII byte except newline
+	// This reduces ~28 UTF-8 states to just 1-2 states.
+	if c.config.ASCIIOnly {
+		return c.compileASCIIAny(false)
+	}
 	// Match any UTF-8 codepoint (1-4 bytes) except newline
 	return c.compileUTF8Any(false)
+}
+
+// compileASCIIAny compiles '.' for ASCII-only mode.
+// This is a massive optimization: 1 state instead of ~28 UTF-8 states.
+//
+// When input is known to be ASCII (all bytes < 0x80), we can use this
+// simplified automaton that matches any single byte in the ASCII range.
+//
+// Performance impact (Issue #79 fix):
+//   - UTF-8 mode: ~28 states for '.', BoundedBacktracker walks all states per byte
+//   - ASCII mode: 1-2 states for '.', dramatically faster execution
+//
+// Parameters:
+//   - includeNL: if true, match all ASCII (0x00-0x7F)
+//   - includeNL: if false, exclude newline (0x00-0x09, 0x0B-0x7F)
+func (c *Compiler) compileASCIIAny(includeNL bool) (start, end StateID, err error) {
+	endState := c.builder.AddEpsilon(InvalidState)
+
+	if includeNL {
+		// All ASCII bytes: 0x00-0x7F (single transition)
+		ascii := c.builder.AddByteRange(0x00, 0x7F, endState)
+		return ascii, endState, nil
+	}
+
+	// ASCII except newline: [0x00-0x09] | [0x0B-0x7F]
+	asciiTrans := []Transition{
+		{Lo: 0x00, Hi: 0x09, Next: endState},
+		{Lo: 0x0B, Hi: 0x7F, Next: endState},
+	}
+	ascii := c.builder.AddSparse(asciiTrans)
+	return ascii, endState, nil
 }
 
 // compileUTF8Any compiles an NFA that matches any single UTF-8 codepoint.
