@@ -132,9 +132,9 @@ func TestSubexpIndex(t *testing.T) {
 // TestLiteralPrefix tests the LiteralPrefix method.
 func TestLiteralPrefix(t *testing.T) {
 	tests := []struct {
-		pattern        string
-		wantPrefix     string
-		wantComplete   bool
+		pattern      string
+		wantPrefix   string
+		wantComplete bool
 	}{
 		{`hello`, "hello", true},
 		{`hello.*`, "hello", false},

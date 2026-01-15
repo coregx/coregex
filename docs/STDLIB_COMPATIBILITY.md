@@ -94,7 +94,7 @@ MatchReader(pattern string, r io.RuneReader) (bool, error)
 QuoteMeta(s string) string
 ```
 
-> **Note:** As of v0.10.8, coregex implements **100% of the stdlib regexp API**. All methods are fully functional.
+> **Note:** As of v0.10.7, coregex implements **100% of the stdlib regexp API**. All methods are fully functional.
 
 ## Known Behavioral Differences
 

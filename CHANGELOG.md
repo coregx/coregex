@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.10.8] - 2026-01-15
+## [0.10.7] - 2026-01-15
 
 ### Added
 - **100% stdlib regexp API compatibility** - All remaining methods now implemented:
@@ -32,14 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Tests for all newly added methods
   - Direct comparison with stdlib behavior
   - Edge case coverage for LiteralPrefix with anchors
-
-### Changed
-- Documentation updated to reflect 100% API coverage
-- `STDLIB_COMPATIBILITY.md` now lists all methods as implemented
-
----
-
-## [0.10.7] - 2026-01-15
 
 ### Fixed
 - **Critical: Dot metacharacter matched UTF-8 bytes instead of codepoints** (#85)
