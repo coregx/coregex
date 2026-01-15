@@ -1673,7 +1673,20 @@ func (e *Engine) FindAllIndicesStreaming(haystack []byte, n int, results [][2]in
 // findAllIndicesLoop is the standard loop-based FindAll for non-streaming strategies.
 func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) [][2]int {
 	if results == nil {
-		results = make([][2]int, 0, len(haystack)/100+1)
+		// Smart allocation: anchored patterns have max 1 match, others use capped heuristic.
+		// This avoids huge allocations on large inputs (6MB → 62k capacity was causing 170µs overhead).
+		var initCap int
+		if e.isStartAnchored {
+			initCap = 1 // Start-anchored patterns match at most once (position 0 only)
+		} else {
+			// Estimate ~1 match per 100 bytes, but cap at reasonable size to avoid
+			// allocating megabytes for large inputs with few matches.
+			initCap = len(haystack)/100 + 1
+			if initCap > 256 {
+				initCap = 256 // Cap at 256 to limit allocation overhead; append will grow if needed
+			}
+		}
+		results = make([][2]int, 0, initCap)
 	} else {
 		results = results[:0]
 	}
@@ -2200,6 +2213,12 @@ func (e *Engine) isMatchReverseInner(haystack []byte) bool {
 //	println(strategy.String()) // "UseDFA"
 func (e *Engine) Strategy() Strategy {
 	return e.strategy
+}
+
+// IsStartAnchored returns true if the pattern is anchored at the start (^).
+// Start-anchored patterns can only match at position 0.
+func (e *Engine) IsStartAnchored() bool {
+	return e.isStartAnchored
 }
 
 // Stats returns execution statistics.
