@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-01-15 | **Current Version**: v0.10.7 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-01-15 | **Current Version**: v0.10.8 | **Target**: v1.0.0 stable
 
 ---
 
@@ -43,7 +43,9 @@ v0.10.5 ✅ → CompositeSearcher backtracking fix (#81)
          ↓
 v0.10.6 ✅ → CompositeSequenceDFA (5x for overlapping patterns), FindAllIndexCompact API
          ↓
-v0.10.7 (Current) ✅ → UTF-8 fixes + 100% stdlib API compatibility
+v0.10.7 ✅ → UTF-8 fixes + 100% stdlib API compatibility
+         ↓
+v0.10.8 (Current) ✅ → FindAll 600x perf fix for anchored patterns (#92)
          ↓
 v0.11.0 → CompositeSearcher integration (#72) - 5.3x faster on \w+\s+\w+ patterns
          ↓
@@ -259,7 +261,8 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.10.7** | 2026-01-15 | Feature | **UTF-8 fixes + 100% stdlib API compatibility** |
+| **v0.10.8** | 2026-01-15 | Performance | **FindAll 600x faster for anchored patterns (#92)** |
+| v0.10.7 | 2026-01-15 | Feature | UTF-8 fixes + 100% stdlib API compatibility |
 | v0.10.6 | 2026-01-14 | Feature | CompositeSequenceDFA (5x overlapping patterns), FindAllIndexCompact API |
 | v0.10.5 | 2026-01-14 | Fix | CompositeSearcher backtracking for overlapping char classes (#81) |
 | v0.10.4 | 2026-01-14 | Fix | Thread-safety for concurrent Regexp usage (#78) |
@@ -285,4 +288,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.10.7 | Next: v0.11.0 (CompositeSearcher integration #72) | Target: v1.0.0*
+*Current: v0.10.8 | Next: v0.11.0 (CompositeSearcher integration #72) | Target: v1.0.0*
