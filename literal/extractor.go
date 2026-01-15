@@ -285,14 +285,29 @@ func (e *Extractor) extractSuffixes(re *syntax.Regexp, depth int) *Seq {
 			return NewSeq()
 		}
 
-		// Get suffixes from last part
-		suffixes := e.extractSuffixes(re.Sub[len(re.Sub)-1], depth+1)
+		// Skip trailing anchors ($, \z) to find the actual last element.
+		// For patterns like `\.php$`, the last AST element is OpEndLine,
+		// but we want to extract from the `.php` literal before it.
+		lastIdx := len(re.Sub) - 1
+		for lastIdx >= 0 {
+			op := re.Sub[lastIdx].Op
+			if op != syntax.OpEndLine && op != syntax.OpEndText {
+				break
+			}
+			lastIdx--
+		}
+		if lastIdx < 0 {
+			return NewSeq()
+		}
+
+		// Get suffixes from last non-anchor part
+		suffixes := e.extractSuffixes(re.Sub[lastIdx], depth+1)
 		if suffixes.IsEmpty() {
 			return NewSeq()
 		}
 
 		// Walk backwards through concatenation, extending suffixes with preceding literals
-		for i := len(re.Sub) - 2; i >= 0; i-- {
+		for i := lastIdx - 1; i >= 0; i-- {
 			sub := re.Sub[i]
 
 			// Can only extend with literal sub-expressions
