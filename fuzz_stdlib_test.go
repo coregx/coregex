@@ -16,6 +16,7 @@ package coregex
 
 import (
 	"bytes"
+	"fmt"
 	"reflect"
 	"regexp"
 	"testing"
@@ -804,4 +805,88 @@ func toStringSlice(b [][]byte) []string {
 		}
 	}
 	return result
+}
+
+// TestZeroWidthMatchCharClass verifies that star patterns like [0-9]* correctly
+// match zero characters when the input doesn't contain matching characters.
+// This was a bug: CharClassSearcher was used for * patterns but doesn't
+// support zero-width matches. Now * patterns use BoundedBacktracker.
+func TestZeroWidthMatchCharClass(t *testing.T) {
+	tests := []struct {
+		pattern string
+		input   string
+		want    bool
+	}{
+		{`\d*`, "A", true},      // Zero digits before 'A'
+		{`\d*`, "", true},       // Zero digits in empty string
+		{`[0-9]*`, "A", true},   // Zero digits before 'A'
+		{`[0-9]*`, "", true},    // Zero digits in empty string
+		{`\w*`, "!", true},      // Zero word chars before '!'
+		{`\s*`, "x", true},      // Zero spaces before 'x'
+		{`[a-z]*`, "123", true}, // Zero lowercase before digits
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s/%s", tt.pattern, tt.input), func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+			got := re.MatchString(tt.input)
+			if got != tt.want {
+				t.Errorf("MustCompile(%q).MatchString(%q) = %v, want %v",
+					tt.pattern, tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestInvalidUTF8NegatedCharClass verifies that negated character classes
+// like \D, \S, \W correctly match invalid UTF-8 bytes.
+func TestInvalidUTF8NegatedCharClass(t *testing.T) {
+	tests := []struct {
+		pattern string
+		input   []byte
+		want    bool
+	}{
+		{`D\D`, []byte{'D', 0xe2}, true},  // 0xe2 is invalid standalone UTF-8
+		{`\d\D`, []byte{'1', 0x84}, true}, // 0x84 is continuation byte
+		{`a\S`, []byte{'a', 0xC0}, true},  // 0xC0 is overlong
+		{`\W`, []byte{0xF5}, true},        // 0xF5 is out of range
+		{`[^0-9]`, []byte{0x80}, true},    // 0x80 is continuation byte
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s/%v", tt.pattern, tt.input), func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+			got := re.Match(tt.input)
+			if got != tt.want {
+				t.Errorf("MustCompile(%q).Match(%v) = %v, want %v",
+					tt.pattern, tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestReverseInnerWhitelist verifies that patterns like A*20* don't use
+// ReverseInner strategy (which has bugs with literal stars).
+func TestReverseInnerWhitelist(t *testing.T) {
+	tests := []struct {
+		pattern string
+		input   string
+		want    bool
+	}{
+		{`A*20*`, "2", true}, // Zero 'A', then '2', then zero '0'
+		{`a*b*c`, "c", true}, // Zero 'a', zero 'b', then 'c'
+		{`X*Y*Z*`, "", true}, // All zero
+		{`1*2*3`, "3", true}, // Zero '1', zero '2', then '3'
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s/%s", tt.pattern, tt.input), func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+			got := re.MatchString(tt.input)
+			if got != tt.want {
+				t.Errorf("MustCompile(%q).MatchString(%q) = %v, want %v",
+					tt.pattern, tt.input, got, tt.want)
+			}
+		})
+	}
 }

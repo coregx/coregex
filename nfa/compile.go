@@ -537,18 +537,18 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 			// Also match invalid UTF-8 bytes for stdlib compatibility.
 			// Go regexp treats invalid UTF-8 bytes as single characters that
 			// match negated char classes like \D, \S, \W, [^x].
-			// We add ALL bytes >= 0x80 as single-byte fallbacks because:
-			// - 0x80-0xBF: continuation bytes (invalid as first byte)
-			// - 0xC0-0xC1: always invalid (overlong)
-			// - 0xC2-0xDF: 2-byte lead (invalid when standalone)
-			// - 0xE0-0xEF: 3-byte lead (invalid when standalone)
-			// - 0xF0-0xF4: 4-byte lead (invalid when standalone)
-			// - 0xF5-0xFF: always invalid (out of range)
+			// NOTE: We only add this for coversAllNonASCII case because:
+			// 1. For classes like \D, [^x] - they match any non-digit/non-x, including invalid UTF-8
+			// 2. For partial Unicode classes like \P{Han} - we can't add 0x80-0xFF
+			//    because it would incorrectly match valid UTF-8 bytes (e.g., each byte
+			//    of "中" separately instead of treating it as one Han character).
 			// The multi-byte paths take precedence for valid UTF-8 (longer match wins).
 			invalidUTF8 := c.builder.AddByteRange(0x80, 0xFF, target)
 			altStarts = append(altStarts, invalidUTF8)
 		} else {
 			// Precise: build UTF-8 automata for specific ranges (Issue #91 fix)
+			// For partial Unicode classes like \P{Han}, we DON'T add invalid UTF-8
+			// handling because it would incorrectly match bytes of valid UTF-8.
 			for _, rng := range nonASCIIRanges {
 				rangeStarts := c.compileUTF8Range(rng[0], rng[1], target)
 				altStarts = append(altStarts, rangeStarts...)

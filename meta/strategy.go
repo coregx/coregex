@@ -541,6 +541,52 @@ func containsAnchor(re *syntax.Regexp) bool {
 	return false
 }
 
+// isSafeForReverseInner checks if a pattern is safe for UseReverseInner strategy.
+// Returns true for patterns where reverse search is proven to work correctly.
+//
+// Safe patterns:
+//   - `.*keyword.*` - AnyChar Star on both sides
+//   - `[\w]+@[\w]+` - CharClass Plus (email patterns)
+//   - `.+keyword` - AnyChar Plus before
+//
+// Unsafe patterns:
+//   - `A*20*` - Star of Literal (not AnyChar or CharClass)
+//   - Patterns with Star that could match zero (zero-width issues)
+func isSafeForReverseInner(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpConcat:
+		if len(re.Sub) < 2 {
+			return false
+		}
+		// Check for safe wildcard prefix at the beginning
+		first := re.Sub[0]
+
+		// AnyChar Star/Plus (.* or .+) - always safe
+		if (first.Op == syntax.OpStar || first.Op == syntax.OpPlus) &&
+			len(first.Sub) > 0 &&
+			(first.Sub[0].Op == syntax.OpAnyChar || first.Sub[0].Op == syntax.OpAnyCharNotNL) {
+			return true
+		}
+
+		// CharClass Plus ([\w]+ etc) - safe because Plus requires at least 1 char
+		// Star of CharClass could be zero-width, so we only allow Plus
+		if first.Op == syntax.OpPlus && len(first.Sub) > 0 && first.Sub[0].Op == syntax.OpCharClass {
+			return true
+		}
+
+		return false // Literal Star like "A*" - not safe
+
+	case syntax.OpCapture:
+		if len(re.Sub) > 0 {
+			return isSafeForReverseInner(re.Sub[0])
+		}
+		return false
+
+	default:
+		return false
+	}
+}
+
 // shouldUseReverseSuffixSet checks if multiple suffix literals are available for Teddy prefilter.
 // This handles patterns like `.*\.(txt|log|md)` where LCS is empty but individual suffixes are useful.
 // Returns true if ReverseSuffixSet strategy should be used.
@@ -656,6 +702,12 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 			return 0 // Let DigitPrefilter handle digit-lead patterns
 		}
 		if len(lcp) >= 1 {
+			// Use whitelist approach: only enable ReverseInner for patterns
+			// where reverse search is proven to work correctly.
+			// Patterns like "A*20*" have Star of Literal, not AnyChar wildcard.
+			if !isSafeForReverseInner(re) {
+				return 0 // Fall through to other strategies
+			}
 			return UseReverseInner // Inner literal available - use ReverseInner
 		}
 	}
