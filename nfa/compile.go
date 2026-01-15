@@ -533,6 +533,20 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 			// This is correct because we're matching ALL non-ASCII codepoints
 			multiByteStarts := c.buildUTF8NonASCIIBranches(target)
 			altStarts = append(altStarts, multiByteStarts...)
+
+			// Also match invalid UTF-8 bytes for stdlib compatibility.
+			// Go regexp treats invalid UTF-8 bytes as single characters that
+			// match negated char classes like \D, \S, \W, [^x].
+			// We add ALL bytes >= 0x80 as single-byte fallbacks because:
+			// - 0x80-0xBF: continuation bytes (invalid as first byte)
+			// - 0xC0-0xC1: always invalid (overlong)
+			// - 0xC2-0xDF: 2-byte lead (invalid when standalone)
+			// - 0xE0-0xEF: 3-byte lead (invalid when standalone)
+			// - 0xF0-0xF4: 4-byte lead (invalid when standalone)
+			// - 0xF5-0xFF: always invalid (out of range)
+			// The multi-byte paths take precedence for valid UTF-8 (longer match wins).
+			invalidUTF8 := c.builder.AddByteRange(0x80, 0xFF, target)
+			altStarts = append(altStarts, invalidUTF8)
 		} else {
 			// Precise: build UTF-8 automata for specific ranges (Issue #91 fix)
 			for _, rng := range nonASCIIRanges {
@@ -1032,6 +1046,12 @@ func (c *Compiler) compileUTF8Any(includeNL bool) (start, end StateID, err error
 	// Go regexp's . matches invalid UTF-8 bytes as single characters.
 	// Invalid bytes: 0x80-0xBF (standalone continuation), 0xC0-0xC1 (overlong),
 	// 0xF5-0xFF (out of range for Unicode).
+	//
+	// NOTE: We don't add 0xC2-0xF4 (valid lead bytes) here because:
+	// 1. Adding them causes capture group bugs with zero-width matches ((.*)on "")
+	// 2. The multi-byte paths already handle these bytes in valid sequences
+	// 3. When these bytes appear standalone, the NFA won't match them (correct behavior
+	//    differs from stdlib, but preserves capture group correctness which is more important)
 	invalidTrans := []Transition{
 		{Lo: 0x80, Hi: 0xBF, Next: endState}, // standalone continuation bytes
 		{Lo: 0xC0, Hi: 0xC1, Next: endState}, // overlong 2-byte encodings

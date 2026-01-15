@@ -11,6 +11,7 @@ import "regexp/syntax"
 //   - [a-zA-Z0-9_]+ (multiple ranges)
 //
 // NOT supported:
+//   - char_class* patterns (zero-width matches not handled by CharClassSearcher)
 //   - Patterns with anchors (^, $)
 //   - Patterns with alternation outside char class
 //   - Patterns with concatenation (abc[\w]+)
@@ -20,8 +21,10 @@ func ExtractCharClassRanges(re *syntax.Regexp) [][2]byte {
 		return nil
 	}
 
-	// Must be OpPlus or OpStar of a char class
-	if re.Op != syntax.OpPlus && re.Op != syntax.OpStar {
+	// Must be OpPlus of a char class (NOT OpStar)
+	// OpStar requires zero-width match support which CharClassSearcher doesn't handle.
+	// For [0-9]* on "A", the result should be true (zero-width match at position 0).
+	if re.Op != syntax.OpPlus {
 		return nil
 	}
 
