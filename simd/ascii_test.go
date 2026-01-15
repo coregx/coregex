@@ -86,8 +86,8 @@ func TestIsASCII_Basic(t *testing.T) {
 		}(), false},
 
 		// Edge cases for non-ASCII values
-		{"boundary_0x7F", []byte{0x7F}, true},      // Last ASCII character
-		{"boundary_0x80", []byte{0x80}, false},     // First non-ASCII
+		{"boundary_0x7F", []byte{0x7F}, true},  // Last ASCII character
+		{"boundary_0x80", []byte{0x80}, false}, // First non-ASCII
 		{"boundary_mixed", []byte{0x7F, 0x80}, false},
 
 		// URL path patterns (common in regex testing)

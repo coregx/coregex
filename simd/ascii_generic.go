@@ -67,12 +67,6 @@ func isASCIIGeneric(data []byte) bool {
 	return true
 }
 
-// isASCIISingle checks if a single byte is ASCII.
-// This is a simple helper for when only one byte needs checking.
-func isASCIISingle(b byte) bool {
-	return b < 0x80
-}
-
 // CountNonASCII returns the number of non-ASCII bytes in the slice.
 // This is useful for statistics and deciding whether to use UTF-8 or ASCII paths.
 //
