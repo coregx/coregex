@@ -954,6 +954,12 @@ func (c *Compiler) compileAnyCharNotNL() (start, end StateID, err error) {
 // compileUTF8Any compiles an NFA that matches any single UTF-8 codepoint.
 // If includeNL is false, newline (0x0A) is excluded.
 //
+// This implementation uses UTF-8 suffix sharing to minimize state count.
+// By processing byte sequences in REVERSE order and caching common suffixes
+// (like [80-BF]), we reduce states from ~39 to ~15.
+//
+// Based on Rust regex-automata's approach (compiler.rs:1531-1568).
+//
 // UTF-8 encoding:
 //   - 1-byte: 0x00-0x7F (ASCII)
 //   - 2-byte: 0xC2-0xDF, 0x80-0xBF
@@ -967,6 +973,27 @@ func (c *Compiler) compileAnyCharNotNL() (start, end StateID, err error) {
 func (c *Compiler) compileUTF8Any(includeNL bool) (start, end StateID, err error) {
 	// Shared end state for all branches
 	endState := c.builder.AddEpsilon(InvalidState)
+
+	// Suffix cache for sharing common continuation byte states
+	cache := newUtf8SuffixCache()
+
+	// UTF-8 multi-byte sequences as byte ranges.
+	// Each sequence is processed in REVERSE order for suffix sharing.
+	// Format: []struct{lo, hi byte} from lead byte to final continuation
+	type byteRange struct{ lo, hi byte }
+	sequences := [][]byteRange{
+		// 2-byte: 0xC2-0xDF, 0x80-0xBF
+		{{0xC2, 0xDF}, {0x80, 0xBF}},
+		// 3-byte sequences
+		{{0xE0, 0xE0}, {0xA0, 0xBF}, {0x80, 0xBF}},
+		{{0xE1, 0xEC}, {0x80, 0xBF}, {0x80, 0xBF}},
+		{{0xED, 0xED}, {0x80, 0x9F}, {0x80, 0xBF}}, // avoid surrogates
+		{{0xEE, 0xEF}, {0x80, 0xBF}, {0x80, 0xBF}},
+		// 4-byte sequences
+		{{0xF0, 0xF0}, {0x90, 0xBF}, {0x80, 0xBF}, {0x80, 0xBF}},
+		{{0xF1, 0xF3}, {0x80, 0xBF}, {0x80, 0xBF}, {0x80, 0xBF}},
+		{{0xF4, 0xF4}, {0x80, 0x8F}, {0x80, 0xBF}, {0x80, 0xBF}},
+	}
 
 	// Build alternation of all UTF-8 patterns
 	var branches []StateID
@@ -986,72 +1013,19 @@ func (c *Compiler) compileUTF8Any(includeNL bool) (start, end StateID, err error
 		branches = append(branches, ascii)
 	}
 
-	// Continuation byte helper
-	cont := func(next StateID) StateID {
-		return c.builder.AddByteRange(0x80, 0xBF, next)
-	}
-
-	// 2-byte: 0xC2-0xDF, 0x80-0xBF
-	{
-		cont1 := cont(endState)
-		lead := c.builder.AddByteRange(0xC2, 0xDF, cont1)
-		branches = append(branches, lead)
-	}
-
-	// 3-byte sequences
-	{
-		// 0xE0, 0xA0-0xBF, 0x80-0xBF
-		cont2 := cont(endState)
-		cont1 := c.builder.AddByteRange(0xA0, 0xBF, cont2)
-		lead := c.builder.AddByteRange(0xE0, 0xE0, cont1)
-		branches = append(branches, lead)
-	}
-	{
-		// 0xE1-0xEC, 0x80-0xBF, 0x80-0xBF
-		cont2 := cont(endState)
-		cont1 := cont(cont2)
-		lead := c.builder.AddByteRange(0xE1, 0xEC, cont1)
-		branches = append(branches, lead)
-	}
-	{
-		// 0xED, 0x80-0x9F, 0x80-0xBF (avoid surrogates)
-		cont2 := cont(endState)
-		cont1 := c.builder.AddByteRange(0x80, 0x9F, cont2)
-		lead := c.builder.AddByteRange(0xED, 0xED, cont1)
-		branches = append(branches, lead)
-	}
-	{
-		// 0xEE-0xEF, 0x80-0xBF, 0x80-0xBF
-		cont2 := cont(endState)
-		cont1 := cont(cont2)
-		lead := c.builder.AddByteRange(0xEE, 0xEF, cont1)
-		branches = append(branches, lead)
-	}
-
-	// 4-byte sequences
-	{
-		// 0xF0, 0x90-0xBF, 0x80-0xBF, 0x80-0xBF
-		cont3 := cont(endState)
-		cont2 := cont(cont3)
-		cont1 := c.builder.AddByteRange(0x90, 0xBF, cont2)
-		lead := c.builder.AddByteRange(0xF0, 0xF0, cont1)
-		branches = append(branches, lead)
-	}
-	{
-		// 0xF1-0xF3, 0x80-0xBF, 0x80-0xBF, 0x80-0xBF
-		cont3 := cont(endState)
-		cont2 := cont(cont3)
-		cont1 := cont(cont2)
-		lead := c.builder.AddByteRange(0xF1, 0xF3, cont1)
-		branches = append(branches, lead)
-	}
-	{
-		// 0xF4, 0x80-0x8F, 0x80-0xBF, 0x80-0xBF
-		cont3 := cont(endState)
-		cont2 := cont(cont3)
-		cont1 := c.builder.AddByteRange(0x80, 0x8F, cont2)
-		lead := c.builder.AddByteRange(0xF4, 0xF4, cont1)
-		branches = append(branches, lead)
+	// Multi-byte UTF-8 sequences with suffix sharing.
+	// Process each sequence in REVERSE order to maximize cache hits.
+	// Example: for [E1-EC][80-BF][80-BF], process [80-BF] last byte first,
+	// which allows sharing with [EE-EF][80-BF][80-BF].
+	for _, seq := range sequences {
+		target := endState
+		// Process bytes in REVERSE order (from last to first)
+		for i := len(seq) - 1; i >= 0; i-- {
+			br := seq[i]
+			// getOrCreate returns cached state or creates new one
+			target = cache.getOrCreate(c.builder, target, br.lo, br.hi)
+		}
+		branches = append(branches, target)
 	}
 
 	// Create split state for alternation
