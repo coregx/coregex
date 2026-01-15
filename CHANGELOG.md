@@ -14,6 +14,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.1] - 2026-01-16
+
+### Added
+- **UseMultilineReverseSuffix Strategy** - Line-aware suffix search for multiline patterns (Fixes #97)
+  - Pattern `(?m)^/.*\.php`: **3.5-5.7x faster** than stdlib (was 24% slower)
+  - Algorithm: suffix prefilter → backward scan to line start → forward PikeVM verification
+  - No-match cases: **12-130x faster** due to efficient suffix prefilter rejection
+  - New 18th strategy in meta-engine
+  - Files: `meta/reverse_suffix_multiline.go`, `meta/reverse_suffix_multiline_test.go`
+
+### Performance (Issue #97 pattern `(?m)^/.*\.php` on 0.5MB log file)
+
+| Operation | coregex | stdlib | Speedup |
+|-----------|---------|--------|---------|
+| IsMatch | 20.6 µs | 72.2 µs | **3.5x** |
+| Find | 15.3 µs | 68.7 µs | **4.5x** |
+| CountAll (200 matches) | 2.56 ms | 14.6 ms | **5.7x** |
+
+---
+
 ## [0.11.0] - 2026-01-15
 
 ### Added

@@ -79,6 +79,8 @@ func (e *Engine) findAtZero(haystack []byte) *Match {
 		return e.findReverseSuffixSet(haystack)
 	case UseReverseInner:
 		return e.findReverseInner(haystack)
+	case UseMultilineReverseSuffix:
+		return e.findMultilineReverseSuffix(haystack)
 	case UseBoundedBacktracker:
 		return e.findBoundedBacktracker(haystack)
 	case UseCharClassSearcher:
@@ -127,6 +129,8 @@ func (e *Engine) findAtNonZero(haystack []byte, at int) *Match {
 		// Reverse strategies should work correctly with slicing
 		// since they operate on specific ranges
 		return e.findNFAAt(haystack, at)
+	case UseMultilineReverseSuffix:
+		return e.findMultilineReverseSuffixAt(haystack, at)
 	case UseBoundedBacktracker:
 		return e.findBoundedBacktrackerAt(haystack, at)
 	case UseCharClassSearcher:
@@ -405,6 +409,28 @@ func (e *Engine) findReverseInner(haystack []byte) *Match {
 
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseInnerSearcher.Find(haystack)
+}
+
+// findMultilineReverseSuffix searches using line-aware suffix prefilter + reverse DFA.
+// This handles multiline patterns like (?m)^/.*\.php where ^ matches at line starts.
+func (e *Engine) findMultilineReverseSuffix(haystack []byte) *Match {
+	if e.multilineReverseSuffixSearcher == nil {
+		// Fallback to NFA if multiline reverse suffix searcher not available
+		return e.findNFA(haystack)
+	}
+
+	atomic.AddUint64(&e.stats.DFASearches, 1)
+	return e.multilineReverseSuffixSearcher.Find(haystack)
+}
+
+// findMultilineReverseSuffixAt searches using line-aware suffix prefilter at position.
+func (e *Engine) findMultilineReverseSuffixAt(haystack []byte, at int) *Match {
+	if e.multilineReverseSuffixSearcher == nil {
+		return e.findNFAAt(haystack, at)
+	}
+
+	atomic.AddUint64(&e.stats.DFASearches, 1)
+	return e.multilineReverseSuffixSearcher.FindAt(haystack, at)
 }
 
 // findBoundedBacktracker searches using bounded backtracker.

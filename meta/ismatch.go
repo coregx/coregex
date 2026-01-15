@@ -40,6 +40,8 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchReverseSuffixSet(haystack)
 	case UseReverseInner:
 		return e.isMatchReverseInner(haystack)
+	case UseMultilineReverseSuffix:
+		return e.isMatchMultilineReverseSuffix(haystack)
 	case UseBoundedBacktracker:
 		return e.isMatchBoundedBacktracker(haystack)
 	case UseCharClassSearcher:
@@ -350,4 +352,15 @@ func (e *Engine) isMatchReverseInner(haystack []byte) bool {
 
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseInnerSearcher.IsMatch(haystack)
+}
+
+// isMatchMultilineReverseSuffix checks for match using line-aware suffix prefilter.
+// This handles multiline patterns like (?m)^/.*\.php where ^ matches at line starts.
+func (e *Engine) isMatchMultilineReverseSuffix(haystack []byte) bool {
+	if e.multilineReverseSuffixSearcher == nil {
+		return e.isMatchNFA(haystack)
+	}
+
+	atomic.AddUint64(&e.stats.DFASearches, 1)
+	return e.multilineReverseSuffixSearcher.IsMatch(haystack)
 }
