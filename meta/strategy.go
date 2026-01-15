@@ -470,6 +470,77 @@ func shouldUseDigitPrefilter(re *syntax.Regexp, nfaSize int, config Config) bool
 	return isDigitLeadPattern(re)
 }
 
+// isSafeForReverseSuffix checks if a pattern is safe for UseReverseSuffix strategy.
+// Returns true only for patterns where reverse search is proven to work correctly.
+//
+// Safe patterns (whitelist approach):
+//   - `.*suffix` - AnyChar Star followed by literal
+//   - `.+suffix` - AnyChar Plus followed by literal
+//   - `prefix.*suffix` - literal, AnyChar Star, literal
+//
+// Unsafe patterns (blacklist - excluded):
+//   - Quest (?) before suffix: `0?0`, `a?b` - reverse NFA bug with optional
+//   - Internal anchors: `0?^0`, `a$b` - position constraints don't reverse
+//   - Short patterns without wildcard: may have edge cases
+func isSafeForReverseSuffix(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpConcat:
+		if len(re.Sub) < 2 {
+			return false
+		}
+		// Check for .*suffix or .+suffix pattern
+		// Look for AnyChar Star/Plus anywhere in concat
+		hasWildcard := false
+		for i := 0; i < len(re.Sub)-1; i++ {
+			sub := re.Sub[i]
+			if (sub.Op == syntax.OpStar || sub.Op == syntax.OpPlus) &&
+				len(sub.Sub) > 0 &&
+				(sub.Sub[0].Op == syntax.OpAnyChar || sub.Sub[0].Op == syntax.OpAnyCharNotNL) {
+				hasWildcard = true
+				break
+			}
+		}
+		if !hasWildcard {
+			return false // No .* or .+ - not safe
+		}
+		// Check for internal anchors (^ or $ not at expected positions)
+		for i := 1; i < len(re.Sub)-1; i++ {
+			if containsAnchor(re.Sub[i]) {
+				return false // Internal anchor - not safe
+			}
+		}
+		return true
+
+	case syntax.OpCapture:
+		if len(re.Sub) > 0 {
+			return isSafeForReverseSuffix(re.Sub[0])
+		}
+		return false
+
+	default:
+		return false
+	}
+}
+
+// containsAnchor checks if AST contains any anchor (^, $, \A, \z)
+func containsAnchor(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText:
+		return true
+	case syntax.OpConcat, syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if containsAnchor(sub) {
+				return true
+			}
+		}
+	case syntax.OpCapture, syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		if len(re.Sub) > 0 {
+			return containsAnchor(re.Sub[0])
+		}
+	}
+	return false
+}
+
 // shouldUseReverseSuffixSet checks if multiple suffix literals are available for Teddy prefilter.
 // This handles patterns like `.*\.(txt|log|md)` where LCS is empty but individual suffixes are useful.
 // Returns true if ReverseSuffixSet strategy should be used.
@@ -517,6 +588,13 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 		return 0
 	}
 
+	// Patterns with end anchor ($, \z) NOT at end position are impossible to match.
+	// E.g., `$00` has $ followed by "00" - nothing can follow end-of-string.
+	// These patterns should fall through to NFA which will correctly return no match.
+	if nfa.HasImpossibleEndAnchor(re) {
+		return 0
+	}
+
 	// Word boundary assertions (\b, \B) don't work correctly with reverse DFA search.
 	if hasWordBoundary(re) {
 		return 0
@@ -546,6 +624,12 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 	if suffixLiterals != nil && !suffixLiterals.IsEmpty() {
 		lcs := suffixLiterals.LongestCommonSuffix()
 		if len(lcs) >= config.MinLiteralLen {
+			// Use whitelist approach: only enable ReverseSuffix for patterns
+			// where reverse search is proven to work correctly.
+			// Patterns like "0?0", "0?^0" have bugs in reverse NFA.
+			if !isSafeForReverseSuffix(re) {
+				return 0 // Fall through to other strategies
+			}
 			return UseReverseSuffix // Good suffix literal available
 		}
 	}

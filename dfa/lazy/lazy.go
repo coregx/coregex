@@ -1200,7 +1200,11 @@ func (d *DFA) IsMatchReverse(haystack []byte, start, end int) bool {
 		}
 	}
 
-	return false
+	// After processing all bytes, check if final state is a match.
+	// This handles patterns with optional elements at the start (reverse end),
+	// e.g., pattern "0?0" on input "0" - after processing "0" we're in a state
+	// where the optional "0?" already matched (zero times).
+	return currentState.IsMatch()
 }
 
 // getStartStateForReverse returns the appropriate start state for reverse search.

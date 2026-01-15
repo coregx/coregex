@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"bytes"
 	"errors"
 	"regexp/syntax"
 	"sync/atomic"
@@ -58,6 +59,7 @@ type Engine struct {
 	compositeSequenceDFA     *nfa.CompositeSequenceDFA // DFA for composite patterns (faster than backtracking)
 	branchDispatcher         *nfa.BranchDispatcher     // O(1) branch dispatch for anchored alternations
 	anchoredFirstBytes       *nfa.FirstByteSet         // O(1) first-byte rejection for anchored patterns
+	anchoredSuffix           []byte                    // O(1) suffix rejection for anchored patterns
 	reverseSearcher          *ReverseAnchoredSearcher
 	reverseSuffixSearcher    *ReverseSuffixSearcher
 	reverseSuffixSetSearcher *ReverseSuffixSetSearcher
@@ -505,6 +507,28 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		}
 	}
 
+	// Extract suffix literal for fully-anchored patterns (both ^ and $).
+	// This enables O(1) early rejection via bytes.HasSuffix check.
+	// For patterns like ^/.*\.php$, reject inputs not ending with ".php".
+	// NOTE: Only works for end-anchored patterns! Non-end-anchored like ^/.*\.php
+	// can match /foo.php/bar (matching /foo.php), so suffix check would be wrong.
+	var anchoredSuffix []byte
+	isEndAnchored := nfa.IsPatternEndAnchored(re)
+	if isStartAnchored && isEndAnchored && strategy == UseBoundedBacktracker {
+		suffixExtractor := literal.New(literal.ExtractorConfig{
+			MaxLiterals:   config.MaxLiterals,
+			MaxLiteralLen: 64,
+			MaxClassSize:  10,
+		})
+		suffixLiterals := suffixExtractor.ExtractSuffixes(re)
+		if suffixLiterals != nil && !suffixLiterals.IsEmpty() {
+			lcs := suffixLiterals.LongestCommonSuffix()
+			if len(lcs) >= config.MinLiteralLen {
+				anchoredSuffix = lcs
+			}
+		}
+	}
+
 	// Build Aho-Corasick fallback for Fat Teddy patterns.
 	// Fat Teddy's AVX2 SIMD has setup overhead that makes it slower than Aho-Corasick
 	// for small haystacks (< 64 bytes). This matches Rust regex's minimum_len() approach.
@@ -534,6 +558,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		compositeSequenceDFA:     charClassResult.compositeSeqDFA,
 		branchDispatcher:         charClassResult.branchDispatcher,
 		anchoredFirstBytes:       anchoredFirstBytes,
+		anchoredSuffix:           anchoredSuffix,
 		reverseSearcher:          engines.reverseSearcher,
 		reverseSuffixSearcher:    engines.reverseSuffixSearcher,
 		reverseSuffixSetSearcher: engines.reverseSuffixSetSearcher,
@@ -855,6 +880,12 @@ func (e *Engine) isMatchBoundedBacktracker(haystack []byte) bool {
 		if !e.anchoredFirstBytes.Contains(haystack[0]) {
 			return false
 		}
+	}
+
+	// O(1) early rejection for anchored patterns using suffix prefilter.
+	// For ^/.*[\w-]+\.php, quickly reject inputs not ending with ".php".
+	if len(e.anchoredSuffix) > 0 && !bytes.HasSuffix(haystack, e.anchoredSuffix) {
+		return false
 	}
 
 	atomic.AddUint64(&e.stats.NFASearches, 1) // Count as NFA-family search for stats
