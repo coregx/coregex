@@ -21,10 +21,10 @@
 //   data_base+0(FP)  - pointer to data (8 bytes)
 //   data_len+8(FP)   - data length (8 bytes)
 //   data_cap+16(FP)  - data capacity (8 bytes, unused but part of slice)
-//   ret+24(FP)       - return value: bool (1 byte, but uses 8 bytes for alignment)
+//   ret+24(FP)       - return value: bool (1 byte)
 //
-// Total argument frame size: 32 bytes (8+8+8+8)
-TEXT ·isASCIIAVX2(SB), NOSPLIT, $0-32
+// Total argument frame size: 25 bytes (8+8+8+1)
+TEXT ·isASCIIAVX2(SB), NOSPLIT, $0-25
 	// Load parameters
 	MOVQ    data_base+0(FP), SI     // SI = data pointer
 	MOVQ    data_len+8(FP), DX      // DX = data length
