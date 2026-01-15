@@ -470,38 +470,75 @@ func shouldUseDigitPrefilter(re *syntax.Regexp, nfaSize int, config Config) bool
 	return isDigitLeadPattern(re)
 }
 
-// hasOptionalBeforeSuffix checks if the pattern has a problematic optional element
-// directly before the suffix. This is a workaround for a bug in nfa/reverse.go
-// where Split states for optional elements are not correctly reversed.
+// isSafeForReverseSuffix checks if a pattern is safe for UseReverseSuffix strategy.
+// Returns true only for patterns where reverse search is proven to work correctly.
 //
-// The bug only manifests when:
-// 1. There's a Quest (?) before the suffix (not Star/Plus which work differently)
-// 2. The pattern is simple enough that suffix could be the entire match
+// Safe patterns (whitelist approach):
+//   - `.*suffix` - AnyChar Star followed by literal
+//   - `.+suffix` - AnyChar Plus followed by literal
+//   - `prefix.*suffix` - literal, AnyChar Star, literal
 //
-// Patterns like "0?0" have this problem. But ".*@example.com" is OK because
-// the .* wildcard handles the reverse correctly.
-func hasOptionalBeforeSuffix(re *syntax.Regexp) bool {
+// Unsafe patterns (blacklist - excluded):
+//   - Quest (?) before suffix: `0?0`, `a?b` - reverse NFA bug with optional
+//   - Internal anchors: `0?^0`, `a$b` - position constraints don't reverse
+//   - Short patterns without wildcard: may have edge cases
+func isSafeForReverseSuffix(re *syntax.Regexp) bool {
 	switch re.Op {
 	case syntax.OpConcat:
-		// Only check very short patterns (2-3 elements) where the bug manifests
-		// Longer patterns like ".*suffix" work correctly
-		if len(re.Sub) == 2 {
-			beforeLast := re.Sub[0]
-			// Only Quest (?) is problematic, not Star (*) or Plus (+)
-			// Star/Plus have different NFA structure that reverses correctly
-			if beforeLast.Op == syntax.OpQuest {
-				return true
+		if len(re.Sub) < 2 {
+			return false
+		}
+		// Check for .*suffix or .+suffix pattern
+		// Look for AnyChar Star/Plus anywhere in concat
+		hasWildcard := false
+		for i := 0; i < len(re.Sub)-1; i++ {
+			sub := re.Sub[i]
+			if (sub.Op == syntax.OpStar || sub.Op == syntax.OpPlus) &&
+				len(sub.Sub) > 0 &&
+				(sub.Sub[0].Op == syntax.OpAnyChar || sub.Sub[0].Op == syntax.OpAnyCharNotNL) {
+				hasWildcard = true
+				break
 			}
 		}
-		return false
+		if !hasWildcard {
+			return false // No .* or .+ - not safe
+		}
+		// Check for internal anchors (^ or $ not at expected positions)
+		for i := 1; i < len(re.Sub)-1; i++ {
+			if containsAnchor(re.Sub[i]) {
+				return false // Internal anchor - not safe
+			}
+		}
+		return true
+
 	case syntax.OpCapture:
 		if len(re.Sub) > 0 {
-			return hasOptionalBeforeSuffix(re.Sub[0])
+			return isSafeForReverseSuffix(re.Sub[0])
 		}
 		return false
+
 	default:
 		return false
 	}
+}
+
+// containsAnchor checks if AST contains any anchor (^, $, \A, \z)
+func containsAnchor(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText:
+		return true
+	case syntax.OpConcat, syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if containsAnchor(sub) {
+				return true
+			}
+		}
+	case syntax.OpCapture, syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		if len(re.Sub) > 0 {
+			return containsAnchor(re.Sub[0])
+		}
+	}
+	return false
 }
 
 // shouldUseReverseSuffixSet checks if multiple suffix literals are available for Teddy prefilter.
@@ -587,11 +624,10 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 	if suffixLiterals != nil && !suffixLiterals.IsEmpty() {
 		lcs := suffixLiterals.LongestCommonSuffix()
 		if len(lcs) >= config.MinLiteralLen {
-			// BUG WORKAROUND: Reverse NFA has a bug with optional elements (?, *, +)
-			// directly before the suffix literal. Patterns like "0?0" fail when
-			// the input equals just the suffix. Skip UseReverseSuffix for such patterns.
-			// TODO: Fix the root cause in nfa/reverse.go Split handling.
-			if hasOptionalBeforeSuffix(re) {
+			// Use whitelist approach: only enable ReverseSuffix for patterns
+			// where reverse search is proven to work correctly.
+			// Patterns like "0?0", "0?^0" have bugs in reverse NFA.
+			if !isSafeForReverseSuffix(re) {
 				return 0 // Fall through to other strategies
 			}
 			return UseReverseSuffix // Good suffix literal available
