@@ -112,8 +112,10 @@ func ExampleRegex_FindStringSubmatch() {
 }
 
 // ExampleRegex_NumSubexp demonstrates counting capture groups.
+// NumSubexp returns the number of parenthesized subexpressions,
+// not counting the full match (group 0).
 func ExampleRegex_NumSubexp() {
 	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
 	fmt.Println("Number of groups:", re.NumSubexp())
-	// Output: Number of groups: 4
+	// Output: Number of groups: 3
 }

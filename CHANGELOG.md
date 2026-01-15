@@ -10,8 +10,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
-- UTF-8 Automata optimization
 - SIMD prefilter for CompositeSequenceDFA (#83)
+
+---
+
+## [0.10.7] - 2026-01-15
+
+### Added
+- **100% stdlib regexp API compatibility** - All remaining methods now implemented:
+  - `CompilePOSIX`, `MustCompilePOSIX` - POSIX ERE compilation with leftmost-longest semantics
+  - `Match(pattern, b)`, `MatchString(pattern, s)` - Package-level matching functions
+  - `MatchReader(pattern, r)` - Package-level reader matching
+  - `SubexpIndex(name)` - Find named capture group index
+  - `LiteralPrefix()` - Extract literal prefix from pattern
+  - `Expand`, `ExpandString` - Template expansion with `$n` substitution
+  - `Copy()` - Regex duplication (deprecated since Go 1.12)
+  - `MarshalText`, `UnmarshalText` - encoding.TextMarshaler/TextUnmarshaler interface
+  - `MatchReader`, `FindReaderIndex`, `FindReaderSubmatchIndex` - io.RuneReader methods
+
+- **New stdlib compatibility tests** (`regex_stdlib_compat_test.go`):
+  - Tests for all newly added methods
+  - Direct comparison with stdlib behavior
+  - Edge case coverage for LiteralPrefix with anchors
+
+### Fixed
+- **Critical: Dot metacharacter matched UTF-8 bytes instead of codepoints** (#85)
+  - Bug: `FindAllString(".", "日本語")` returned 9 matches (bytes) instead of 3 (codepoints)
+  - Root cause: `compileAnyCharNotNL` used byte range `[0x00-0x09, 0x0B-0xFF]` instead of UTF-8 sequences
+  - Fix: New `compileUTF8Any()` builds proper 1/2/3/4-byte UTF-8 automata
+  - Handles all valid UTF-8: ASCII, 2-byte (U+0080-U+07FF), 3-byte (U+0800-U+FFFF), 4-byte (U+10000-U+10FFFF)
+  - Correctly excludes surrogates (U+D800-U+DFFF) in 3-byte sequences
+
+- **Critical: Negated Unicode property classes matched bytes instead of codepoints** (#91)
+  - Bug: `\P{Han}` on "中" (3-byte UTF-8) returned 3 matches instead of 0
+  - Root cause: `compileUnicodeClassLarge` matched individual bytes `[0x80-0xFF]`
+  - Fix: Proper UTF-8 range compilation via `compileUTF8Range()` family of functions
+  - Optimization: Simple negated ASCII classes (e.g., `[^,]`) use efficient "any UTF-8" path
+  - Complex classes (e.g., `\P{Han}`) use precise UTF-8 automata for each range
+
+- **Empty character classes incorrectly matched empty string** (#88)
+  - Bug: `[^\S\s]` (logically empty) matched empty strings
+  - Fix: Use `compileNoMatch()` instead of `compileEmptyMatch()` for empty ranges
+
+- **Case-insensitive patterns used incorrect literal prefilters** (#87)
+  - Bug: `(?i)hello` with literal prefilter searched for exact "hello" bytes
+  - Fix: Skip literal extraction when `FoldCase` flag is set in `extractPrefixes/Suffixes/Inner`
+
+- **Empty pattern Split returned incorrect results** (#90)
+  - Bug: `Split("", "abc")` behavior differed from stdlib
+  - Fix: Handle zero-width matches at string boundaries correctly
+
+### Changed
+- `compileUnicodeClassLarge` now builds proper UTF-8 automata instead of byte approximations
+- Added 6 new UTF-8 compilation helper functions for precise range handling
+- Improved surrogate gap handling in 3-byte UTF-8 compilation
+
+### Added
+- `TestDotMatchesUTF8Codepoints` - regression tests for dot metacharacter
+- `TestNegatedUnicodePropertyClass` - regression tests for `\P{Han}`, `\P{Latin}`, etc.
+- `TestEmptyCharacterClass` - regression tests for `[^\S\s]`, `[^\D\d]`
 
 ---
 

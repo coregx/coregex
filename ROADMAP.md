@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-01-14 | **Current Version**: v0.10.5 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-01-15 | **Current Version**: v0.10.7 | **Target**: v1.0.0 stable
 
 ---
 
@@ -37,11 +37,13 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 ```
 v0.10.0 ✅ → Fat Teddy 33-64 patterns (AVX2, 9GB/s)
          ↓
-v0.10.1 ✅ → Version pattern fix, optimization documentation
+v0.10.1-4 ✅ → Thread-safety, version pattern fixes
          ↓
-v0.10.4 ✅ → Thread-safety fix for concurrent Regexp usage (#78)
+v0.10.5 ✅ → CompositeSearcher backtracking fix (#81)
          ↓
-v0.10.5 (Current) ✅ → CompositeSearcher backtracking fix (#81)
+v0.10.6 ✅ → CompositeSequenceDFA (5x for overlapping patterns), FindAllIndexCompact API
+         ↓
+v0.10.7 (Current) ✅ → UTF-8 fixes + 100% stdlib API compatibility
          ↓
 v0.11.0 → CompositeSearcher integration (#72) - 5.3x faster on \w+\s+\w+ patterns
          ↓
@@ -131,7 +133,7 @@ v1.0.0 STABLE → Production release with API stability guarantee
 | ID | Feature | Impact | Complexity | Status |
 |----|---------|--------|------------|--------|
 | PLAT-001 | ARM NEON SIMD | Apple Silicon, ARM servers | HIGH | Planned |
-| OPT-014 | UTF-8 Automata Optimization | Unicode performance | HIGH | Planned |
+| OPT-014 | UTF-8 Automata Optimization | Unicode performance | HIGH | **Partial** (v0.10.7) |
 
 **Target**: 4-6 weeks
 
@@ -257,7 +259,9 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.10.5** | 2026-01-14 | Fix | **CompositeSearcher backtracking for overlapping char classes (#81)** |
+| **v0.10.7** | 2026-01-15 | Feature | **UTF-8 fixes + 100% stdlib API compatibility** |
+| v0.10.6 | 2026-01-14 | Feature | CompositeSequenceDFA (5x overlapping patterns), FindAllIndexCompact API |
+| v0.10.5 | 2026-01-14 | Fix | CompositeSearcher backtracking for overlapping char classes (#81) |
 | v0.10.4 | 2026-01-14 | Fix | Thread-safety for concurrent Regexp usage (#78) |
 | v0.10.3 | 2026-01-08 | Fix | FindStringSubmatch capture groups fix (#77) |
 | v0.10.2 | 2026-01-07 | Fix | Version pattern regression hotfix (#75) |
@@ -281,4 +285,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.10.5 | Next: v0.11.0 (CompositeSearcher integration #72) | Target: v1.0.0*
+*Current: v0.10.7 | Next: v0.11.0 (CompositeSearcher integration #72) | Target: v1.0.0*

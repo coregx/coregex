@@ -46,6 +46,8 @@
 package coregex
 
 import (
+	"io"
+	"regexp/syntax"
 	"unsafe"
 
 	"github.com/coregx/coregex/meta"
@@ -128,6 +130,58 @@ func MustCompile(pattern string) *Regex {
 		panic("regexp: Compile(`" + pattern + "`): " + err.Error())
 	}
 	return re
+}
+
+// CompilePOSIX is like Compile but restricts the regular expression to
+// POSIX ERE (egrep) syntax and changes the match semantics to leftmost-longest.
+//
+// That is, when matching against text, the regexp returns a match that
+// begins as early as possible in the input (leftmost), and among those
+// it chooses a match that is as long as possible.
+// This so-called leftmost-longest matching is the same semantics
+// that early regular expression implementations used and that POSIX
+// specifies.
+func CompilePOSIX(pattern string) (*Regex, error) {
+	re, err := Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	re.Longest()
+	return re, nil
+}
+
+// MustCompilePOSIX is like CompilePOSIX but panics if the expression cannot
+// be parsed.
+// It simplifies safe initialization of global variables holding compiled
+// regular expressions.
+func MustCompilePOSIX(pattern string) *Regex {
+	re, err := CompilePOSIX(pattern)
+	if err != nil {
+		panic("regexp: CompilePOSIX(`" + pattern + "`): " + err.Error())
+	}
+	return re
+}
+
+// Match reports whether the byte slice b contains any match of the regular
+// expression pattern.
+// More complicated queries need to use Compile and the full Regexp interface.
+func Match(pattern string, b []byte) (matched bool, err error) {
+	re, err := Compile(pattern)
+	if err != nil {
+		return false, err
+	}
+	return re.Match(b), nil
+}
+
+// MatchString reports whether the string s contains any match of the regular
+// expression pattern.
+// More complicated queries need to use Compile and the full Regexp interface.
+func MatchString(pattern string, s string) (matched bool, err error) {
+	re, err := Compile(pattern)
+	if err != nil {
+		return false, err
+	}
+	return re.MatchString(s), nil
 }
 
 // CompileWithConfig compiles a pattern with custom configuration.
@@ -474,16 +528,97 @@ func (r *Regex) Longest() {
 	r.engine.SetLongest(true)
 }
 
-// NumSubexp returns the number of parenthesized subexpressions (capture groups).
-// Group 0 is the entire match, so the returned value equals the number of
-// explicit capture groups plus 1.
+// LiteralPrefix returns a literal string that must begin any match of the
+// regular expression re. It returns the boolean true if the literal string
+// comprises the entire regular expression.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`Hello, \w+`)
+//	prefix, complete := re.LiteralPrefix()
+//	// prefix = "Hello, ", complete = false
+//
+//	re2 := coregex.MustCompile(`Hello`)
+//	prefix2, complete2 := re2.LiteralPrefix()
+//	// prefix2 = "Hello", complete2 = true
+func (r *Regex) LiteralPrefix() (prefix string, complete bool) {
+	re, err := syntax.Parse(r.pattern, syntax.Perl)
+	if err != nil {
+		return "", false
+	}
+	re = re.Simplify()
+	return literalPrefix(re)
+}
+
+// literalPrefix extracts the literal prefix from a parsed regex AST.
+func literalPrefix(re *syntax.Regexp) (string, bool) {
+	switch re.Op {
+	case syntax.OpLiteral:
+		return string(re.Rune), true
+	case syntax.OpConcat:
+		// Concatenation: collect literal prefixes from the beginning
+		var prefix []rune
+		hasAnchor := false
+		for _, sub := range re.Sub {
+			switch sub.Op {
+			case syntax.OpLiteral:
+				prefix = append(prefix, sub.Rune...)
+			case syntax.OpCapture:
+				// Look inside capture group
+				inner, complete := literalPrefix(sub)
+				prefix = append(prefix, []rune(inner)...)
+				if !complete {
+					return string(prefix), false
+				}
+			case syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText:
+				// Skip anchors - they don't produce literal characters
+				// but mark that pattern has anchors (not complete)
+				hasAnchor = true
+				continue
+			case syntax.OpEmptyMatch:
+				// Empty match doesn't affect prefix
+				continue
+			default:
+				// Non-literal found
+				return string(prefix), false
+			}
+		}
+		// If we have anchors, the pattern is not "complete" (has additional constraints)
+		if hasAnchor {
+			return string(prefix), false
+		}
+		return string(prefix), true
+	case syntax.OpCapture:
+		// Capture group: look at the contents
+		if len(re.Sub) == 1 {
+			return literalPrefix(re.Sub[0])
+		}
+		return "", false
+	case syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText:
+		// Anchors alone mean no literal prefix and not complete
+		return "", false
+	case syntax.OpEmptyMatch:
+		return "", true
+	default:
+		return "", false
+	}
+}
+
+// NumSubexp returns the number of parenthesized subexpressions in this Regex.
+// This does NOT include group 0 (the entire match), matching stdlib regexp behavior.
 //
 // Example:
 //
 //	re := coregex.MustCompile(`(\w+)@(\w+)\.(\w+)`)
-//	println(re.NumSubexp()) // 4 (entire match + 3 groups)
+//	println(re.NumSubexp()) // 3 (just the capture groups)
 func (r *Regex) NumSubexp() int {
-	return r.engine.NumCaptures()
+	// Subtract 1 because NumCaptures() includes group 0 (entire match)
+	// but NumSubexp should only count parenthesized subexpressions
+	n := r.engine.NumCaptures() - 1
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 // SubexpNames returns the names of the parenthesized subexpressions in this Regex.
@@ -501,6 +636,33 @@ func (r *Regex) NumSubexp() int {
 //	// names[2] = "month"
 func (r *Regex) SubexpNames() []string {
 	return r.engine.SubexpNames()
+}
+
+// SubexpIndex returns the index of the first subexpression with the given name,
+// or -1 if there is no subexpression with that name.
+//
+// Note that multiple subexpressions can be written using the same name, as in
+// (?P<bob>a+)(?P<bob>b+), which declares two subexpressions named "bob".
+// In this case, SubexpIndex returns the index of the leftmost such subexpression
+// in the regular expression.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`(?P<year>\d+)-(?P<month>\d+)`)
+//	re.SubexpIndex("year")  // returns 1
+//	re.SubexpIndex("month") // returns 2
+//	re.SubexpIndex("day")   // returns -1
+func (r *Regex) SubexpIndex(name string) int {
+	if name == "" {
+		return -1
+	}
+	names := r.SubexpNames()
+	for i, n := range names {
+		if n == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // FindSubmatch returns a slice holding the text of the leftmost match
@@ -797,6 +959,34 @@ func (r *Regex) ReplaceAllLiteralString(src, repl string) string {
 	return string(r.ReplaceAllLiteral([]byte(src), []byte(repl)))
 }
 
+// Expand appends template to dst and returns the result; during the
+// append, Expand replaces variables in the template with corresponding
+// matches drawn from src. The match slice should contain the progressively
+// numbered submatches as returned by FindSubmatchIndex.
+//
+// In the template, a variable is denoted by a substring of the form $name
+// or ${name}, where name is a non-empty sequence of letters, digits, and
+// underscores. A purely numeric name like $1 refers to the submatch with
+// the corresponding index; other names refer to capturing parentheses
+// named with the (?P<name>...) syntax. A reference to an out of range or
+// unmatched index or a name that is not present in the regular expression
+// is replaced with an empty slice.
+//
+// In the $name form, name is taken to be as long as possible: $1x is
+// equivalent to ${1x}, not ${1}x, and, $10 is equivalent to ${10}, not ${1}0.
+//
+// To insert a literal $ in the output, use $$ in the template.
+func (r *Regex) Expand(dst []byte, template []byte, src []byte, match []int) []byte {
+	return r.expand(dst, template, src, match)
+}
+
+// ExpandString is like Expand but the template and source are strings.
+// It appends to and returns a byte slice in order to give the caller
+// control over allocation.
+func (r *Regex) ExpandString(dst []byte, template string, src string, match []int) []byte {
+	return r.expand(dst, []byte(template), []byte(src), match)
+}
+
 // expand appends template to dst and returns the result; during the
 // append, it replaces $1, $2, etc. with the corresponding submatch.
 // $0 is the entire match.
@@ -871,11 +1061,9 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 	}
 
 	// Need to find submatches for expansion
-	numGroups := r.NumSubexp()
-	if numGroups == 0 {
-		// No capture groups, fallback to literal
-		return r.ReplaceAllLiteral(src, repl)
-	}
+	// Use NumCaptures() (includes group 0) for internal buffer sizing
+	// NumSubexp() returns only parenthesized groups (excluding group 0)
+	numCaptures := r.engine.NumCaptures() // includes group 0
 
 	// Pre-allocate result buffer based on input size
 	// Estimate: input size + 25% for replacements
@@ -883,7 +1071,8 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 	result := make([]byte, 0, estimatedLen)
 
 	// Pre-allocate matchIndices buffer and reuse it (avoid allocation per match)
-	matchIndices := make([]int, numGroups*2)
+	// This includes group 0 (entire match) plus all capture groups
+	matchIndices := make([]int, numCaptures*2)
 
 	lastEnd := 0
 	pos := 0
@@ -899,7 +1088,7 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 
 		// Get match indices (already absolute from FindSubmatchAt)
 		// Reuse pre-allocated buffer (reset values each iteration)
-		for i := 0; i < numGroups; i++ {
+		for i := 0; i < numCaptures; i++ {
 			idx := matchData.GroupIndex(i)
 			if len(idx) >= 2 {
 				matchIndices[i*2] = idx[0]
@@ -1091,6 +1280,17 @@ func (r *Regex) Split(s string, n int) []string {
 
 	lastEnd := 0
 	for _, idx := range indices {
+		// Skip empty match at the beginning (position 0 with zero-width match)
+		// This matches stdlib behavior: Split("", "abc") = ["a", "b", "c"], not ["", "a", "b", "c", ""]
+		if lastEnd == 0 && idx[0] == 0 && idx[1] == 0 {
+			continue
+		}
+
+		// Skip empty match at the very end of string
+		if idx[0] == len(s) && idx[1] == len(s) {
+			break
+		}
+
 		// Add substring before match
 		result = append(result, s[lastEnd:idx[0]])
 		lastEnd = idx[1]
@@ -1104,6 +1304,7 @@ func (r *Regex) Split(s string, n int) []string {
 	}
 
 	// Add remaining text after last match
+	// Always add even if empty (matches stdlib behavior)
 	result = append(result, s[lastEnd:])
 	return result
 }
@@ -1227,4 +1428,107 @@ func (r *Regex) FindAllSubmatchIndex(b []byte, n int) [][]int {
 //	indices := re.FindAllStringSubmatchIndex("a@b.c x@y.z", -1)
 func (r *Regex) FindAllStringSubmatchIndex(s string, n int) [][]int {
 	return r.FindAllSubmatchIndex(stringToBytes(s), n)
+}
+
+// Copy returns a new Regex object copied from re.
+// Calling Longest on one copy does not affect another.
+//
+// Deprecated: In earlier releases, when using a Regexp in multiple goroutines,
+// giving each goroutine its own copy helped to avoid lock contention.
+// As of Go 1.12, using Copy is no longer necessary to avoid lock contention.
+// Copy may still be appropriate if the reason for its use is to make
+// two copies with different Longest settings.
+func (r *Regex) Copy() *Regex {
+	// Create a new Regex with the same pattern
+	// Note: This re-compiles the pattern, which is slightly slower than
+	// sharing the internal engine, but ensures complete independence.
+	re, err := Compile(r.pattern)
+	if err != nil {
+		// This should never happen since the pattern was already compiled
+		return nil
+	}
+	if r.longest {
+		re.Longest()
+	}
+	return re
+}
+
+// MarshalText implements encoding.TextMarshaler. The output
+// is the result of r.String().
+func (r *Regex) MarshalText() ([]byte, error) {
+	return []byte(r.pattern), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler by calling
+// Compile on the encoded value.
+func (r *Regex) UnmarshalText(text []byte) error {
+	newRe, err := Compile(string(text))
+	if err != nil {
+		return err
+	}
+	*r = *newRe
+	return nil
+}
+
+// MatchReader reports whether the text returned by the RuneReader
+// contains any match of the regular expression re.
+func (r *Regex) MatchReader(reader io.RuneReader) bool {
+	// Read all runes into a string and match
+	var runes []rune
+	for {
+		rn, _, err := reader.ReadRune()
+		if err != nil {
+			break
+		}
+		runes = append(runes, rn)
+	}
+	return r.MatchString(string(runes))
+}
+
+// FindReaderIndex returns a two-element slice of integers defining the
+// location of the leftmost match of the regular expression in text read from
+// the RuneReader. The match text was found in the input stream at
+// byte offset loc[0] through loc[1]-1.
+// A return value of nil indicates no match.
+func (r *Regex) FindReaderIndex(reader io.RuneReader) []int {
+	// Read all runes into a string and find
+	var runes []rune
+	for {
+		rn, _, err := reader.ReadRune()
+		if err != nil {
+			break
+		}
+		runes = append(runes, rn)
+	}
+	return r.FindStringIndex(string(runes))
+}
+
+// FindReaderSubmatchIndex returns a slice holding the index pairs
+// identifying the leftmost match of the regular expression of text
+// read by the RuneReader, and the matches, if any, of its subexpressions,
+// as defined by the 'Submatch' and 'Index' descriptions in the
+// package comment.
+// A return value of nil indicates no match.
+func (r *Regex) FindReaderSubmatchIndex(reader io.RuneReader) []int {
+	// Read all runes into a string and find
+	var runes []rune
+	for {
+		rn, _, err := reader.ReadRune()
+		if err != nil {
+			break
+		}
+		runes = append(runes, rn)
+	}
+	return r.FindStringSubmatchIndex(string(runes))
+}
+
+// MatchReader reports whether the text returned by the RuneReader
+// contains any match of the regular expression pattern.
+// More complicated queries need to use Compile and the full Regexp interface.
+func MatchReader(pattern string, r io.RuneReader) (matched bool, err error) {
+	re, err := Compile(pattern)
+	if err != nil {
+		return false, err
+	}
+	return re.MatchReader(r), nil
 }
