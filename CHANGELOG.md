@@ -14,6 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.4] - 2026-01-16
+
+### Fixed
+- **FindAll/FindAllIndex now use UseMultilineReverseSuffix strategy** (Issue #102)
+  - Previously `FindIndicesAt()` was missing dispatch for `UseMultilineReverseSuffix`
+  - `IsMatch`/`Find` were fast (1µs), but `FindAll` was slow (78ms) - **100x gap vs Rust**
+  - After fix: `FindAll` on 6MB with 2000 matches: **~1ms** (was 78ms)
+
+### Changed
+- Updated `golang.org/x/sys` dependency v0.39.0 → v0.40.0
+
+---
+
 ## [0.11.3] - 2026-01-16
 
 ### Changed
@@ -1537,6 +1550,7 @@ v1.0.0 → Stable release (API frozen)
 ---
 
 [Unreleased]: https://github.com/coregx/coregex/compare/v0.11.3...HEAD
+[0.11.4]: https://github.com/coregx/coregex/releases/tag/v0.11.4
 [0.11.3]: https://github.com/coregx/coregex/releases/tag/v0.11.3
 [0.11.2]: https://github.com/coregx/coregex/releases/tag/v0.11.2
 [0.11.1]: https://github.com/coregx/coregex/releases/tag/v0.11.1

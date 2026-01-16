@@ -46,6 +46,8 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesDigitPrefilter(haystack)
 	case UseAhoCorasick:
 		return e.findIndicesAhoCorasick(haystack)
+	case UseMultilineReverseSuffix:
+		return e.findIndicesMultilineReverseSuffix(haystack)
 	default:
 		return e.findIndicesNFA(haystack)
 	}
@@ -86,6 +88,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesDigitPrefilterAt(haystack, at)
 	case UseAhoCorasick:
 		return e.findIndicesAhoCorasickAt(haystack, at)
+	case UseMultilineReverseSuffix:
+		return e.findIndicesMultilineReverseSuffixAt(haystack, at)
 	default:
 		return e.findIndicesNFAAt(haystack, at)
 	}
@@ -434,6 +438,24 @@ func (e *Engine) findIndicesReverseInnerAt(haystack []byte, at int) (int, int, b
 	}
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.reverseInnerSearcher.FindIndicesAt(haystack, at)
+}
+
+// findIndicesMultilineReverseSuffix searches using multiline suffix optimization - zero alloc.
+func (e *Engine) findIndicesMultilineReverseSuffix(haystack []byte) (int, int, bool) {
+	if e.multilineReverseSuffixSearcher == nil {
+		return e.findIndicesNFA(haystack)
+	}
+	atomic.AddUint64(&e.stats.DFASearches, 1)
+	return e.multilineReverseSuffixSearcher.FindIndicesAt(haystack, 0)
+}
+
+// findIndicesMultilineReverseSuffixAt searches using multiline suffix optimization from position - zero alloc.
+func (e *Engine) findIndicesMultilineReverseSuffixAt(haystack []byte, at int) (int, int, bool) {
+	if e.multilineReverseSuffixSearcher == nil {
+		return e.findIndicesNFAAt(haystack, at)
+	}
+	atomic.AddUint64(&e.stats.DFASearches, 1)
+	return e.multilineReverseSuffixSearcher.FindIndicesAt(haystack, at)
 }
 
 // findIndicesBoundedBacktracker searches using bounded backtracker - zero alloc.
