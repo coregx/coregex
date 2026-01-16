@@ -66,12 +66,14 @@ Cross-language benchmarks on 6MB input ([source](https://github.com/kolkov/regex
 | Literal alternation | 600 ms | 5 ms | **113x** |
 | Inner `.*keyword.*` | 453 ms | 2 ms | **285x** |
 | Suffix `.*\.txt` | 350 ms | <1 ms | **350x+** |
+| Multiline `(?m)^/.*\.php` | 103 ms | <1 ms | **100x+** |
 | Email validation | 389 ms | <1 ms | **389x+** |
 | URL extraction | 350 ms | <1 ms | **350x+** |
 | IP address | 825 ms | 10 ms | **82x** |
 | Char class `[\w]+` | 670 ms | 112 ms | **6x** |
 
 **Where coregex excels:**
+- Multiline patterns (`(?m)^/.*\.php`) — near Rust parity, 100x+ vs stdlib
 - IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — SIMD digit prefilter skips non-digit regions
 - Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search optimization (1000x+)
 - Inner literals (`.*error.*`, `.*@example\.com`) — bidirectional DFA (900x+)
@@ -88,7 +90,7 @@ coregex automatically selects the optimal engine:
 | Strategy | Pattern Type | Speedup |
 |----------|--------------|---------|
 | **AnchoredLiteral** | `^prefix.*suffix$` | **32-133x** |
-| **MultilineReverseSuffix** | `(?m)^/.*\.php` | **319-552x** |
+| **MultilineReverseSuffix** | `(?m)^/.*\.php` | **100-552x** ⚡ |
 | ReverseInner | `.*keyword.*` | 100-900x |
 | ReverseSuffix | `.*\.txt` | 100-1100x |
 | BranchDispatch | `^(\d+\|UUID\|hex32)` | 5-20x |
