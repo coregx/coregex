@@ -1549,7 +1549,7 @@ v1.0.0 → Stable release (API frozen)
 
 ---
 
-[Unreleased]: https://github.com/coregx/coregex/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/coregx/coregex/compare/v0.11.4...HEAD
 [0.11.4]: https://github.com/coregx/coregex/releases/tag/v0.11.4
 [0.11.3]: https://github.com/coregx/coregex/releases/tag/v0.11.3
 [0.11.2]: https://github.com/coregx/coregex/releases/tag/v0.11.2
