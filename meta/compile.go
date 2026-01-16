@@ -235,6 +235,10 @@ func buildReverseSearchers(
 			// Fallback to regular ReverseSuffix or DFA
 			result.finalStrategy = UseDFA
 		} else {
+			// Issue #99: Extract prefix literals for fast path verification
+			// For patterns like (?m)^/.*\.php, prefix is "/" - enables O(1) verification
+			prefixLiterals := extractor.ExtractPrefixes(re)
+			searcher.SetPrefixLiterals(prefixLiterals)
 			result.multilineReverseSuffixSearcher = searcher
 		}
 	}

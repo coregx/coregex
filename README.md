@@ -88,7 +88,7 @@ coregex automatically selects the optimal engine:
 | Strategy | Pattern Type | Speedup |
 |----------|--------------|---------|
 | **AnchoredLiteral** | `^prefix.*suffix$` | **32-133x** |
-| **MultilineReverseSuffix** | `(?m)^.*\.php` | **3.5-5.7x** |
+| **MultilineReverseSuffix** | `(?m)^/.*\.php` | **319-552x** |
 | ReverseInner | `.*keyword.*` | 100-900x |
 | ReverseSuffix | `.*\.txt` | 100-1100x |
 | BranchDispatch | `^(\d+\|UUID\|hex32)` | 5-20x |
