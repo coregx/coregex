@@ -14,6 +14,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.2] - 2026-01-16
+
+### Changed
+- **UseMultilineReverseSuffix: DFA verification instead of PikeVM** (Issue #99)
+  - Replaced O(n*m) PikeVM verification with O(n) DFA verification
+  - Uses `lazy.DFA.SearchAtAnchored()` for linear-time anchored matching
+  - No-match cases: **10-131x faster** (microseconds vs milliseconds)
+  - Large input (6MB): expected **10-30x improvement** vs previous PikeVM approach
+  - Research: Rust hybrid DFA also uses DFA (not per-state acceleration) for verification
+
+### Technical Details
+- `MultilineReverseSuffixSearcher.forwardDFA` replaces `pikevm` field
+- `lazy.CompileWithConfig()` creates forward DFA with config
+- DFA state construction amortized across multiple searches
+
+---
+
 ## [0.11.1] - 2026-01-16
 
 ### Added

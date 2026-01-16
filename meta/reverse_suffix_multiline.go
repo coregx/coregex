@@ -27,7 +27,7 @@ var ErrNoMultilinePrefilter = errors.New("no prefilter available for multiline s
 //     a. Prefilter finds suffix candidates in haystack
 //     b. For each candidate:
 //     - Scan backward to find LINE start (\n or start of input)
-//     - Verify pattern from line start using forward PikeVM
+//     - Verify pattern from line start using forward DFA (anchored search)
 //     c. Return first valid match
 //
 // Key difference from ReverseSuffixSearcher:
@@ -36,12 +36,12 @@ var ErrNoMultilinePrefilter = errors.New("no prefilter available for multiline s
 //
 // Performance:
 //   - Forward naive search: O(n*m) where n=haystack length, m=pattern length
-//   - MultilineReverseSuffix: O(k*l) where k=suffix candidates, l=avg line length
-//   - Expected speedup: 5-20x for patterns like `(?m)^/.*\.php` on large inputs
+//   - MultilineReverseSuffix with DFA: O(n) total - linear time verification
+//   - Expected speedup: 10-100x for patterns like `(?m)^/.*\.php` on large inputs
 type MultilineReverseSuffixSearcher struct {
-	prefilter prefilter.Prefilter
-	pikevm    *nfa.PikeVM
-	suffixLen int // Length of the suffix literal
+	prefilter  prefilter.Prefilter
+	forwardDFA *lazy.DFA // O(n) forward DFA for anchored verification
+	suffixLen  int       // Length of the suffix literal
 }
 
 // NewMultilineReverseSuffixSearcher creates a multiline-aware suffix searcher.
@@ -54,13 +54,13 @@ type MultilineReverseSuffixSearcher struct {
 // Parameters:
 //   - forwardNFA: the compiled forward NFA
 //   - suffixLiterals: extracted suffix literals from pattern
-//   - config: DFA configuration (unused, kept for API compatibility)
+//   - config: DFA configuration for forward DFA cache
 //
 // Returns error if multiline reverse suffix optimization cannot be applied.
 func NewMultilineReverseSuffixSearcher(
 	forwardNFA *nfa.NFA,
 	suffixLiterals *literal.Seq,
-	_ lazy.Config, // unused, kept for API compatibility
+	config lazy.Config,
 ) (*MultilineReverseSuffixSearcher, error) {
 	// Get suffix bytes from longest common suffix
 	var suffixBytes []byte
@@ -79,13 +79,17 @@ func NewMultilineReverseSuffixSearcher(
 		return nil, ErrNoMultilinePrefilter
 	}
 
-	// Create PikeVM for forward verification
-	pikevm := nfa.NewPikeVM(forwardNFA)
+	// Build forward DFA for O(n) anchored verification
+	// The DFA's SearchAtAnchored method provides efficient anchored search from line starts
+	forwardDFA, err := lazy.CompileWithConfig(forwardNFA, config)
+	if err != nil {
+		return nil, err
+	}
 
 	return &MultilineReverseSuffixSearcher{
-		prefilter: pre,
-		pikevm:    pikevm,
-		suffixLen: suffixLen,
+		prefilter:  pre,
+		forwardDFA: forwardDFA,
+		suffixLen:  suffixLen,
 	}, nil
 }
 
@@ -102,17 +106,19 @@ func findLineStart(haystack []byte, pos int) int {
 	return 0 // No newline found, line starts at beginning
 }
 
-// Find searches using suffix literal prefilter + line-aware forward verification.
+// Find searches using suffix literal prefilter + line-aware forward DFA verification.
 //
 // Algorithm:
 //  1. Iterate through suffix candidates using prefilter
 //  2. For each candidate, find LINE start (after \n or input start)
-//  3. Use forward PikeVM to verify match from line start
+//  3. Use forward DFA (anchored) to verify match from line start
 //  4. Return first valid match
 //
 // The key insight is that multiline ^ anchors must be verified using FORWARD
 // matching from line start, not reverse matching. The ^ anchor has specific
 // semantics that only work correctly in forward direction.
+//
+// Performance: O(n) total due to DFA's linear time complexity per byte.
 func (s *MultilineReverseSuffixSearcher) Find(haystack []byte) *Match {
 	if len(haystack) == 0 {
 		return nil
@@ -130,11 +136,13 @@ func (s *MultilineReverseSuffixSearcher) Find(haystack []byte) *Match {
 		// Find the start of the line containing this suffix
 		lineStart := findLineStart(haystack, suffixPos)
 
-		// Use forward PikeVM to verify match from line start
-		// SearchAt respects the ^ anchor semantics correctly
-		start, end, matched := s.pikevm.SearchAt(haystack, lineStart)
-		if matched && start >= lineStart && end <= len(haystack) {
-			return NewMatch(start, end, haystack)
+		// Use forward DFA with ANCHORED search to verify match from line start.
+		// SearchAtAnchored requires match to begin exactly at lineStart (respects ^ anchor).
+		// Returns end position if match found, -1 otherwise.
+		end := s.forwardDFA.SearchAtAnchored(haystack, lineStart)
+		if end >= 0 {
+			// For anchored search, start = lineStart
+			return NewMatch(lineStart, end, haystack)
 		}
 
 		// Move past this suffix candidate
@@ -149,6 +157,8 @@ func (s *MultilineReverseSuffixSearcher) Find(haystack []byte) *Match {
 //
 // Returns the first match starting at or after position 'at'.
 // Essential for FindAll iteration.
+//
+// Performance: O(n) due to DFA's linear time complexity.
 func (s *MultilineReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match {
 	if at >= len(haystack) {
 		return nil
@@ -170,10 +180,12 @@ func (s *MultilineReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match 
 			lineStart = at
 		}
 
-		// Use forward PikeVM to verify match from line start
-		start, end, matched := s.pikevm.SearchAt(haystack, lineStart)
-		if matched && start >= lineStart {
-			return NewMatch(start, end, haystack)
+		// Use forward DFA with ANCHORED search to verify match from line start.
+		// SearchAtAnchored requires match to begin exactly at lineStart.
+		end := s.forwardDFA.SearchAtAnchored(haystack, lineStart)
+		if end >= 0 {
+			// For anchored search, start = lineStart
+			return NewMatch(lineStart, end, haystack)
 		}
 
 		// Move past this suffix candidate
@@ -193,13 +205,15 @@ func (s *MultilineReverseSuffixSearcher) FindIndicesAt(haystack []byte, at int) 
 	return match.start, match.end, true
 }
 
-// IsMatch checks if the pattern matches using suffix prefilter + line-aware verification.
+// IsMatch checks if the pattern matches using suffix prefilter + line-aware DFA verification.
 //
 // Optimized for boolean matching:
 //   - Uses prefilter for fast candidate finding
-//   - Uses forward PikeVM for line-aware verification
+//   - Uses forward DFA (anchored) for O(n) line-aware verification
 //   - Early termination on first match
 //   - No Match object allocation
+//
+// Performance: O(n) total due to DFA's linear time complexity.
 func (s *MultilineReverseSuffixSearcher) IsMatch(haystack []byte) bool {
 	if len(haystack) == 0 {
 		return false
@@ -217,9 +231,9 @@ func (s *MultilineReverseSuffixSearcher) IsMatch(haystack []byte) bool {
 		// Find line start
 		lineStart := findLineStart(haystack, suffixPos)
 
-		// Use forward PikeVM to check if match is valid from line start
-		_, _, matched := s.pikevm.SearchAt(haystack, lineStart)
-		if matched {
+		// Use forward DFA with ANCHORED search to check if match is valid from line start.
+		// SearchAtAnchored returns >= 0 if match found, -1 otherwise.
+		if s.forwardDFA.SearchAtAnchored(haystack, lineStart) >= 0 {
 			return true
 		}
 
