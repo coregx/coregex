@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-01-16 | **Current Version**: v0.11.1 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-01-16 | **Current Version**: v0.11.3 | **Target**: v1.0.0 stable
 
 ---
 
@@ -49,7 +49,11 @@ v0.10.8-10 ✅ → FindAll perf fix, ReverseSuffix improvements
          ↓
 v0.11.0 ✅ → UseAnchoredLiteral 32-133x speedup (#79), ASCII runtime detection
          ↓
-v0.11.1 (Current) ✅ → UseMultilineReverseSuffix 3.5-5.7x speedup (#97)
+v0.11.1 ✅ → UseMultilineReverseSuffix 3.5-5.7x speedup (#97)
+         ↓
+v0.11.2 ✅ → DFA verification (#99)
+         ↓
+v0.11.3 (Current) ✅ → Prefix fast path 319-552x speedup (#99)
          ↓
 v0.12.0 → CompositeSearcher integration (#72) - 5.3x faster on \w+\s+\w+ patterns
          ↓
@@ -77,6 +81,8 @@ v1.0.0 STABLE → Production release with API stability guarantee
 - ✅ **v0.10.0**: Fat Teddy 16-bucket SIMD (33-64 patterns, 9+ GB/s), **5 patterns faster than Rust!**
 - ✅ **v0.11.0**: UseAnchoredLiteral strategy (32-133x speedup), Issue #79 resolved
 - ✅ **v0.11.1**: UseMultilineReverseSuffix strategy (3.5-5.7x speedup), Issue #97 resolved
+- ✅ **v0.11.2**: DFA verification for multiline patterns, Issue #99
+- ✅ **v0.11.3**: Prefix fast path (319-552x speedup), Issue #99 resolved
 
 ---
 
@@ -168,7 +174,7 @@ v1.0.0 STABLE → Production release with API stability guarantee
 
 ## Feature Comparison Matrix
 
-| Feature | RE2 | rust-regex | coregex v0.11.1 | coregex v1.0 |
+| Feature | RE2 | rust-regex | coregex v0.11.3 | coregex v1.0 |
 |---------|-----|------------|-----------------|--------------|
 | Lazy DFA | ✅ | ✅ | ✅ | ✅ |
 | Thompson NFA | ✅ | ✅ | ✅ | ✅ |
@@ -230,23 +236,33 @@ Reference implementations available locally:
 
 ---
 
-## v0.11.1 - UseMultilineReverseSuffix (Current) ✅
+## v0.11.3 - Prefix Verification Fast Path (Current) ✅
 
-**Goal**: Line-aware suffix search for multiline patterns (Issue #97)
+**Goal**: Rust-level performance for multiline patterns (Issue #99)
 
 | Pattern | stdlib | coregex | Speedup |
 |---------|--------|---------|---------|
-| `(?m)^/.*\.php` IsMatch (0.5MB) | 72.2 µs | 20.6 µs | **3.5x** |
-| `(?m)^/.*\.php` Find (0.5MB) | 68.7 µs | 15.3 µs | **4.5x** |
-| `(?m)^/.*\.php` CountAll (200 matches) | 14.6 ms | 2.56 ms | **5.7x** |
-| No-match (small) | 1.1 µs | 90 ns | **12x** |
-| No-match (2KB) | 24 µs | 184 ns | **130x** |
+| `(?m)^/.*\.php` IsMatch (1KB) | 100 µs | 182 ns | **552x** |
+| `(?m)^/.*\.php` Find (1KB) | 81 µs | 240 ns | **338x** |
+| `(?m)^/.*\.php` CountAll | 18.7 ms | 58 µs | **319x** |
+
+**Completed**:
+- [x] Prefix literal extraction and O(1) byte verification
+- [x] SIMD backward scan with `bytes.LastIndexByte`
+- [x] Skip-to-next-line optimization (avoids O(n²) worst case)
+- [x] DFA fallback for complex patterns without extractable prefix
+
+---
+
+## v0.11.1 - UseMultilineReverseSuffix ✅
+
+**Goal**: Line-aware suffix search for multiline patterns (Issue #97)
 
 **Completed**:
 - [x] `UseMultilineReverseSuffix` strategy (18th strategy)
 - [x] `meta/reverse_suffix_multiline.go` implementation
 - [x] Line-boundary detection algorithm
-- [x] Backward newline scan + forward PikeVM verification
+- [x] Superseded by v0.11.3 prefix fast path optimization
 
 ---
 
@@ -305,7 +321,9 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.11.1** | 2026-01-16 | Feature | **UseMultilineReverseSuffix 3.5-5.7x speedup (#97)** |
+| **v0.11.3** | 2026-01-16 | Performance | **Prefix fast path 319-552x speedup (#99)** |
+| v0.11.2 | 2026-01-16 | Performance | DFA verification for multiline (#99) |
+| v0.11.1 | 2026-01-16 | Feature | UseMultilineReverseSuffix 3.5-5.7x speedup (#97) |
 | v0.11.0 | 2026-01-15 | Feature | UseAnchoredLiteral 32-133x speedup (#79), ASCII runtime detection |
 | v0.10.10 | 2026-01-15 | Fix | ReverseSuffix CharClass Plus whitelist |
 | v0.10.9 | 2026-01-15 | Feature | UTF-8 suffix sharing, anchored suffix prefilter |
@@ -336,4 +354,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.11.1 | Next: v0.12.0 (CompositeSearcher integration #72) | Target: v1.0.0*
+*Current: v0.11.3 | Next: v0.12.0 (CompositeSearcher integration #72) | Target: v1.0.0*

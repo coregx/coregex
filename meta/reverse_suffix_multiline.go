@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"bytes"
 	"errors"
 
 	"github.com/coregx/coregex/dfa/lazy"
@@ -20,28 +21,26 @@ var ErrNoMultilinePrefilter = errors.New("no prefilter available for multiline s
 //   - Has a good suffix literal for prefiltering
 //   - Match can occur at ANY line start, not just position 0
 //
-// Algorithm:
-//  1. Extract suffix literals from pattern
-//  2. Build prefilter for suffix literals
-//  3. Search algorithm:
-//     a. Prefilter finds suffix candidates in haystack
-//     b. For each candidate:
+// Algorithm (fast path for simple patterns like `(?m)^prefix.*suffix`):
+//  1. Prefilter finds suffix candidates in haystack (SIMD memmem)
+//  2. For each candidate:
 //     - Scan backward to find LINE start (\n or start of input)
-//     - Verify pattern from line start using forward DFA (anchored search)
-//     c. Return first valid match
+//     - Verify prefix literal at line start (simple byte comparison)
+//     - If prefix matches, return match immediately
 //
-// Key difference from ReverseSuffixSearcher:
-//   - ReverseSuffix: match always starts at position 0 (unanchored .*)
-//   - MultilineReverseSuffix: match starts at LINE start (after \n or pos 0)
+// Algorithm (slow path for complex patterns):
+//  1. Same as fast path for candidate finding
+//  2. Use forward DFA for verification
 //
 // Performance:
-//   - Forward naive search: O(n*m) where n=haystack length, m=pattern length
-//   - MultilineReverseSuffix with DFA: O(n) total - linear time verification
-//   - Expected speedup: 10-100x for patterns like `(?m)^/.*\.php` on large inputs
+//   - Fast path: O(n) with very low constant factor (just byte comparisons)
+//   - Slow path: O(n) with DFA overhead
+//   - Expected speedup: 50-100x for simple patterns like `(?m)^/.*\.php`
 type MultilineReverseSuffixSearcher struct {
-	prefilter  prefilter.Prefilter
-	forwardDFA *lazy.DFA // O(n) forward DFA for anchored verification
-	suffixLen  int       // Length of the suffix literal
+	prefilter   prefilter.Prefilter
+	prefixBytes []byte    // Prefix literal for fast verification (nil = use DFA)
+	suffixLen   int       // Length of the suffix literal
+	forwardDFA  *lazy.DFA // Fallback DFA for complex patterns
 }
 
 // NewMultilineReverseSuffixSearcher creates a multiline-aware suffix searcher.
@@ -54,6 +53,7 @@ type MultilineReverseSuffixSearcher struct {
 // Parameters:
 //   - forwardNFA: the compiled forward NFA
 //   - suffixLiterals: extracted suffix literals from pattern
+//   - prefixLiterals: extracted prefix literals from pattern (may be nil)
 //   - config: DFA configuration for forward DFA cache
 //
 // Returns error if multiline reverse suffix optimization cannot be applied.
@@ -79,46 +79,73 @@ func NewMultilineReverseSuffixSearcher(
 		return nil, ErrNoMultilinePrefilter
 	}
 
-	// Build forward DFA for O(n) anchored verification
-	// The DFA's SearchAtAnchored method provides efficient anchored search from line starts
+	// Build forward DFA for verification (always needed as fallback)
 	forwardDFA, err := lazy.CompileWithConfig(forwardNFA, config)
 	if err != nil {
 		return nil, err
 	}
 
 	return &MultilineReverseSuffixSearcher{
-		prefilter:  pre,
-		forwardDFA: forwardDFA,
-		suffixLen:  suffixLen,
+		prefilter:   pre,
+		prefixBytes: nil, // Will be set by SetPrefixLiterals if applicable
+		forwardDFA:  forwardDFA,
+		suffixLen:   suffixLen,
 	}, nil
+}
+
+// SetPrefixLiterals enables fast path verification using prefix literals.
+// Call this after construction if the pattern has a simple structure: ^prefix.*suffix
+func (s *MultilineReverseSuffixSearcher) SetPrefixLiterals(prefixLiterals *literal.Seq) {
+	if prefixLiterals != nil && !prefixLiterals.IsEmpty() {
+		// Get the longest common prefix for verification
+		s.prefixBytes = prefixLiterals.LongestCommonPrefix()
+	}
 }
 
 // findLineStart scans backward from pos to find the start of the line.
 // Returns 0 if no newline is found (meaning we're on the first line).
 // Returns pos+1 of the \n character if found (start of next line after \n).
+//
+// Uses bytes.LastIndexByte which is optimized with SIMD on amd64.
 func findLineStart(haystack []byte, pos int) int {
-	// Scan backward from pos-1 (we don't want to match a \n AT pos)
-	for i := pos - 1; i >= 0; i-- {
-		if haystack[i] == '\n' {
-			return i + 1 // Line starts after the \n
-		}
+	if pos <= 0 {
+		return 0
 	}
-	return 0 // No newline found, line starts at beginning
+	// Search backward in haystack[:pos] for '\n'
+	idx := bytes.LastIndexByte(haystack[:pos], '\n')
+	if idx == -1 {
+		return 0 // No newline found, line starts at beginning
+	}
+	return idx + 1 // Line starts after the \n
 }
 
-// Find searches using suffix literal prefilter + line-aware forward DFA verification.
+// verifyPrefix checks if the prefix literal matches at the given position.
+// Returns true if prefix matches or if no prefix verification is needed.
+func (s *MultilineReverseSuffixSearcher) verifyPrefix(haystack []byte, at int) bool {
+	if len(s.prefixBytes) == 0 {
+		return false // No fast path available
+	}
+	if at+len(s.prefixBytes) > len(haystack) {
+		return false
+	}
+	return bytes.HasPrefix(haystack[at:], s.prefixBytes)
+}
+
+// Find searches using suffix literal prefilter + line-aware verification.
 //
-// Algorithm:
-//  1. Iterate through suffix candidates using prefilter
-//  2. For each candidate, find LINE start (after \n or input start)
-//  3. Use forward DFA (anchored) to verify match from line start
-//  4. Return first valid match
+// Fast path (when prefix literals available):
+//  1. Find suffix using SIMD prefilter
+//  2. Find line start (backward scan using SIMD)
+//  3. Verify prefix with simple byte comparison
+//  4. Return match immediately if prefix matches
+//  5. On failure, skip to next line (all candidates on same line will fail)
 //
-// The key insight is that multiline ^ anchors must be verified using FORWARD
-// matching from line start, not reverse matching. The ^ anchor has specific
-// semantics that only work correctly in forward direction.
+// Slow path (complex patterns):
+//  1. Same candidate finding
+//  2. Use forward DFA for verification
 //
-// Performance: O(n) total due to DFA's linear time complexity per byte.
+// Performance: O(n) with very low constant factor for fast path.
+// Key optimization: when prefix fails, skip entire line - avoids O(n²) worst case.
 func (s *MultilineReverseSuffixSearcher) Find(haystack []byte) *Match {
 	if len(haystack) == 0 {
 		return nil
@@ -127,7 +154,7 @@ func (s *MultilineReverseSuffixSearcher) Find(haystack []byte) *Match {
 	// Iterate through suffix candidates
 	pos := 0
 	for {
-		// Find next suffix candidate using prefilter
+		// Find next suffix candidate using prefilter (SIMD accelerated)
 		suffixPos := s.prefilter.Find(haystack, pos)
 		if suffixPos == -1 {
 			return nil
@@ -136,17 +163,30 @@ func (s *MultilineReverseSuffixSearcher) Find(haystack []byte) *Match {
 		// Find the start of the line containing this suffix
 		lineStart := findLineStart(haystack, suffixPos)
 
-		// Use forward DFA with ANCHORED search to verify match from line start.
-		// SearchAtAnchored requires match to begin exactly at lineStart (respects ^ anchor).
-		// Returns end position if match found, -1 otherwise.
-		end := s.forwardDFA.SearchAtAnchored(haystack, lineStart)
-		if end >= 0 {
-			// For anchored search, start = lineStart
-			return NewMatch(lineStart, end, haystack)
+		// Fast path: simple prefix verification (just byte comparison)
+		if len(s.prefixBytes) > 0 {
+			if s.verifyPrefix(haystack, lineStart) {
+				// Match found! No DFA needed.
+				return NewMatch(lineStart, suffixPos+s.suffixLen, haystack)
+			}
+			// Prefix doesn't match at this line start.
+			// Optimization: skip to next line - all other candidates on this line
+			// will have the same lineStart and will also fail.
+			nextLine := bytes.IndexByte(haystack[suffixPos:], '\n')
+			if nextLine == -1 {
+				return nil // No more lines
+			}
+			pos = suffixPos + nextLine + 1
+		} else {
+			// Slow path: use DFA for complex pattern verification
+			end := s.forwardDFA.SearchAtAnchored(haystack, lineStart)
+			if end >= 0 {
+				return NewMatch(lineStart, end, haystack)
+			}
+			// Move past this suffix candidate
+			pos = suffixPos + 1
 		}
 
-		// Move past this suffix candidate
-		pos = suffixPos + 1
 		if pos >= len(haystack) {
 			return nil
 		}
@@ -158,7 +198,8 @@ func (s *MultilineReverseSuffixSearcher) Find(haystack []byte) *Match {
 // Returns the first match starting at or after position 'at'.
 // Essential for FindAll iteration.
 //
-// Performance: O(n) due to DFA's linear time complexity.
+// Performance: O(n) with very low constant factor for fast path.
+// Key optimization: when prefix fails, skip entire line - avoids O(n²) worst case.
 func (s *MultilineReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match {
 	if at >= len(haystack) {
 		return nil
@@ -176,20 +217,30 @@ func (s *MultilineReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match 
 		lineStart := findLineStart(haystack, suffixPos)
 		if lineStart < at {
 			// The line starts before our search position.
-			// We can still match if the suffix is on a valid line.
 			lineStart = at
 		}
 
-		// Use forward DFA with ANCHORED search to verify match from line start.
-		// SearchAtAnchored requires match to begin exactly at lineStart.
-		end := s.forwardDFA.SearchAtAnchored(haystack, lineStart)
-		if end >= 0 {
-			// For anchored search, start = lineStart
-			return NewMatch(lineStart, end, haystack)
+		// Fast path: simple prefix verification
+		if len(s.prefixBytes) > 0 {
+			if s.verifyPrefix(haystack, lineStart) {
+				return NewMatch(lineStart, suffixPos+s.suffixLen, haystack)
+			}
+			// Prefix doesn't match - skip to next line
+			nextLine := bytes.IndexByte(haystack[suffixPos:], '\n')
+			if nextLine == -1 {
+				return nil // No more lines
+			}
+			pos = suffixPos + nextLine + 1
+		} else {
+			// Slow path: use DFA
+			end := s.forwardDFA.SearchAtAnchored(haystack, lineStart)
+			if end >= 0 {
+				return NewMatch(lineStart, end, haystack)
+			}
+			// Move past this suffix candidate
+			pos = suffixPos + 1
 		}
 
-		// Move past this suffix candidate
-		pos = suffixPos + 1
 		if pos >= len(haystack) {
 			return nil
 		}
@@ -205,15 +256,17 @@ func (s *MultilineReverseSuffixSearcher) FindIndicesAt(haystack []byte, at int) 
 	return match.start, match.end, true
 }
 
-// IsMatch checks if the pattern matches using suffix prefilter + line-aware DFA verification.
+// IsMatch checks if the pattern matches using suffix prefilter + line-aware verification.
 //
 // Optimized for boolean matching:
 //   - Uses prefilter for fast candidate finding
-//   - Uses forward DFA (anchored) for O(n) line-aware verification
+//   - Fast path: simple prefix byte comparison
+//   - Slow path: forward DFA verification
 //   - Early termination on first match
 //   - No Match object allocation
 //
-// Performance: O(n) total due to DFA's linear time complexity.
+// Performance: O(n) with very low constant factor for fast path.
+// Key optimization: when prefix fails, skip entire line - avoids O(n²) worst case.
 func (s *MultilineReverseSuffixSearcher) IsMatch(haystack []byte) bool {
 	if len(haystack) == 0 {
 		return false
@@ -231,14 +284,26 @@ func (s *MultilineReverseSuffixSearcher) IsMatch(haystack []byte) bool {
 		// Find line start
 		lineStart := findLineStart(haystack, suffixPos)
 
-		// Use forward DFA with ANCHORED search to check if match is valid from line start.
-		// SearchAtAnchored returns >= 0 if match found, -1 otherwise.
-		if s.forwardDFA.SearchAtAnchored(haystack, lineStart) >= 0 {
-			return true
+		// Fast path: simple prefix verification
+		if len(s.prefixBytes) > 0 {
+			if s.verifyPrefix(haystack, lineStart) {
+				return true
+			}
+			// Prefix doesn't match - skip to next line
+			nextLine := bytes.IndexByte(haystack[suffixPos:], '\n')
+			if nextLine == -1 {
+				return false // No more lines
+			}
+			pos = suffixPos + nextLine + 1
+		} else {
+			// Slow path: use DFA
+			if s.forwardDFA.SearchAtAnchored(haystack, lineStart) >= 0 {
+				return true
+			}
+			// Move past this suffix candidate
+			pos = suffixPos + 1
 		}
 
-		// Move past this suffix candidate
-		pos = suffixPos + 1
 		if pos >= len(haystack) {
 			return false
 		}

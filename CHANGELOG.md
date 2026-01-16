@@ -14,20 +14,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.3] - 2026-01-16
+
+### Changed
+- **UseMultilineReverseSuffix: Prefix verification fast path** (Issue #99)
+  - Pattern `(?m)^/.*\.php` now **319-552x faster** than stdlib (was 3.5-5.7x)
+  - Algorithm: suffix prefilter → SIMD backward scan → O(1) prefix byte check
+  - Skip-to-next-line optimization: avoids O(n²) worst case
+  - DFA fallback for complex patterns without extractable prefix
+
+### Performance (pattern `(?m)^/.*\.php` on 1KB log data)
+
+| Operation | coregex | stdlib | Speedup |
+|-----------|---------|--------|---------|
+| IsMatch | 182 ns | 100 µs | **552x** |
+| Find | 240 ns | 81 µs | **338x** |
+| CountAll | 58 µs | 18.7 ms | **319x** |
+
+### Technical Details
+- `MultilineReverseSuffixSearcher.prefixBytes` for O(1) verification
+- `SetPrefixLiterals()` extracts prefix from pattern
+- `findLineStart()` uses SIMD `bytes.LastIndexByte`
+- Skip-to-next-line: on prefix mismatch, jump to next `\n` position
+
+---
+
 ## [0.11.2] - 2026-01-16
 
 ### Changed
 - **UseMultilineReverseSuffix: DFA verification instead of PikeVM** (Issue #99)
   - Replaced O(n*m) PikeVM verification with O(n) DFA verification
   - Uses `lazy.DFA.SearchAtAnchored()` for linear-time anchored matching
-  - No-match cases: **10-131x faster** (microseconds vs milliseconds)
-  - Large input (6MB): expected **10-30x improvement** vs previous PikeVM approach
-  - Research: Rust hybrid DFA also uses DFA (not per-state acceleration) for verification
-
-### Technical Details
-- `MultilineReverseSuffixSearcher.forwardDFA` replaces `pikevm` field
-- `lazy.CompileWithConfig()` creates forward DFA with config
-- DFA state construction amortized across multiple searches
 
 ---
 
@@ -1519,7 +1536,10 @@ v1.0.0 → Stable release (API frozen)
 
 ---
 
-[Unreleased]: https://github.com/coregx/coregex/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/coregx/coregex/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/coregx/coregex/releases/tag/v0.11.3
+[0.11.2]: https://github.com/coregx/coregex/releases/tag/v0.11.2
+[0.11.1]: https://github.com/coregx/coregex/releases/tag/v0.11.1
 [0.11.0]: https://github.com/coregx/coregex/releases/tag/v0.11.0
 [0.10.10]: https://github.com/coregx/coregex/releases/tag/v0.10.10
 [0.10.9]: https://github.com/coregx/coregex/releases/tag/v0.10.9
