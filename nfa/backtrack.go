@@ -33,13 +33,18 @@ type BoundedBacktracker struct {
 // Each goroutine must use its own BacktrackerState instance.
 type BacktrackerState struct {
 	// Visited stores generation numbers for (state, position) pairs.
-	// Layout: Visited[state * (InputLen+1) + pos] = generation when visited.
+	// Layout: Visited[pos * NumStates + state] = generation when visited.
+	// This layout provides better cache locality when checking multiple states
+	// at the same position (common in epsilon traversal).
 	// Using generation counter enables O(1) reset instead of O(n) clearing.
 	Visited []uint32
 
 	// Generation is incremented for each new search attempt.
 	// A position is considered visited if Visited[idx] == Generation.
 	Generation uint32
+
+	// NumStates is cached for index calculations (column stride)
+	NumStates int
 
 	// InputLen is cached for index calculations
 	InputLen int
@@ -51,11 +56,14 @@ type BacktrackerState struct {
 }
 
 // NewBoundedBacktracker creates a new bounded backtracker for the given NFA.
+// Default maxVisitedSize is 8M entries (32MB memory), allowing ~230KB inputs
+// for patterns with 35 states like (\w{2,8})+.
+// This is still well within reasonable memory bounds for modern systems.
 func NewBoundedBacktracker(nfa *NFA) *BoundedBacktracker {
 	return &BoundedBacktracker{
 		nfa:            nfa,
 		numStates:      nfa.States(),
-		maxVisitedSize: 256 * 1024, // 256K entries = 1MB (4 bytes per entry)
+		maxVisitedSize: 8 * 1024 * 1024, // 8M entries = 32MB (4 bytes per entry)
 	}
 }
 
@@ -95,6 +103,7 @@ func (b *BoundedBacktracker) CanHandle(haystackLen int) bool {
 // This is an internal method that operates on external state.
 func (b *BoundedBacktracker) reset(state *BacktrackerState, haystackLen int) {
 	state.InputLen = haystackLen
+	state.NumStates = b.numStates
 
 	// Calculate required size in entries
 	entriesNeeded := b.numStates * (haystackLen + 1)
@@ -122,9 +131,12 @@ func (b *BoundedBacktracker) reset(state *BacktrackerState, haystackLen int) {
 // Returns true if we should visit (not yet visited), false if already visited.
 // This is the hot path - must be as fast as possible.
 // This method operates on external state for thread safety.
+//
+// Layout: Visited[pos * numStates + state] provides cache locality when
+// checking multiple states at the same position (common in epsilon traversal).
 func (b *BoundedBacktracker) shouldVisit(s *BacktrackerState, state StateID, pos int) bool {
-	// Calculate index: state * (inputLen + 1) + pos
-	idx := int(state)*(s.InputLen+1) + pos
+	// Calculate index: pos * numStates + state (cache-friendly layout)
+	idx := pos*s.NumStates + int(state)
 
 	// Check if visited in current generation
 	if s.Visited[idx] == s.Generation {

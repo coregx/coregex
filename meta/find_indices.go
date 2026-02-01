@@ -487,27 +487,45 @@ func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool)
 //
 // V11-002 ASCII optimization: When pattern contains '.' and input is ASCII-only,
 // uses the faster ASCII NFA.
+//
+// V11.5 optimization: When searching from position 'at', only check CanHandle for
+// the remaining portion haystack[at:], not the full haystack. This allows
+// BoundedBacktracker to handle large inputs in FindAll where each successive
+// search operates on a smaller remaining portion.
 func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, int, bool) {
 	if e.boundedBacktracker == nil {
 		return e.findIndicesNFAAt(haystack, at)
 	}
 	atomic.AddUint64(&e.stats.NFASearches, 1)
 
+	// Slice to remaining portion for more efficient BoundedBacktracker usage.
+	// This allows BT to handle large inputs in FindAll where we only need
+	// to search the remaining portion, not the full haystack.
+	remaining := haystack[at:]
+
 	// V11-002 ASCII optimization
-	if e.asciiBoundedBacktracker != nil && simd.IsASCII(haystack) {
-		if !e.asciiBoundedBacktracker.CanHandle(len(haystack)) {
+	if e.asciiBoundedBacktracker != nil && simd.IsASCII(remaining) {
+		if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
 			return e.pikevm.SearchAt(haystack, at)
 		}
-		return e.asciiBoundedBacktracker.SearchAt(haystack, at)
+		start, end, found := e.asciiBoundedBacktracker.Search(remaining)
+		if found {
+			return at + start, at + end, true
+		}
+		return -1, -1, false
 	}
 
-	if !e.boundedBacktracker.CanHandle(len(haystack)) {
+	if !e.boundedBacktracker.CanHandle(len(remaining)) {
 		return e.pikevm.SearchAt(haystack, at)
 	}
 
 	state := e.getSearchState()
 	defer e.putSearchState(state)
-	return e.boundedBacktracker.SearchAtWithState(haystack, at, state.backtracker)
+	start, end, found := e.boundedBacktracker.SearchWithState(remaining, state.backtracker)
+	if found {
+		return at + start, at + end, true
+	}
+	return -1, -1, false
 }
 
 // findIndicesCharClassSearcher searches using char_class+ searcher - zero alloc.
