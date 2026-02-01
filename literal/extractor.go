@@ -576,6 +576,13 @@ func (e *Extractor) tryExpandConcatSuffix(prefixes *Seq, subs []*syntax.Regexp, 
 		}
 	}
 
+	// Try Capture/Repeat group expansion: =(\$...){2} → =$...
+	// Extract literal prefix from inside the group and append to our prefixes.
+	// This handles patterns like `=(\$\w{1,10}...){2}` where `=$` is a better prefilter than just `=`.
+	if expanded := e.tryExpandRepeatCapture(prefixes, nextSub, depth); expanded != nil {
+		return expanded
+	}
+
 	// Default: mark prefixes as incomplete since more elements follow
 	lits := make([]Literal, prefixes.Len())
 	for i := 0; i < prefixes.Len(); i++ {
@@ -583,6 +590,49 @@ func (e *Extractor) tryExpandConcatSuffix(prefixes *Seq, subs []*syntax.Regexp, 
 		lits[i] = NewLiteral(lit.Bytes, false) // Incomplete
 	}
 	return NewSeq(lits...)
+}
+
+// tryExpandRepeatCapture attempts to extract literals from inside OpRepeat/OpCapture groups.
+// For pattern `=(\$\w...){2}`, this extracts `=$` instead of just `=`.
+// Returns nil if no expansion is possible.
+func (e *Extractor) tryExpandRepeatCapture(prefixes *Seq, nextSub *syntax.Regexp, depth int) *Seq {
+	// Unwrap OpRepeat if present (e.g., {2,2} or {1,10})
+	innerNode := nextSub
+	if innerNode.Op == syntax.OpRepeat && len(innerNode.Sub) > 0 && innerNode.Min >= 1 {
+		innerNode = innerNode.Sub[0]
+	}
+	// Unwrap OpCapture if present
+	if innerNode.Op == syntax.OpCapture && len(innerNode.Sub) > 0 {
+		innerNode = innerNode.Sub[0]
+	}
+	// Only proceed if we actually unwrapped something
+	if innerNode == nextSub {
+		return nil
+	}
+
+	innerPrefixes := e.extractPrefixes(innerNode, depth+1)
+	if innerPrefixes.IsEmpty() {
+		return nil
+	}
+
+	// Append inner prefixes to our prefixes
+	var expanded []Literal
+	for i := 0; i < prefixes.Len(); i++ {
+		prefix := prefixes.Get(i)
+		for j := 0; j < innerPrefixes.Len(); j++ {
+			inner := innerPrefixes.Get(j)
+			combined := append([]byte{}, prefix.Bytes...)
+			combined = append(combined, inner.Bytes...)
+			if len(combined) > e.config.MaxLiteralLen {
+				combined = combined[:e.config.MaxLiteralLen]
+			}
+			expanded = append(expanded, NewLiteral(combined, false))
+		}
+	}
+	if len(expanded) == 0 {
+		return nil
+	}
+	return NewSeq(expanded...)
 }
 
 // expandLiteralAlternate expands Literal + Alternation back into individual complete literals.
