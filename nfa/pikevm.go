@@ -1646,9 +1646,10 @@ func (p *PikeVM) searchWithSlotTableUnanchored(haystack []byte, startAt int) (in
 	p.internalState.SearchNextQueue = p.internalState.SearchNextQueue[:0]
 	p.internalState.Visited.Clear()
 
-	// Reset SlotTable for states we'll use
+	// Reset SlotTable for states we'll use (only for Captures mode)
 	// Note: Full reset is O(n), but we only need it at search start
-	if p.internalState.SlotTable.ActiveSlots() > 0 {
+	// For IsMatch (0 slots) and Find (2 slots), SlotTable is not used
+	if p.internalState.SlotTable.ActiveSlots() > 2 {
 		p.internalState.SlotTable.Reset()
 	}
 
@@ -1726,7 +1727,8 @@ func (p *PikeVM) searchWithSlotTableAnchored(haystack []byte, startPos int) (int
 	p.internalState.SearchNextQueue = p.internalState.SearchNextQueue[:0]
 	p.internalState.Visited.Clear()
 
-	if p.internalState.SlotTable.ActiveSlots() > 0 {
+	// Only reset SlotTable for Captures mode (activeSlots > 2)
+	if p.internalState.SlotTable.ActiveSlots() > 2 {
 		p.internalState.SlotTable.Reset()
 	}
 
@@ -1816,16 +1818,16 @@ func (p *PikeVM) addSearchThread(t searchThread, haystack []byte, pos int) {
 		leftLookSucceeds := !isQuantifier && p.checkLeftLookSucceedsForSearch(left, haystack, pos)
 
 		if left != InvalidState {
-			// Copy slots from current state to left target
-			if p.internalState.SlotTable.ActiveSlots() > 0 {
+			// Copy slots from current state to left target (only for Captures mode)
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(left, t.state)
 			}
 			p.addSearchThread(searchThread{state: left, startPos: t.startPos, priority: t.priority}, haystack, pos)
 		}
 		if right != InvalidState {
 			rightPriority := p.calcRightPriorityForSearch(t.priority, isQuantifier, left, leftLookSucceeds)
-			// Copy slots from current state to right target
-			if p.internalState.SlotTable.ActiveSlots() > 0 {
+			// Copy slots from current state to right target (only for Captures mode)
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(right, t.state)
 			}
 			p.addSearchThread(searchThread{state: right, startPos: t.startPos, priority: rightPriority}, haystack, pos)
@@ -1834,16 +1836,19 @@ func (p *PikeVM) addSearchThread(t searchThread, haystack []byte, pos int) {
 	case StateCapture:
 		groupIndex, isStart, next := state.Capture()
 		if next != InvalidState {
-			// Store capture position in SlotTable
-			slotIndex := int(groupIndex) * 2
-			if !isStart {
-				slotIndex++
-			}
-			if p.internalState.SlotTable.ActiveSlots() > slotIndex {
-				// Copy parent slots to next state first
-				p.internalState.SlotTable.CopySlots(next, t.state)
-				// Then update the capture slot
-				p.internalState.SlotTable.SetSlot(next, slotIndex, pos)
+			// Store capture position in SlotTable (only for Captures mode, not Find)
+			// For Find mode (activeSlots=2), group 0 is tracked via thread.startPos/pos
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
+				slotIndex := int(groupIndex) * 2
+				if !isStart {
+					slotIndex++
+				}
+				if p.internalState.SlotTable.ActiveSlots() > slotIndex {
+					// Copy parent slots to next state first
+					p.internalState.SlotTable.CopySlots(next, t.state)
+					// Then update the capture slot
+					p.internalState.SlotTable.SetSlot(next, slotIndex, pos)
+				}
 			}
 			p.addSearchThread(searchThread{state: next, startPos: t.startPos, priority: t.priority}, haystack, pos)
 		}
@@ -1851,7 +1856,8 @@ func (p *PikeVM) addSearchThread(t searchThread, haystack []byte, pos int) {
 	case StateLook:
 		look, next := state.Look()
 		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			if p.internalState.SlotTable.ActiveSlots() > 0 {
+			// Copy slots only for Captures mode
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(next, t.state)
 			}
 			p.addSearchThread(searchThread{state: next, startPos: t.startPos, priority: t.priority}, haystack, pos)
@@ -1928,8 +1934,8 @@ func (p *PikeVM) addSearchThreadToNext(t searchThread, srcState StateID, haystac
 		return
 	}
 
-	// Copy slots from source to new state
-	if p.internalState.SlotTable.ActiveSlots() > 0 {
+	// Copy slots from source to new state (only for Captures mode)
+	if p.internalState.SlotTable.ActiveSlots() > 2 {
 		p.internalState.SlotTable.CopySlots(t.state, srcState)
 	}
 
@@ -1947,14 +1953,14 @@ func (p *PikeVM) addSearchThreadToNext(t searchThread, srcState StateID, haystac
 		leftLookSucceeds := !isQuantifier && p.checkLeftLookSucceedsForSearch(left, haystack, pos)
 
 		if left != InvalidState {
-			if p.internalState.SlotTable.ActiveSlots() > 0 {
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(left, t.state)
 			}
 			p.addSearchThreadToNext(searchThread{state: left, startPos: t.startPos, priority: t.priority}, left, haystack, pos)
 		}
 		if right != InvalidState {
 			rightPriority := p.calcRightPriorityForSearch(t.priority, isQuantifier, left, leftLookSucceeds)
-			if p.internalState.SlotTable.ActiveSlots() > 0 {
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(right, t.state)
 			}
 			p.addSearchThreadToNext(searchThread{state: right, startPos: t.startPos, priority: rightPriority}, right, haystack, pos)
@@ -1964,13 +1970,16 @@ func (p *PikeVM) addSearchThreadToNext(t searchThread, srcState StateID, haystac
 	case StateCapture:
 		groupIndex, isStart, next := state.Capture()
 		if next != InvalidState {
-			slotIndex := int(groupIndex) * 2
-			if !isStart {
-				slotIndex++
-			}
-			if p.internalState.SlotTable.ActiveSlots() > slotIndex {
-				p.internalState.SlotTable.CopySlots(next, t.state)
-				p.internalState.SlotTable.SetSlot(next, slotIndex, pos)
+			// Store capture position only for Captures mode (not Find)
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
+				slotIndex := int(groupIndex) * 2
+				if !isStart {
+					slotIndex++
+				}
+				if p.internalState.SlotTable.ActiveSlots() > slotIndex {
+					p.internalState.SlotTable.CopySlots(next, t.state)
+					p.internalState.SlotTable.SetSlot(next, slotIndex, pos)
+				}
 			}
 			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, next, haystack, pos)
 		}
@@ -1979,7 +1988,7 @@ func (p *PikeVM) addSearchThreadToNext(t searchThread, srcState StateID, haystac
 	case StateLook:
 		look, next := state.Look()
 		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			if p.internalState.SlotTable.ActiveSlots() > 0 {
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(next, t.state)
 			}
 			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, next, haystack, pos)

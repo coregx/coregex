@@ -8,6 +8,7 @@ package meta
 import (
 	"sync/atomic"
 
+	"github.com/coregx/coregex/nfa"
 	"github.com/coregx/coregex/simd"
 )
 
@@ -131,7 +132,7 @@ func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
 				start, end, found = e.boundedBacktracker.SearchAtWithState(haystack, pos, state.backtracker)
 			} else {
-				start, end, found = state.pikevm.SearchAt(haystack, pos)
+				start, end, found = state.pikevm.SearchWithSlotTableAt(haystack, pos, nfa.SearchModeFind)
 			}
 			if found {
 				return start, end, true
@@ -149,7 +150,8 @@ func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 		return e.boundedBacktracker.SearchWithState(haystack, state.backtracker)
 	}
 
-	return state.pikevm.Search(haystack)
+	// Use optimized SlotTable-based search for large inputs
+	return state.pikevm.SearchWithSlotTable(haystack, nfa.SearchModeFind)
 }
 
 // findIndicesNFAAt searches using NFA starting at position - zero alloc.
@@ -182,7 +184,7 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
 				start, end, found = e.boundedBacktracker.SearchAtWithState(haystack, pos, state.backtracker)
 			} else {
-				start, end, found = state.pikevm.SearchAt(haystack, pos)
+				start, end, found = state.pikevm.SearchWithSlotTableAt(haystack, pos, nfa.SearchModeFind)
 			}
 			if found {
 				return start, end, true
@@ -200,7 +202,8 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 		return e.boundedBacktracker.SearchAtWithState(haystack, at, state.backtracker)
 	}
 
-	return state.pikevm.SearchAt(haystack, at)
+	// Use optimized SlotTable-based search for large inputs
+	return state.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
 }
 
 // findIndicesDFA searches using DFA with prefilter - zero alloc.
@@ -474,7 +477,8 @@ func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool)
 
 	atomic.AddUint64(&e.stats.NFASearches, 1)
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
-		return e.pikevm.Search(haystack)
+		// Use optimized SlotTable-based search for large inputs
+		return e.pikevm.SearchWithSlotTable(haystack, nfa.SearchModeFind)
 	}
 
 	state := e.getSearchState()
@@ -506,7 +510,8 @@ func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, 
 	// V11-002 ASCII optimization
 	if e.asciiBoundedBacktracker != nil && simd.IsASCII(remaining) {
 		if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
-			return e.pikevm.SearchAt(haystack, at)
+			// Use optimized SlotTable-based search for large inputs
+			return e.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
 		}
 		start, end, found := e.asciiBoundedBacktracker.Search(remaining)
 		if found {
@@ -849,7 +854,7 @@ func (e *Engine) findIndicesNFAAtWithState(haystack []byte, at int, state *Searc
 			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
 				start, end, found = e.boundedBacktracker.SearchAtWithState(haystack, pos, state.backtracker)
 			} else {
-				start, end, found = state.pikevm.SearchAt(haystack, pos)
+				start, end, found = state.pikevm.SearchWithSlotTableAt(haystack, pos, nfa.SearchModeFind)
 			}
 			if found {
 				return start, end, true
@@ -867,7 +872,8 @@ func (e *Engine) findIndicesNFAAtWithState(haystack []byte, at int, state *Searc
 		return e.boundedBacktracker.SearchAtWithState(haystack, at, state.backtracker)
 	}
 
-	return state.pikevm.SearchAt(haystack, at)
+	// Use optimized SlotTable-based search for large inputs
+	return state.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
 }
 
 // findIndicesBoundedBacktrackerAtWithState searches using bounded backtracker at position.
@@ -895,7 +901,8 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 	// V11-002 ASCII optimization
 	if e.asciiBoundedBacktracker != nil && simd.IsASCII(remaining) {
 		if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
-			return state.pikevm.SearchAt(haystack, at)
+			// Use optimized SlotTable-based search for large inputs
+			return state.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
 		}
 		start, end, found := e.asciiBoundedBacktracker.Search(remaining)
 		if found {
@@ -905,8 +912,8 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 	}
 
 	if !e.boundedBacktracker.CanHandle(len(remaining)) {
-		// Delegate to NFA path which uses prefilter if available
-		return e.findIndicesNFAAtWithState(haystack, at, state)
+		// Use optimized SlotTable-based search for large inputs
+		return state.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
 	}
 
 	start, end, found := e.boundedBacktracker.SearchWithState(remaining, state.backtracker)
