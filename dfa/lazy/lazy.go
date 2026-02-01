@@ -59,9 +59,10 @@ type DFA struct {
 	prefilter prefilter.Prefilter
 	pikevm    *nfa.PikeVM
 
-	// stateByID provides O(1) lookup of states by ID
-	// This maps StateID → *State for fast access during search
-	stateByID map[StateID]*State
+	// states provides O(1) lookup of states by ID via direct indexing.
+	// StateIDs are sequential (0, 1, 2...), so slice indexing is faster than map.
+	// This is a critical optimization - map lookups were 42% of CPU time!
+	states []*State
 
 	// startTable caches start states for different look-behind contexts
 	// This enables correct handling of assertions (^, \b, etc.) and
@@ -873,17 +874,23 @@ func (d *DFA) getState(id StateID) *State {
 		return nil
 	}
 
-	// O(1) lookup via stateByID map
-	state, ok := d.stateByID[id]
-	if !ok {
+	// O(1) lookup via direct slice indexing (faster than map!)
+	idx := int(id)
+	if idx >= len(d.states) {
 		return nil
 	}
-	return state
+	return d.states[idx]
 }
 
-// registerState adds a state to the ID-based lookup map
+// registerState adds a state to the states slice for O(1) lookup.
+// StateIDs are assigned sequentially, so we can use direct indexing.
 func (d *DFA) registerState(state *State) {
-	d.stateByID[state.ID()] = state
+	id := int(state.ID())
+	// Grow slice if needed
+	for len(d.states) <= id {
+		d.states = append(d.states, nil)
+	}
+	d.states[id] = state
 }
 
 // checkEOIMatch checks if the current state would match at end-of-input.
@@ -1091,7 +1098,7 @@ func (d *DFA) CacheStats() (size int, capacity uint32, hits, misses uint64, hitR
 // Primarily useful for testing and benchmarking.
 func (d *DFA) ResetCache() {
 	d.cache.Clear()
-	d.stateByID = make(map[StateID]*State, d.config.MaxStates)
+	d.states = make([]*State, 0, d.config.MaxStates)
 
 	// Reset StartTable
 	d.startTable = NewStartTable()

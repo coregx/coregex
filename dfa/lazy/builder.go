@@ -128,7 +128,7 @@ func (b *Builder) Build() (*DFA, error) {
 		config:           b.config,
 		prefilter:        pf,
 		pikevm:           nfa.NewPikeVM(b.nfa),
-		stateByID:        make(map[StateID]*State, b.config.MaxStates),
+		states:           make([]*State, 0, b.config.MaxStates),
 		startTable:       startTable,
 		byteClasses:      b.nfa.ByteClasses(),
 		freshStartStates: freshStartStates,
