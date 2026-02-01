@@ -110,7 +110,7 @@ func BenchmarkWordRepeatBySize(b *testing.B) {
 	engineCgx, _ := Compile(pattern)
 	reStd := regexp.MustCompile(pattern)
 
-	for _, sizeKB := range []int{10, 50, 100, 332} {
+	for _, sizeKB := range []int{10, 50, 100, 332, 1024, 6144} {
 		input := []byte(strings.Repeat("hello world test data foo bar 123 ", sizeKB*30))
 
 		b.Run(fmt.Sprintf("coregex_%dKB", sizeKB), func(b *testing.B) {

@@ -66,7 +66,7 @@ func NewBoundedBacktracker(nfa *NFA) *BoundedBacktracker {
 	return &BoundedBacktracker{
 		nfa:            nfa,
 		numStates:      nfa.States(),
-		maxVisitedSize: 32 * 1024 * 1024, // 32M entries = 32MB memory (1 byte per entry)
+		maxVisitedSize: 32 * 1024 * 1024, // 32M entries = 64MB memory (2 bytes per entry)
 	}
 }
 

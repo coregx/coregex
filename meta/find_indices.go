@@ -516,7 +516,8 @@ func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, 
 	}
 
 	if !e.boundedBacktracker.CanHandle(len(remaining)) {
-		return e.pikevm.SearchAt(haystack, at)
+		// Delegate to NFA path which uses prefilter if available
+		return e.findIndicesNFAAt(haystack, at)
 	}
 
 	state := e.getSearchState()

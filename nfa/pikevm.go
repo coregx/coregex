@@ -354,10 +354,10 @@ func (p *PikeVM) isMatchAnchored(haystack []byte) bool {
 
 // addThreadForMatch adds thread for IsMatch - simplified without captures/priority
 func (p *PikeVM) addThreadForMatch(id StateID, haystack []byte, pos int) {
-	if p.internalState.Visited.Contains(uint32(id)) {
+	// Optimization: Insert returns false if already present, avoiding double Contains call
+	if !p.internalState.Visited.Insert(uint32(id)) {
 		return
 	}
-	p.internalState.Visited.Insert(uint32(id))
 
 	state := p.nfa.State(id)
 	if state == nil {
@@ -458,10 +458,10 @@ func (p *PikeVM) stepForMatch(t thread, b byte, haystack []byte, nextPos int) {
 
 // addThreadToNextForMatch adds to next queue for IsMatch - simplified
 func (p *PikeVM) addThreadToNextForMatch(id StateID, haystack []byte, pos int) {
-	if p.internalState.Visited.Contains(uint32(id)) {
+	// Optimization: Insert returns false if already present, avoiding double Contains call
+	if !p.internalState.Visited.Insert(uint32(id)) {
 		return
 	}
-	p.internalState.Visited.Insert(uint32(id))
 
 	state := p.nfa.State(id)
 	if state == nil {
@@ -1052,10 +1052,10 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 // addThread adds a new thread to the current queue, following epsilon transitions
 func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 	// Check if we've already visited this state in this generation
-	if p.internalState.Visited.Contains(uint32(t.state)) {
+	// Optimization: Insert returns false if already present, avoiding double Contains call
+	if !p.internalState.Visited.Insert(uint32(t.state)) {
 		return
 	}
-	p.internalState.Visited.Insert(uint32(t.state))
 
 	state := p.nfa.State(t.state)
 	if state == nil {
@@ -1198,10 +1198,10 @@ func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 	// Without this check, patterns with multiple character classes like
 	// A[AB]B[BC]C[CD]... can cause exponential thread explosion (2^N duplicates)
 	// Reference: rust-regex pikevm.rs line 1683: "if !next.set.insert(sid) { return; }"
-	if p.internalState.Visited.Contains(uint32(t.state)) {
+	// Optimization: Insert returns false if already present, avoiding double Contains call
+	if !p.internalState.Visited.Insert(uint32(t.state)) {
 		return
 	}
-	p.internalState.Visited.Insert(uint32(t.state))
 
 	state := p.nfa.State(t.state)
 	if state == nil {
