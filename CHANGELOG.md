@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PikeVM visited state tracking optimization**
   - Consolidate Contains+Insert to single Insert call
   - Saves ~8% of SparseSet operations in hot path
+- **FindAll/Count sync.Pool overhead elimination**
+  - Problem: 1.29M sync.Pool Get/Put per match on large inputs
+  - Solution: Acquire SearchState once, reuse for all iterations (Rust pattern)
+  - Add `findIndicesAtWithState` methods for state-reusing iteration
+  - Results: Allocations reduced from 1.29M to 49 for 6MB input
+  - 10% improvement on 6MB benchmark (1.9s → 1.74s)
+  - Note: Remaining 2x gap vs stdlib is PikeVM algorithm, not overhead
 
 ### Planned
 - Look-around assertions
