@@ -43,6 +43,12 @@ type PikeVMState struct {
 	// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:2198
 	epsilonStack []StateID
 
+	// SlotTable stores capture slot values per NFA state.
+	// This is a 2D table (flattened to 1D) following the Rust regex architecture.
+	// Enables O(1) access to capture positions for any state.
+	// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:2044-2160
+	SlotTable *SlotTable
+
 	// Longest enables leftmost-longest (POSIX) matching semantics.
 	// By default (false), uses leftmost-first (Perl) semantics where
 	// the first alternative wins. When true, the longest match wins.
@@ -196,6 +202,11 @@ func (p *PikeVM) initState(state *PikeVMState) {
 	state.Visited = sparse.NewSparseSet(conv.IntToUint32(capacity))
 	// Pre-allocate epsilon stack for loop-based closure in IsMatch (Rust pattern)
 	state.epsilonStack = make([]StateID, 0, capacity)
+
+	// Initialize SlotTable for capture tracking
+	// Each capture group has 2 slots (start and end position)
+	slotsPerState := p.nfa.CaptureCount() * 2
+	state.SlotTable = NewSlotTable(p.nfa.States(), slotsPerState)
 }
 
 // NewPikeVMState creates a new mutable state for use with PikeVM.
