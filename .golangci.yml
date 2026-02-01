@@ -163,6 +163,12 @@ linters:
           - funlen       # SIMD wrappers can be long
           - gocognit     # CPU feature detection complexity
 
+      # NFA/PikeVM - hot path with intentional duplication
+      - path: nfa/pikevm\.go
+        linters:
+          - dupl         # addThreadForMatch/addThreadToNextForMatch are intentionally duplicated
+          - nestif       # Epsilon closure has nested conditions for performance
+
       # DFA lazy construction - inherently complex
       - path: dfa/lazy/.*\.go
         linters:
