@@ -49,6 +49,8 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesAhoCorasick(haystack)
 	case UseMultilineReverseSuffix:
 		return e.findIndicesMultilineReverseSuffix(haystack)
+	case UseAnchoredLiteral:
+		return e.findIndicesAnchoredLiteral(haystack)
 	default:
 		return e.findIndicesNFA(haystack)
 	}
@@ -91,6 +93,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesAhoCorasickAt(haystack, at)
 	case UseMultilineReverseSuffix:
 		return e.findIndicesMultilineReverseSuffixAt(haystack, at)
+	case UseAnchoredLiteral:
+		return e.findIndicesAnchoredLiteralAt(haystack, at)
 	default:
 		return e.findIndicesNFAAt(haystack, at)
 	}
@@ -450,6 +454,24 @@ func (e *Engine) findIndicesMultilineReverseSuffix(haystack []byte) (int, int, b
 	}
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 	return e.multilineReverseSuffixSearcher.FindIndicesAt(haystack, 0)
+}
+
+// findIndicesAnchoredLiteral uses O(1) specialized matching for ^prefix.*suffix$ patterns.
+// For anchored patterns, match always spans [0, len(haystack)].
+func (e *Engine) findIndicesAnchoredLiteral(haystack []byte) (int, int, bool) {
+	if MatchAnchoredLiteral(haystack, e.anchoredLiteralInfo) {
+		return 0, len(haystack), true
+	}
+	return -1, -1, false
+}
+
+// findIndicesAnchoredLiteralAt searches using anchored literal at position - zero alloc.
+// Anchored patterns can only match from position 0.
+func (e *Engine) findIndicesAnchoredLiteralAt(haystack []byte, at int) (int, int, bool) {
+	if at > 0 {
+		return -1, -1, false
+	}
+	return e.findIndicesAnchoredLiteral(haystack)
 }
 
 // findIndicesMultilineReverseSuffixAt searches using multiline suffix optimization from position - zero alloc.
@@ -824,6 +846,8 @@ func (e *Engine) findIndicesAtWithState(haystack []byte, at int, state *SearchSt
 		return e.findIndicesAhoCorasickAt(haystack, at)
 	case UseMultilineReverseSuffix:
 		return e.findIndicesMultilineReverseSuffixAt(haystack, at)
+	case UseAnchoredLiteral:
+		return e.findIndicesAnchoredLiteralAt(haystack, at)
 	default:
 		return e.findIndicesNFAAtWithState(haystack, at, state)
 	}
