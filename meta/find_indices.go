@@ -772,3 +772,146 @@ func (e *Engine) findIndicesAhoCorasickAt(haystack []byte, at int) (int, int, bo
 	}
 	return m.Start, m.End, true
 }
+
+// =============================================================================
+// Internal state-reusing methods (for findAllIndicesLoop optimization)
+// =============================================================================
+
+// findIndicesAtWithState is the internal version that reuses provided state.
+// Used by findAllIndicesLoop to avoid sync.Pool overhead per match.
+// This dispatcher handles all strategies, delegating to existing methods for
+// strategies that don't need mutable state, and using *WithState methods for
+// strategies that do (NFA, BoundedBacktracker).
+func (e *Engine) findIndicesAtWithState(haystack []byte, at int, state *SearchState) (start, end int, found bool) {
+	// Early impossibility check: anchored pattern can only match at position 0
+	if at > 0 && e.nfa.IsAlwaysAnchored() {
+		return -1, -1, false
+	}
+
+	switch e.strategy {
+	case UseNFA:
+		return e.findIndicesNFAAtWithState(haystack, at, state)
+	case UseDFA:
+		// DFA uses e.pikevm (shared) for final bounds, not pooled state
+		return e.findIndicesDFAAt(haystack, at)
+	case UseBoth:
+		// Adaptive uses e.pikevm (shared) or delegates to NFA path
+		return e.findIndicesAdaptiveAt(haystack, at)
+	case UseReverseSuffix:
+		return e.findIndicesReverseSuffixAt(haystack, at)
+	case UseReverseSuffixSet:
+		return e.findIndicesReverseSuffixSetAt(haystack, at)
+	case UseReverseInner:
+		return e.findIndicesReverseInnerAt(haystack, at)
+	case UseBoundedBacktracker:
+		return e.findIndicesBoundedBacktrackerAtWithState(haystack, at, state)
+	case UseCharClassSearcher:
+		return e.findIndicesCharClassSearcherAt(haystack, at)
+	case UseCompositeSearcher:
+		return e.findIndicesCompositeSearcherAt(haystack, at)
+	case UseBranchDispatch:
+		return e.findIndicesBranchDispatchAt(haystack, at)
+	case UseTeddy:
+		return e.findIndicesTeddyAt(haystack, at)
+	case UseDigitPrefilter:
+		return e.findIndicesDigitPrefilterAt(haystack, at)
+	case UseAhoCorasick:
+		return e.findIndicesAhoCorasickAt(haystack, at)
+	case UseMultilineReverseSuffix:
+		return e.findIndicesMultilineReverseSuffixAt(haystack, at)
+	default:
+		return e.findIndicesNFAAtWithState(haystack, at, state)
+	}
+}
+
+// findIndicesNFAAtWithState searches using NFA starting at position - zero alloc.
+// This is the state-reusing version for findAllIndicesLoop optimization.
+// Thread-safe: reuses provided state (no sync.Pool Get/Put).
+func (e *Engine) findIndicesNFAAtWithState(haystack []byte, at int, state *SearchState) (int, int, bool) {
+	atomic.AddUint64(&e.stats.NFASearches, 1)
+
+	// BoundedBacktracker can be used for Find operations only when safe
+	useBT := e.boundedBacktracker != nil && !e.canMatchEmpty
+
+	// Use prefilter for skip-ahead if available
+	if e.prefilter != nil {
+		for at < len(haystack) {
+			// Find next candidate position via prefilter
+			pos := e.prefilter.Find(haystack, at)
+			if pos == -1 {
+				return -1, -1, false // No more candidates
+			}
+			atomic.AddUint64(&e.stats.PrefilterHits, 1)
+
+			// Try to match at candidate position
+			var start, end int
+			var found bool
+			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
+				start, end, found = e.boundedBacktracker.SearchAtWithState(haystack, pos, state.backtracker)
+			} else {
+				start, end, found = state.pikevm.SearchAt(haystack, pos)
+			}
+			if found {
+				return start, end, true
+			}
+
+			// Move past this position
+			atomic.AddUint64(&e.stats.PrefilterMisses, 1)
+			at = pos + 1
+		}
+		return -1, -1, false
+	}
+
+	// No prefilter: use BoundedBacktracker if available and safe
+	if useBT && e.boundedBacktracker.CanHandle(len(haystack)-at) {
+		return e.boundedBacktracker.SearchAtWithState(haystack, at, state.backtracker)
+	}
+
+	return state.pikevm.SearchAt(haystack, at)
+}
+
+// findIndicesBoundedBacktrackerAtWithState searches using bounded backtracker at position.
+// This is the state-reusing version for findAllIndicesLoop optimization.
+// Thread-safe: reuses provided state (no sync.Pool Get/Put).
+//
+// V11-002 ASCII optimization: When pattern contains '.' and input is ASCII-only,
+// uses the faster ASCII NFA.
+//
+// V11.5 optimization: When searching from position 'at', only check CanHandle for
+// the remaining portion haystack[at:], not the full haystack. This allows
+// BoundedBacktracker to handle large inputs in FindAll where each successive
+// search operates on a smaller remaining portion.
+func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at int, state *SearchState) (int, int, bool) {
+	if e.boundedBacktracker == nil {
+		return e.findIndicesNFAAtWithState(haystack, at, state)
+	}
+	atomic.AddUint64(&e.stats.NFASearches, 1)
+
+	// Slice to remaining portion for more efficient BoundedBacktracker usage.
+	// This allows BT to handle large inputs in FindAll where we only need
+	// to search the remaining portion, not the full haystack.
+	remaining := haystack[at:]
+
+	// V11-002 ASCII optimization
+	if e.asciiBoundedBacktracker != nil && simd.IsASCII(remaining) {
+		if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
+			return state.pikevm.SearchAt(haystack, at)
+		}
+		start, end, found := e.asciiBoundedBacktracker.Search(remaining)
+		if found {
+			return at + start, at + end, true
+		}
+		return -1, -1, false
+	}
+
+	if !e.boundedBacktracker.CanHandle(len(remaining)) {
+		// Delegate to NFA path which uses prefilter if available
+		return e.findIndicesNFAAtWithState(haystack, at, state)
+	}
+
+	start, end, found := e.boundedBacktracker.SearchWithState(remaining, state.backtracker)
+	if found {
+		return at + start, at + end, true
+	}
+	return -1, -1, false
+}
