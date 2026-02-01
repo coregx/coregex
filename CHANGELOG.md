@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.9] - 2026-02-02
+
+### Fixed
+- **Missing first-byte prefilter in FindAll state-reusing path** (Issue #107)
+  - `findIndicesBoundedBacktrackerAtWithState` was missing `anchoredFirstBytes` check
+  - Pattern `^/.*[\w-]+\.php` (without `$`) took 377ms instead of 40µs on 6MB input
+  - Added O(1) early rejection for anchored patterns not starting with required byte
+  - Fix: **377ms → 40µs** (9000x improvement for non-matching anchored patterns)
+
+---
+
 ## [0.11.8] - 2026-02-01
 
 ### Fixed
