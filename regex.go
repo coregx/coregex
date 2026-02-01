@@ -376,92 +376,12 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 		return nil
 	}
 
-	// Fast path: CharClassSearcher uses streaming state machine (single-pass, no per-match overhead)
-	// This is 2-3x faster than the loop below for patterns like \w+, \d+, [a-z]+
-	if r.engine.Strategy() == meta.UseCharClassSearcher {
-		return r.findAllStreaming(b, n)
-	}
-
-	var matches [][]byte
-	pos := 0
-	lastMatchEnd := -1 // Track where the last non-empty match ended
-
-	for {
-		// Use zero-allocation FindIndicesAt instead of FindAt (avoids Match object creation)
-		start, end, found := r.engine.FindIndicesAt(b, pos)
-		if !found {
-			break
-		}
-
-		// Lazy allocation: only allocate once we find the first match
-		//nolint:nestif // Allocation logic requires checking multiple conditions
-		if matches == nil {
-			// Smart allocation: anchored patterns have max 1 match, others use capped heuristic.
-			// This avoids huge allocations on large inputs (6MB → 62k capacity was causing 170µs overhead).
-			var estimatedCap int
-			if r.engine.IsStartAnchored() {
-				estimatedCap = 1 // Start-anchored patterns match at most once (position 0 only)
-			} else {
-				// Estimate ~1 match per 100 bytes, but cap at reasonable size
-				estimatedCap = len(b) / 100
-				if estimatedCap < 4 {
-					estimatedCap = 4
-				}
-				if estimatedCap > 256 {
-					estimatedCap = 256 // Cap to limit allocation overhead; append will grow if needed
-				}
-			}
-			if n > 0 && estimatedCap > n {
-				estimatedCap = n
-			}
-			matches = make([][]byte, 0, estimatedCap)
-		}
-
-		// Skip empty matches that start exactly where the previous non-empty match ended.
-		// This matches Go's stdlib behavior for preventing duplicate empty matches.
-		//nolint:gocritic // badCond: intentional - checking empty match (start==end) at lastMatchEnd
-		if start == end && start == lastMatchEnd {
-			pos++
-			if pos > len(b) {
-				break
-			}
-			continue
-		}
-
-		matches = append(matches, b[start:end])
-
-		// Track non-empty match ends for the skip rule
-		if start != end {
-			lastMatchEnd = end
-		}
-
-		// Move position past this match
-		switch {
-		case start == end:
-			// Empty match: advance by 1 to avoid infinite loop
-			pos = end + 1
-		case end > pos:
-			pos = end
-		default:
-			// Fallback (shouldn't normally happen)
-			pos++
-		}
-
-		if pos > len(b) {
-			break
-		}
-
-		// Check limit
-		if n > 0 && len(matches) >= n {
-			break
-		}
-	}
-
-	return matches
+	// Use optimized streaming path for ALL strategies (state-reusing, no sync.Pool overhead)
+	return r.findAllStreaming(b, n)
 }
 
-// findAllStreaming uses single-pass streaming state machine for CharClassSearcher patterns.
-// This avoids per-match function call overhead (2-3x faster than the loop approach).
+// findAllStreaming uses state-reusing search loop for all strategies.
+// This avoids sync.Pool overhead (1.29M Get/Put → 1 for 6MB input).
 func (r *Regex) findAllStreaming(b []byte, n int) [][]byte {
 	// Get streaming indices ([][2]int format)
 	streamResults := r.engine.FindAllIndicesStreaming(b, n, nil)
