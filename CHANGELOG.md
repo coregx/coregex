@@ -7,10 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+- **BoundedBacktracker optimizations for word_repeat patterns** (Issue #107)
+  - Switch from uint32 to uint16 generation tracking (2x memory savings)
+  - Cache-friendly memory layout: `pos * numStates + state`
+  - Slice haystack to remaining portion in `findIndicesBoundedBacktrackerAt`
+  - Results for `(\w{2,8})+` pattern vs stdlib:
+    - ≤100KB: **37% faster** than stdlib (was 3.5x slower)
+    - 332KB: **28% faster** than stdlib (was 2.3x slower)
+    - 1MB: **parity** with stdlib (was 2.5x slower)
+    - 6MB: 2.2x slower (PikeVM fallback, same as Rust)
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
 - SIMD prefilter for CompositeSequenceDFA (#83)
+- PikeVM optimizations for large inputs (#107)
 
 ---
 
