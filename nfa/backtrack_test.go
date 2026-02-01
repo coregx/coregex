@@ -139,9 +139,15 @@ func TestBoundedBacktracker_CanHandle(t *testing.T) {
 		t.Error("Should handle small input")
 	}
 
-	// Very large input might not be handleable
-	// With default 256KB limit and ~10 states, max input is ~25K
-	// But let's test with a huge input
+	// With 32M entries limit and ~6 states for \d+ pattern:
+	// Max input = 32M / 6 = ~5.3MB
+	// So 1MB should be handleable
+	if !bt.CanHandle(1_000_000) {
+		t.Error("Should handle 1MB input")
+	}
+
+	// 10MB input should NOT be handleable
+	// 10MB * 6 states = 60M entries > 32M limit
 	if bt.CanHandle(10_000_000) {
 		t.Error("Should not handle 10MB input with default limits")
 	}
