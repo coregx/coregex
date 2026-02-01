@@ -14,6 +14,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.5] - 2026-02-01
+
+### Fixed
+- **checkHasWordBoundary catastrophic slowdown** (Issue #105)
+  - Patterns with `\w{n,m}` quantifiers were **7,000,000x slower** than stdlib
+  - Root cause: O(N*M) complexity from scanning all NFA states per byte
+  - Fix #1: Use `NewBuilderWithWordBoundary()` to avoid repeated scans
+  - Fix #2: Add `hasWordBoundary` guards to skip unnecessary checks
+  - Fix #3: Use anchored search for prefilter verification
+  - **Result: 3m22s → 30µs** (6,600,000x faster, stdlib parity)
+
+### Technical Details
+- Added `searchEarliestMatchAnchored()` for O(1) prefilter verification
+- Pre-computed `hasWordBoundary` flag passed through builder chain
+- Credits: @danslo for root cause analysis and fix suggestions
+
+---
+
 ## [0.11.4] - 2026-01-16
 
 ### Fixed
