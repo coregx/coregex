@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - 332KB: **28% faster** than stdlib (was 2.3x slower)
     - 1MB: **parity** with stdlib (was 2.5x slower)
     - 6MB: 2.2x slower (PikeVM fallback, same as Rust)
+- **PikeVM visited state tracking optimization**
+  - Consolidate Contains+Insert to single Insert call
+  - Saves ~8% of SparseSet operations in hot path
 
 ### Planned
 - Look-around assertions
