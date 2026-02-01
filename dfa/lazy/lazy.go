@@ -59,9 +59,10 @@ type DFA struct {
 	prefilter prefilter.Prefilter
 	pikevm    *nfa.PikeVM
 
-	// stateByID provides O(1) lookup of states by ID
-	// This maps StateID → *State for fast access during search
-	stateByID map[StateID]*State
+	// states provides O(1) lookup of states by ID via direct indexing.
+	// StateIDs are sequential (0, 1, 2...), so slice indexing is faster than map.
+	// This is a critical optimization - map lookups were 42% of CPU time!
+	states []*State
 
 	// startTable caches start states for different look-behind contexts
 	// This enables correct handling of assertions (^, \b, etc.) and
@@ -243,7 +244,8 @@ func (d *DFA) SearchAtAnchored(haystack []byte, at int) int {
 	for pos := at; pos < len(haystack); pos++ {
 		b := haystack[pos]
 
-		if d.checkWordBoundaryMatch(currentState, b) {
+		// Skip expensive check for patterns without word boundaries (Issue #105)
+		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
 			return pos
 		}
 
@@ -322,8 +324,9 @@ func (d *DFA) isMatchWithPrefilter(haystack []byte) bool {
 		return false
 	}
 
-	// Try to match at candidate - use early termination
-	if d.searchEarliestMatch(haystack, pos) {
+	// Try to match at candidate - use ANCHORED search to verify match starts here
+	// Issue #105: unanchored search caused catastrophic slowdown
+	if d.searchEarliestMatchAnchored(haystack, pos) {
 		return true
 	}
 
@@ -335,7 +338,7 @@ func (d *DFA) isMatchWithPrefilter(haystack []byte) bool {
 			return false
 		}
 		pos = candidate
-		if d.searchEarliestMatch(haystack, pos) {
+		if d.searchEarliestMatchAnchored(haystack, pos) {
 			return true
 		}
 	}
@@ -393,7 +396,8 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 		// This handles patterns like `test\b` where after matching "test",
 		// the next byte '!' creates a word boundary that satisfies \b.
 		// We need to detect this match before trying to consume '!'.
-		if d.checkWordBoundaryMatch(currentState, b) {
+		// Skip expensive check for patterns without word boundaries (Issue #105)
+		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
 			return true
 		}
 
@@ -441,6 +445,75 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool {
 	// that are satisfied at end-of-input.
 	// Example: pattern `test\b` matching "test" - the \b is satisfied at EOI
 	// because prev='t'(word), next=none(non-word) → word boundary.
+	return d.checkEOIMatch(currentState)
+}
+
+// searchEarliestMatchAnchored performs ANCHORED DFA search with early termination.
+// Unlike searchEarliestMatch, this requires the match to START exactly at startPos.
+// This is critical for prefilter verification - we need to confirm the match
+// actually starts at the candidate position, not somewhere after it.
+//
+// Issue #105: Using unanchored search for prefilter verification caused
+// catastrophic slowdown because it would re-scan from candidate to end.
+func (d *DFA) searchEarliestMatchAnchored(haystack []byte, startPos int) bool {
+	if startPos > len(haystack) {
+		return false
+	}
+
+	// Get ANCHORED start state (requires match to start exactly at startPos)
+	currentState := d.getStartState(haystack, startPos, true)
+	if currentState == nil {
+		// Fallback to NFA with anchored search
+		start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+		// For anchored: match must start exactly at startPos
+		return matched && start == startPos && end >= start
+	}
+
+	// Check if start state is already a match (e.g., empty pattern)
+	if currentState.IsMatch() {
+		return true
+	}
+
+	// Scan input byte by byte with early termination
+	for pos := startPos; pos < len(haystack); pos++ {
+		b := haystack[pos]
+
+		// Skip expensive check for patterns without word boundaries (Issue #105)
+		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
+			return true
+		}
+
+		// Get next state
+		classIdx := d.byteToClass(b)
+		nextID, ok := currentState.Transition(classIdx)
+		switch {
+		case !ok:
+			nextState, err := d.determinize(currentState, b)
+			if err != nil {
+				start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+				return matched && start == startPos && end >= start
+			}
+			if nextState == nil {
+				return false
+			}
+			currentState = nextState
+
+		case nextID == DeadState:
+			return false
+
+		default:
+			currentState = d.getState(nextID)
+			if currentState == nil {
+				start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+				return matched && start == startPos && end >= start
+			}
+		}
+
+		if currentState.IsMatch() {
+			return true
+		}
+	}
+
 	return d.checkEOIMatch(currentState)
 }
 
@@ -801,17 +874,23 @@ func (d *DFA) getState(id StateID) *State {
 		return nil
 	}
 
-	// O(1) lookup via stateByID map
-	state, ok := d.stateByID[id]
-	if !ok {
+	// O(1) lookup via direct slice indexing (faster than map!)
+	idx := int(id)
+	if idx >= len(d.states) {
 		return nil
 	}
-	return state
+	return d.states[idx]
 }
 
-// registerState adds a state to the ID-based lookup map
+// registerState adds a state to the states slice for O(1) lookup.
+// StateIDs are assigned sequentially, so we can use direct indexing.
 func (d *DFA) registerState(state *State) {
-	d.stateByID[state.ID()] = state
+	id := int(state.ID())
+	// Grow slice if needed
+	for len(d.states) <= id {
+		d.states = append(d.states, nil)
+	}
+	d.states[id] = state
 }
 
 // checkEOIMatch checks if the current state would match at end-of-input.
@@ -828,7 +907,8 @@ func (d *DFA) checkEOIMatch(state *State) bool {
 	}
 
 	// Create a temporary builder for EOI resolution
-	builder := NewBuilder(d.nfa, d.config)
+	// Use NewBuilderWithWordBoundary to avoid O(states) scan per call (Issue #105)
+	builder := NewBuilderWithWordBoundary(d.nfa, d.config, d.hasWordBoundary)
 	return builder.CheckEOIMatch(state.NFAStates(), state.IsFromWord())
 }
 
@@ -853,7 +933,8 @@ func (d *DFA) checkWordBoundaryMatch(state *State, nextByte byte) bool {
 		return false
 	}
 
-	builder := NewBuilder(d.nfa, d.config)
+	// Use NewBuilderWithWordBoundary to avoid O(states) scan per call (Issue #105)
+	builder := NewBuilderWithWordBoundary(d.nfa, d.config, d.hasWordBoundary)
 	isFromWord := state.IsFromWord()
 	isNextWord := isWordByte(nextByte)
 	wordBoundarySatisfied := isFromWord != isNextWord
@@ -1017,7 +1098,7 @@ func (d *DFA) CacheStats() (size int, capacity uint32, hits, misses uint64, hitR
 // Primarily useful for testing and benchmarking.
 func (d *DFA) ResetCache() {
 	d.cache.Clear()
-	d.stateByID = make(map[StateID]*State, d.config.MaxStates)
+	d.states = make([]*State, 0, d.config.MaxStates)
 
 	// Reset StartTable
 	d.startTable = NewStartTable()

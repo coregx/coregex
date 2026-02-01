@@ -14,6 +14,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.5] - 2026-02-01
+
+### Fixed
+- **checkHasWordBoundary catastrophic slowdown** (Issue #105)
+  - Patterns with `\w{n,m}` quantifiers were **7,000,000x slower** than stdlib
+  - Root cause: O(N*M) complexity from scanning all NFA states per byte
+  - Fix: Use `NewBuilderWithWordBoundary()`, add `hasWordBoundary` guards, anchored prefilter verification
+  - **Result: 3m22s → 3.6µs** (56,000,000x faster, **7.9x faster than stdlib**)
+
+### Performance
+- **DFA state lookup: map → slice** — 42% CPU time eliminated
+  - State IDs are sequential, so direct slice indexing beats hash lookups
+- **Literal extraction from capture/repeat groups** — better prefilters
+  - `=(\$\w...){2}` now extracts `=$` (2 bytes) instead of just `=` (1 byte)
+  - Reduces false positives in prefilter, massive speedup on selective patterns
+
+### Technical Details
+- Added `searchEarliestMatchAnchored()` for O(1) prefilter verification
+- Replaced `stateByID map[StateID]*State` with `states []*State`
+- Extended `tryExpandConcatSuffix()` to unwrap OpRepeat/OpCapture
+- Credits: @danslo for root cause analysis and fix suggestions
+
+---
+
 ## [0.11.4] - 2026-01-16
 
 ### Fixed
