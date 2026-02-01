@@ -7,6 +7,61 @@ import (
 	"github.com/coregx/coregex/internal/sparse"
 )
 
+// SearchMode determines how many capture slots to track during search.
+// This enables dynamic slot sizing for optimal performance based on the
+// type of search being performed.
+//
+// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:1898-1921
+type SearchMode int
+
+const (
+	// SearchModeIsMatch tracks 0 slots - just returns boolean match result.
+	// This is the fastest mode, used for IsMatch() calls.
+	SearchModeIsMatch SearchMode = iota
+
+	// SearchModeFind tracks 2 slots - only overall match start/end positions.
+	// Used for Find() and FindIndices() when captures are not needed.
+	SearchModeFind
+
+	// SearchModeCaptures tracks all slots - full capture group positions.
+	// Used for FindWithCaptures() and similar methods.
+	SearchModeCaptures
+)
+
+// SlotsNeeded returns the number of slots required for this search mode.
+// Parameters:
+//   - totalSlots: the total number of capture slots (CaptureCount * 2)
+func (m SearchMode) SlotsNeeded(totalSlots int) int {
+	switch m {
+	case SearchModeIsMatch:
+		return 0
+	case SearchModeFind:
+		if totalSlots < 2 {
+			return totalSlots
+		}
+		return 2
+	case SearchModeCaptures:
+		return totalSlots
+	}
+	return totalSlots
+}
+
+// searchThread is a lightweight thread for non-capture searches.
+// It uses SlotTable for per-state capture storage instead of per-thread COW captures.
+// This reduces thread size from ~40 bytes to 16 bytes for significant memory savings.
+//
+// Memory layout (16 bytes on 64-bit):
+//   - state: 4 bytes (StateID)
+//   - startPos: 8 bytes (int)
+//   - priority: 4 bytes (uint32)
+//
+// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:1811-1825
+type searchThread struct {
+	state    StateID // Current NFA state
+	startPos int     // Position where this thread's match attempt started
+	priority uint32  // Thread priority for alternation (lower = higher priority)
+}
+
 // PikeVM implements the Pike VM algorithm for NFA execution.
 // It simulates the NFA by maintaining a set of active states and
 // exploring all possible paths through the automaton.
@@ -29,14 +84,30 @@ type PikeVM struct {
 // This struct should be pooled (via sync.Pool) for concurrent usage.
 // Each goroutine must use its own PikeVMState instance.
 type PikeVMState struct {
-	// Thread queues for current and next generation
+	// Thread queues for current and next generation (legacy, with COW captures)
 	// Pre-allocated to avoid allocations during search
 	Queue     []thread
 	NextQueue []thread
 
+	// Lightweight thread queues for SlotTable-based search (new architecture)
+	// These use searchThread which is 16 bytes vs 40+ bytes for thread
+	SearchQueue     []searchThread
+	SearchNextQueue []searchThread
+
 	// Sparse set for tracking visited states in current generation
 	// This prevents processing the same state multiple times
 	Visited *sparse.SparseSet
+
+	// epsilonStack is used for loop-based epsilon closure in IsMatch (Rust pattern).
+	// Only stores StateID for split right branches - minimizes frame overhead.
+	// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:2198
+	epsilonStack []StateID
+
+	// SlotTable stores capture slot values per NFA state.
+	// This is a 2D table (flattened to 1D) following the Rust regex architecture.
+	// Enables O(1) access to capture positions for any state.
+	// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:2044-2160
+	SlotTable *SlotTable
 
 	// Longest enables leftmost-longest (POSIX) matching semantics.
 	// By default (false), uses leftmost-first (Perl) semantics where
@@ -186,9 +257,22 @@ func (p *PikeVM) initState(state *PikeVMState) {
 		capacity = 16
 	}
 
+	// Legacy thread queues (with COW captures)
 	state.Queue = make([]thread, 0, capacity)
 	state.NextQueue = make([]thread, 0, capacity)
+
+	// Lightweight thread queues for SlotTable-based search
+	state.SearchQueue = make([]searchThread, 0, capacity)
+	state.SearchNextQueue = make([]searchThread, 0, capacity)
+
 	state.Visited = sparse.NewSparseSet(conv.IntToUint32(capacity))
+	// Pre-allocate epsilon stack for loop-based closure in IsMatch (Rust pattern)
+	state.epsilonStack = make([]StateID, 0, capacity)
+
+	// Initialize SlotTable for capture tracking
+	// Each capture group has 2 slots (start and end position)
+	slotsPerState := p.nfa.CaptureCount() * 2
+	state.SlotTable = NewSlotTable(p.nfa.States(), slotsPerState)
 }
 
 // NewPikeVMState creates a new mutable state for use with PikeVM.
@@ -352,54 +436,89 @@ func (p *PikeVM) isMatchAnchored(haystack []byte) bool {
 	return false
 }
 
-// addThreadForMatch adds thread for IsMatch - simplified without captures/priority
+// addThreadForMatch adds thread for IsMatch - loop-based epsilon closure.
+// This follows the Rust regex pattern: inner loop for linear chains,
+// stack only for split right branches.
+// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:1664-1749
 func (p *PikeVM) addThreadForMatch(id StateID, haystack []byte, pos int) {
-	if p.internalState.Visited.Contains(uint32(id)) {
-		return
-	}
-	p.internalState.Visited.Insert(uint32(id))
+	// Use loop-based epsilon closure instead of recursion
+	p.internalState.epsilonStack = p.internalState.epsilonStack[:0]
+	sid := id
 
-	state := p.nfa.State(id)
-	if state == nil {
-		return
-	}
-
-	switch state.Kind() {
-	case StateMatch:
-		p.internalState.Queue = append(p.internalState.Queue, thread{state: id})
-
-	case StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
-		p.internalState.Queue = append(p.internalState.Queue, thread{state: id})
-
-	case StateEpsilon:
-		next := state.Epsilon()
-		if next != InvalidState {
-			p.addThreadForMatch(next, haystack, pos)
+	for {
+		// Check visited - Insert returns false if already present
+		if !p.internalState.Visited.Insert(uint32(sid)) {
+			// Pop next state from stack
+			if len(p.internalState.epsilonStack) == 0 {
+				return
+			}
+			n := len(p.internalState.epsilonStack)
+			sid = p.internalState.epsilonStack[n-1]
+			p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
+			continue
 		}
 
-	case StateSplit:
-		left, right := state.Split()
-		if left != InvalidState {
-			p.addThreadForMatch(left, haystack, pos)
-		}
-		if right != InvalidState {
-			p.addThreadForMatch(right, haystack, pos)
-		}
-
-	case StateCapture:
-		_, _, next := state.Capture()
-		if next != InvalidState {
-			p.addThreadForMatch(next, haystack, pos)
+		state := p.nfa.State(sid)
+		if state == nil {
+			// Pop next state from stack
+			if len(p.internalState.epsilonStack) == 0 {
+				return
+			}
+			n := len(p.internalState.epsilonStack)
+			sid = p.internalState.epsilonStack[n-1]
+			p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
+			continue
 		}
 
-	case StateLook:
-		look, next := state.Look()
-		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			p.addThreadForMatch(next, haystack, pos)
+		switch state.Kind() {
+		case StateMatch, StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
+			// Terminal states - add to queue and pop
+			p.internalState.Queue = append(p.internalState.Queue, thread{state: sid})
+
+		case StateEpsilon:
+			// Linear chain - continue inner loop (no push)
+			if next := state.Epsilon(); next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateSplit:
+			// Binary split - push right, continue with left
+			left, right := state.Split()
+			if right != InvalidState {
+				p.internalState.epsilonStack = append(p.internalState.epsilonStack, right)
+			}
+			if left != InvalidState {
+				sid = left
+				continue
+			}
+
+		case StateCapture:
+			// Capture is epsilon for IsMatch - continue inner loop
+			if _, _, next := state.Capture(); next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateLook:
+			// Check assertion - continue if passes
+			look, next := state.Look()
+			if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateFail:
+			// Dead state - do nothing
 		}
 
-	case StateFail:
-		// Dead state - ignore
+		// Pop next state from stack
+		if len(p.internalState.epsilonStack) == 0 {
+			return
+		}
+		n := len(p.internalState.epsilonStack)
+		sid = p.internalState.epsilonStack[n-1]
+		p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
 	}
 }
 
@@ -456,52 +575,89 @@ func (p *PikeVM) stepForMatch(t thread, b byte, haystack []byte, nextPos int) {
 	}
 }
 
-// addThreadToNextForMatch adds to next queue for IsMatch - simplified
+// addThreadToNextForMatch adds to next queue for IsMatch - loop-based epsilon closure.
+// This follows the Rust regex pattern: inner loop for linear chains,
+// stack only for split right branches.
 func (p *PikeVM) addThreadToNextForMatch(id StateID, haystack []byte, pos int) {
-	if p.internalState.Visited.Contains(uint32(id)) {
-		return
+	// Use loop-based epsilon closure instead of recursion
+	p.internalState.epsilonStack = p.internalState.epsilonStack[:0]
+	sid := id
+
+	for {
+		// Check visited - Insert returns false if already present
+		if !p.internalState.Visited.Insert(uint32(sid)) {
+			// Pop next state from stack
+			if len(p.internalState.epsilonStack) == 0 {
+				return
+			}
+			n := len(p.internalState.epsilonStack)
+			sid = p.internalState.epsilonStack[n-1]
+			p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
+			continue
+		}
+
+		state := p.nfa.State(sid)
+		if state == nil {
+			// Pop next state from stack
+			if len(p.internalState.epsilonStack) == 0 {
+				return
+			}
+			n := len(p.internalState.epsilonStack)
+			sid = p.internalState.epsilonStack[n-1]
+			p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
+			continue
+		}
+
+		switch state.Kind() {
+		case StateMatch, StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
+			// Terminal states - add to next queue and pop
+			p.internalState.NextQueue = append(p.internalState.NextQueue, thread{state: sid})
+
+		case StateEpsilon:
+			// Linear chain - continue inner loop (no push)
+			if next := state.Epsilon(); next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateSplit:
+			// Binary split - push right, continue with left
+			left, right := state.Split()
+			if right != InvalidState {
+				p.internalState.epsilonStack = append(p.internalState.epsilonStack, right)
+			}
+			if left != InvalidState {
+				sid = left
+				continue
+			}
+
+		case StateCapture:
+			// Capture is epsilon for IsMatch - continue inner loop
+			if _, _, next := state.Capture(); next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateLook:
+			// Check assertion - continue if passes
+			look, next := state.Look()
+			if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateFail:
+			// Dead state - do nothing
+		}
+
+		// Pop next state from stack
+		if len(p.internalState.epsilonStack) == 0 {
+			return
+		}
+		n := len(p.internalState.epsilonStack)
+		sid = p.internalState.epsilonStack[n-1]
+		p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
 	}
-	p.internalState.Visited.Insert(uint32(id))
-
-	state := p.nfa.State(id)
-	if state == nil {
-		return
-	}
-
-	switch state.Kind() {
-	case StateEpsilon:
-		next := state.Epsilon()
-		if next != InvalidState {
-			p.addThreadToNextForMatch(next, haystack, pos)
-		}
-		return
-
-	case StateSplit:
-		left, right := state.Split()
-		if left != InvalidState {
-			p.addThreadToNextForMatch(left, haystack, pos)
-		}
-		if right != InvalidState {
-			p.addThreadToNextForMatch(right, haystack, pos)
-		}
-		return
-
-	case StateCapture:
-		_, _, next := state.Capture()
-		if next != InvalidState {
-			p.addThreadToNextForMatch(next, haystack, pos)
-		}
-		return
-
-	case StateLook:
-		look, next := state.Look()
-		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			p.addThreadToNextForMatch(next, haystack, pos)
-		}
-		return
-	}
-
-	p.internalState.NextQueue = append(p.internalState.NextQueue, thread{state: id})
 }
 
 // SearchAt finds the first match in the haystack starting from position 'at'.
@@ -1052,10 +1208,10 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 // addThread adds a new thread to the current queue, following epsilon transitions
 func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 	// Check if we've already visited this state in this generation
-	if p.internalState.Visited.Contains(uint32(t.state)) {
+	// Optimization: Insert returns false if already present, avoiding double Contains call
+	if !p.internalState.Visited.Insert(uint32(t.state)) {
 		return
 	}
-	p.internalState.Visited.Insert(uint32(t.state))
 
 	state := p.nfa.State(t.state)
 	if state == nil {
@@ -1198,10 +1354,10 @@ func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 	// Without this check, patterns with multiple character classes like
 	// A[AB]B[BC]C[CD]... can cause exponential thread explosion (2^N duplicates)
 	// Reference: rust-regex pikevm.rs line 1683: "if !next.set.insert(sid) { return; }"
-	if p.internalState.Visited.Contains(uint32(t.state)) {
+	// Optimization: Insert returns false if already present, avoiding double Contains call
+	if !p.internalState.Visited.Insert(uint32(t.state)) {
 		return
 	}
-	p.internalState.Visited.Insert(uint32(t.state))
 
 	state := p.nfa.State(t.state)
 	if state == nil {
@@ -1415,4 +1571,489 @@ func checkLookAssertion(look Look, haystack []byte, pos int) bool {
 		return wordBefore == wordAfter
 	}
 	return false
+}
+
+// =============================================================================
+// SlotTable-based Search Methods (New Architecture)
+// =============================================================================
+//
+// These methods use the lightweight searchThread struct and SlotTable for
+// capture storage, providing significant memory savings compared to per-thread
+// COW captures.
+//
+// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:1811-2160
+
+// SearchWithSlotTable finds the first match using the SlotTable architecture.
+// This is more memory-efficient than the legacy Search methods as it uses
+// lightweight threads (16 bytes) with per-state capture storage.
+//
+// Parameters:
+//   - haystack: input bytes to search
+//   - mode: determines how many capture slots to track (0/2/full)
+//
+// Returns (start, end, found) for the first match.
+//
+// This method uses internal state and is NOT thread-safe.
+func (p *PikeVM) SearchWithSlotTable(haystack []byte, mode SearchMode) (int, int, bool) {
+	return p.SearchWithSlotTableAt(haystack, 0, mode)
+}
+
+// SearchWithSlotTableAt finds the first match starting from position 'at'.
+// Uses the SlotTable architecture for efficient capture tracking.
+//
+// Parameters:
+//   - haystack: input bytes to search
+//   - at: starting position in haystack
+//   - mode: determines how many capture slots to track
+//
+// Returns (start, end, found) for the first match.
+func (p *PikeVM) SearchWithSlotTableAt(haystack []byte, at int, mode SearchMode) (int, int, bool) {
+	if at > len(haystack) {
+		return -1, -1, false
+	}
+
+	// Configure slot table for this search mode
+	totalSlots := p.nfa.CaptureCount() * 2
+	p.internalState.SlotTable.SetActiveSlots(mode.SlotsNeeded(totalSlots))
+
+	// Handle edge cases
+	if at == len(haystack) {
+		if p.matchesEmptyAt(haystack, at) {
+			return at, at, true
+		}
+		return -1, -1, false
+	}
+
+	if len(haystack) == 0 {
+		if p.matchesEmpty() {
+			return 0, 0, true
+		}
+		return -1, -1, false
+	}
+
+	if p.nfa.IsAnchored() {
+		return p.searchWithSlotTableAnchored(haystack, at)
+	}
+
+	return p.searchWithSlotTableUnanchored(haystack, at)
+}
+
+// searchWithSlotTableUnanchored implements unanchored search using lightweight threads.
+// Captures are stored in SlotTable per-state, not per-thread.
+func (p *PikeVM) searchWithSlotTableUnanchored(haystack []byte, startAt int) (int, int, bool) {
+	// Reset state
+	p.internalState.SearchQueue = p.internalState.SearchQueue[:0]
+	p.internalState.SearchNextQueue = p.internalState.SearchNextQueue[:0]
+	p.internalState.Visited.Clear()
+
+	// Reset SlotTable for states we'll use (only for Captures mode)
+	// Note: Full reset is O(n), but we only need it at search start
+	// For IsMatch (0 slots) and Find (2 slots), SlotTable is not used
+	if p.internalState.SlotTable.ActiveSlots() > 2 {
+		p.internalState.SlotTable.Reset()
+	}
+
+	// Track leftmost-first match
+	bestStart := -1
+	bestEnd := -1
+	var bestPriority uint32
+
+	isAnchored := p.nfa.IsAnchored()
+
+	// Process each byte position
+	for pos := startAt; pos <= len(haystack); pos++ {
+		// Add new start thread at current position
+		if bestStart == -1 && (!isAnchored || pos == 0) {
+			p.internalState.Visited.Clear()
+			startThread := searchThread{
+				state:    p.nfa.StartAnchored(),
+				startPos: pos,
+				priority: 0,
+			}
+			p.addSearchThread(startThread, haystack, pos)
+		}
+
+		// Check for matches in current generation
+		for _, t := range p.internalState.SearchQueue {
+			if p.nfa.IsMatch(t.state) && p.isBetterMatch(bestStart, bestEnd, bestPriority, t.startPos, pos, t.priority) {
+				bestStart = t.startPos
+				bestEnd = pos
+				bestPriority = t.priority
+			}
+		}
+
+		if pos >= len(haystack) {
+			break
+		}
+
+		// Early termination check
+		if bestStart != -1 {
+			hasLeftmostCandidate := false
+			for _, t := range p.internalState.SearchQueue {
+				if t.startPos <= bestStart {
+					hasLeftmostCandidate = true
+					break
+				}
+			}
+			if !hasLeftmostCandidate {
+				break
+			}
+		}
+
+		// Process current byte for all active threads
+		if len(p.internalState.SearchQueue) > 0 {
+			b := haystack[pos]
+			p.internalState.Visited.Clear()
+			for _, t := range p.internalState.SearchQueue {
+				p.stepSearchThread(t, b, haystack, pos+1)
+			}
+		}
+
+		// Swap queues
+		p.internalState.SearchQueue, p.internalState.SearchNextQueue =
+			p.internalState.SearchNextQueue, p.internalState.SearchQueue[:0]
+	}
+
+	if bestStart != -1 {
+		return bestStart, bestEnd, true
+	}
+	return -1, -1, false
+}
+
+// searchWithSlotTableAnchored implements anchored search using lightweight threads.
+func (p *PikeVM) searchWithSlotTableAnchored(haystack []byte, startPos int) (int, int, bool) {
+	// Reset state
+	p.internalState.SearchQueue = p.internalState.SearchQueue[:0]
+	p.internalState.SearchNextQueue = p.internalState.SearchNextQueue[:0]
+	p.internalState.Visited.Clear()
+
+	// Only reset SlotTable for Captures mode (activeSlots > 2)
+	if p.internalState.SlotTable.ActiveSlots() > 2 {
+		p.internalState.SlotTable.Reset()
+	}
+
+	// Initialize with start state
+	startThread := searchThread{
+		state:    p.nfa.StartAnchored(),
+		startPos: startPos,
+		priority: 0,
+	}
+	p.addSearchThread(startThread, haystack, startPos)
+
+	// Track best match
+	lastMatchPos := -1
+	var lastMatchPriority uint32
+
+	for pos := startPos; pos <= len(haystack); pos++ {
+		// Check for matches
+		for _, t := range p.internalState.SearchQueue {
+			if !p.nfa.IsMatch(t.state) {
+				continue
+			}
+			shouldUpdate := false
+			if p.internalState.Longest {
+				shouldUpdate = pos > lastMatchPos
+			} else {
+				shouldUpdate = lastMatchPos == -1 || t.priority <= lastMatchPriority
+			}
+			if shouldUpdate {
+				lastMatchPos = pos
+				lastMatchPriority = t.priority
+			}
+			if !p.internalState.Longest {
+				break
+			}
+		}
+
+		if len(p.internalState.SearchQueue) == 0 || pos >= len(haystack) {
+			break
+		}
+
+		b := haystack[pos]
+		p.internalState.Visited.Clear()
+
+		for _, t := range p.internalState.SearchQueue {
+			p.stepSearchThread(t, b, haystack, pos+1)
+		}
+
+		p.internalState.SearchQueue, p.internalState.SearchNextQueue =
+			p.internalState.SearchNextQueue, p.internalState.SearchQueue[:0]
+	}
+
+	if lastMatchPos != -1 {
+		return startPos, lastMatchPos, true
+	}
+	return -1, -1, false
+}
+
+// addSearchThread adds a lightweight thread to the current queue, following epsilon transitions.
+// Captures are stored in SlotTable, not in the thread.
+func (p *PikeVM) addSearchThread(t searchThread, haystack []byte, pos int) {
+	// Check if already visited this state
+	if !p.internalState.Visited.Insert(uint32(t.state)) {
+		return
+	}
+
+	state := p.nfa.State(t.state)
+	if state == nil {
+		return
+	}
+
+	switch state.Kind() {
+	case StateMatch, StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
+		// Terminal states - add to queue
+		p.internalState.SearchQueue = append(p.internalState.SearchQueue, t)
+
+	case StateEpsilon:
+		next := state.Epsilon()
+		if next != InvalidState {
+			p.addSearchThread(searchThread{state: next, startPos: t.startPos, priority: t.priority}, haystack, pos)
+		}
+
+	case StateSplit:
+		left, right := state.Split()
+		isQuantifier := state.IsQuantifierSplit()
+
+		// Check left Look success for priority calculation
+		leftLookSucceeds := !isQuantifier && p.checkLeftLookSucceedsForSearch(left, haystack, pos)
+
+		if left != InvalidState {
+			// Copy slots from current state to left target (only for Captures mode)
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
+				p.internalState.SlotTable.CopySlots(left, t.state)
+			}
+			p.addSearchThread(searchThread{state: left, startPos: t.startPos, priority: t.priority}, haystack, pos)
+		}
+		if right != InvalidState {
+			rightPriority := p.calcRightPriorityForSearch(t.priority, isQuantifier, left, leftLookSucceeds)
+			// Copy slots from current state to right target (only for Captures mode)
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
+				p.internalState.SlotTable.CopySlots(right, t.state)
+			}
+			p.addSearchThread(searchThread{state: right, startPos: t.startPos, priority: rightPriority}, haystack, pos)
+		}
+
+	case StateCapture:
+		groupIndex, isStart, next := state.Capture()
+		if next != InvalidState {
+			// Store capture position in SlotTable (only for Captures mode, not Find)
+			// For Find mode (activeSlots=2), group 0 is tracked via thread.startPos/pos
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
+				slotIndex := int(groupIndex) * 2
+				if !isStart {
+					slotIndex++
+				}
+				if p.internalState.SlotTable.ActiveSlots() > slotIndex {
+					// Copy parent slots to next state first
+					p.internalState.SlotTable.CopySlots(next, t.state)
+					// Then update the capture slot
+					p.internalState.SlotTable.SetSlot(next, slotIndex, pos)
+				}
+			}
+			p.addSearchThread(searchThread{state: next, startPos: t.startPos, priority: t.priority}, haystack, pos)
+		}
+
+	case StateLook:
+		look, next := state.Look()
+		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+			// Copy slots only for Captures mode
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
+				p.internalState.SlotTable.CopySlots(next, t.state)
+			}
+			p.addSearchThread(searchThread{state: next, startPos: t.startPos, priority: t.priority}, haystack, pos)
+		}
+
+	case StateFail:
+		// Dead state
+	}
+}
+
+// stepSearchThread processes a byte transition for a lightweight thread.
+func (p *PikeVM) stepSearchThread(t searchThread, b byte, haystack []byte, nextPos int) {
+	state := p.nfa.State(t.state)
+	if state == nil {
+		return
+	}
+
+	switch state.Kind() {
+	case StateByteRange:
+		lo, hi, next := state.ByteRange()
+		if b >= lo && b <= hi {
+			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, t.state, haystack, nextPos)
+		}
+
+	case StateSparse:
+		for _, tr := range state.Transitions() {
+			if b >= tr.Lo && b <= tr.Hi {
+				p.addSearchThreadToNext(searchThread{state: tr.Next, startPos: t.startPos, priority: t.priority}, t.state, haystack, nextPos)
+			}
+		}
+
+	case StateRuneAny:
+		if b >= 0x80 && b <= 0xBF {
+			// UTF-8 continuation byte - keep alive
+			p.internalState.SearchNextQueue = append(p.internalState.SearchNextQueue, t)
+			return
+		}
+		runePos := nextPos - 1
+		if runePos < len(haystack) {
+			r, width := utf8.DecodeRune(haystack[runePos:])
+			if r != utf8.RuneError || width == 1 {
+				next := state.RuneAny()
+				newPos := runePos + width
+				p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, t.state, haystack, newPos)
+			}
+		}
+
+	case StateRuneAnyNotNL:
+		if b >= 0x80 && b <= 0xBF {
+			p.internalState.SearchNextQueue = append(p.internalState.SearchNextQueue, t)
+			return
+		}
+		runePos := nextPos - 1
+		if runePos < len(haystack) {
+			r, width := utf8.DecodeRune(haystack[runePos:])
+			if (r != utf8.RuneError || width == 1) && r != '\n' {
+				next := state.RuneAnyNotNL()
+				newPos := runePos + width
+				p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, t.state, haystack, newPos)
+			}
+		}
+	}
+}
+
+// addSearchThreadToNext adds a lightweight thread to the next queue.
+// srcState is the state we came from (for slot copying).
+func (p *PikeVM) addSearchThreadToNext(t searchThread, srcState StateID, haystack []byte, pos int) {
+	if !p.internalState.Visited.Insert(uint32(t.state)) {
+		return
+	}
+
+	state := p.nfa.State(t.state)
+	if state == nil {
+		return
+	}
+
+	// Copy slots from source to new state (only for Captures mode)
+	if p.internalState.SlotTable.ActiveSlots() > 2 {
+		p.internalState.SlotTable.CopySlots(t.state, srcState)
+	}
+
+	switch state.Kind() {
+	case StateEpsilon:
+		next := state.Epsilon()
+		if next != InvalidState {
+			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, t.state, haystack, pos)
+		}
+		return
+
+	case StateSplit:
+		left, right := state.Split()
+		isQuantifier := state.IsQuantifierSplit()
+		leftLookSucceeds := !isQuantifier && p.checkLeftLookSucceedsForSearch(left, haystack, pos)
+
+		if left != InvalidState {
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
+				p.internalState.SlotTable.CopySlots(left, t.state)
+			}
+			p.addSearchThreadToNext(searchThread{state: left, startPos: t.startPos, priority: t.priority}, left, haystack, pos)
+		}
+		if right != InvalidState {
+			rightPriority := p.calcRightPriorityForSearch(t.priority, isQuantifier, left, leftLookSucceeds)
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
+				p.internalState.SlotTable.CopySlots(right, t.state)
+			}
+			p.addSearchThreadToNext(searchThread{state: right, startPos: t.startPos, priority: rightPriority}, right, haystack, pos)
+		}
+		return
+
+	case StateCapture:
+		groupIndex, isStart, next := state.Capture()
+		if next != InvalidState {
+			// Store capture position only for Captures mode (not Find)
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
+				slotIndex := int(groupIndex) * 2
+				if !isStart {
+					slotIndex++
+				}
+				if p.internalState.SlotTable.ActiveSlots() > slotIndex {
+					p.internalState.SlotTable.CopySlots(next, t.state)
+					p.internalState.SlotTable.SetSlot(next, slotIndex, pos)
+				}
+			}
+			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, next, haystack, pos)
+		}
+		return
+
+	case StateLook:
+		look, next := state.Look()
+		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+			if p.internalState.SlotTable.ActiveSlots() > 2 {
+				p.internalState.SlotTable.CopySlots(next, t.state)
+			}
+			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, next, haystack, pos)
+		}
+		return
+	}
+
+	// Add to next queue
+	p.internalState.SearchNextQueue = append(p.internalState.SearchNextQueue, t)
+}
+
+// checkLeftLookSucceedsForSearch is a simplified version for lightweight threads.
+func (p *PikeVM) checkLeftLookSucceedsForSearch(left StateID, haystack []byte, pos int) bool {
+	if left == InvalidState {
+		return false
+	}
+	leftState := p.nfa.State(left)
+	if leftState == nil || leftState.Kind() != StateLook {
+		return false
+	}
+	look, _ := leftState.Look()
+	return checkLookAssertion(look, haystack, pos)
+}
+
+// calcRightPriorityForSearch calculates priority for right branch in lightweight threads.
+// Simplified version without tookLeft tracking.
+func (p *PikeVM) calcRightPriorityForSearch(priority uint32, isQuantifier bool, left StateID, leftLookSucceeds bool) uint32 {
+	if isQuantifier {
+		// For quantifiers, don't modify priority
+		return priority
+	}
+
+	// For alternation splits: increment priority unless left is a failing Look
+	leftState := p.nfa.State(left)
+	if left == InvalidState || leftLookSucceeds || leftState == nil || leftState.Kind() != StateLook {
+		return priority + 1
+	}
+	return priority
+}
+
+// SearchWithSlotTableCaptures finds the first match and returns captures.
+//
+// NOTE: This method currently delegates to the legacy SearchWithCapturesAt
+// because per-state SlotTable storage doesn't correctly track per-thread
+// capture paths. The SlotTable architecture is designed for Find/IsMatch
+// modes where captures are not needed.
+//
+// Future optimization: Implement a proper thread-indexed slot table similar
+// to Rust's pikevm.rs Slots structure.
+//
+// Returns nil if no match found.
+func (p *PikeVM) SearchWithSlotTableCaptures(haystack []byte) *MatchWithCaptures {
+	return p.SearchWithSlotTableCapturesAt(haystack, 0)
+}
+
+// SearchWithSlotTableCapturesAt finds the first match with captures starting from 'at'.
+//
+// NOTE: Currently delegates to legacy SearchWithCapturesAt for correct capture tracking.
+// See SearchWithSlotTableCaptures for details.
+func (p *PikeVM) SearchWithSlotTableCapturesAt(haystack []byte, at int) *MatchWithCaptures {
+	// Delegate to the legacy capture implementation which correctly tracks
+	// per-thread capture positions using COW semantics.
+	//
+	// The SlotTable per-state architecture cannot correctly track captures
+	// because multiple threads can pass through the same state with different
+	// capture positions. A proper implementation would need thread-indexed slots.
+	return p.SearchWithCapturesAt(haystack, at)
 }

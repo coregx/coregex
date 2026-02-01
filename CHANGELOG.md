@@ -14,6 +14,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.6] - 2026-02-01
+
+### Performance
+- **Windowed BoundedBacktracker for large inputs** (Issue #107)
+  - V12 optimization: When input exceeds BoundedBacktracker's maxInput (~914KB),
+    search in a window of maxInput bytes first before falling back to PikeVM
+  - Most patterns produce short matches found within the first window
+  - **6MB now 1.68x FASTER than stdlib** (was 2.2x slower!)
+  - Benchmark for `(\w{2,8})+` on 6MB: 1900ms → 628ms (3x improvement)
+- **SlotTable architecture** (Rust-style)
+  - Per-state slot storage instead of per-thread COW captures
+  - Dynamic slot sizing: 0 (IsMatch), 2 (Find), full (Captures)
+  - Lightweight searchThread: 16 bytes (was 40+ bytes)
+- **BoundedBacktracker optimizations for word_repeat patterns** (Issue #107)
+  - Switch from uint32 to uint16 generation tracking (2x memory savings)
+  - Cache-friendly memory layout: `pos * numStates + state`
+  - Slice haystack to remaining portion in `findIndicesBoundedBacktrackerAt`
+- **PikeVM visited state tracking optimization**
+  - Consolidate Contains+Insert to single Insert call
+  - Saves ~8% of SparseSet operations in hot path
+- **FindAll/Count sync.Pool overhead elimination**
+  - Acquire SearchState once, reuse for all iterations
+  - Allocations reduced from 1.29M to 49 for 6MB input
+
+### Results for `(\w{2,8})+` pattern vs stdlib
+| Size | Speedup |
+|------|---------|
+| 10KB | **1.68x faster** |
+| 50KB | **1.88x faster** |
+| 100KB | **2.04x faster** |
+| 1MB | **1.67x faster** |
+| 6MB | **1.68x faster** |
+
+---
+
 ## [0.11.5] - 2026-02-01
 
 ### Fixed

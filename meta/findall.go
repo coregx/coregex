@@ -109,6 +109,7 @@ func (e *Engine) FindAllIndicesStreaming(haystack []byte, n int, results [][2]in
 }
 
 // findAllIndicesLoop is the standard loop-based FindAll for non-streaming strategies.
+// Optimized: acquires SearchState once for entire loop to avoid sync.Pool overhead per match.
 func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) [][2]int {
 	if results == nil {
 		// Smart allocation: anchored patterns have max 1 match, others use capped heuristic.
@@ -132,8 +133,12 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 	pos := 0
 	lastMatchEnd := -1
 
+	// Get state ONCE for entire iteration - eliminates 1.29M sync.Pool ops for FindAll
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
 	for n <= 0 || len(results) < n {
-		start, end, found := e.FindIndicesAt(haystack, pos)
+		start, end, found := e.findIndicesAtWithState(haystack, pos, state)
 		if !found {
 			break
 		}
@@ -169,6 +174,7 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 // This is optimized for counting without allocating result slices.
 // Uses early termination for boolean checks at each step.
 // If n > 0, counts at most n matches. If n <= 0, counts all matches.
+// Optimized: acquires SearchState once for entire loop to avoid sync.Pool overhead per match.
 //
 // Example:
 //
@@ -184,9 +190,13 @@ func (e *Engine) Count(haystack []byte, n int) int {
 	pos := 0
 	lastNonEmptyEnd := -1
 
+	// Get state ONCE for entire iteration - eliminates sync.Pool overhead per match
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
 	for pos <= len(haystack) {
-		// Use zero-allocation FindIndicesAt
-		start, end, found := e.FindIndicesAt(haystack, pos)
+		// Use state-reusing version for zero sync.Pool overhead per match
+		start, end, found := e.findIndicesAtWithState(haystack, pos, state)
 		if !found {
 			break
 		}
