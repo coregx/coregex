@@ -406,12 +406,12 @@ func TestSlotTable_ExtractCaptures(t *testing.T) {
 	// Group 1: positions 5-10
 	// Group 2: not captured (-1)
 	slots := st.ForState(3)
-	slots[0] = 0   // group 0 start (ignored, use matchStart)
-	slots[1] = 15  // group 0 end (ignored, use matchEnd)
-	slots[2] = 5   // group 1 start
-	slots[3] = 10  // group 1 end
-	slots[4] = -1  // group 2 start (not captured)
-	slots[5] = -1  // group 2 end (not captured)
+	slots[0] = 0  // group 0 start (ignored, use matchStart)
+	slots[1] = 15 // group 0 end (ignored, use matchEnd)
+	slots[2] = 5  // group 1 start
+	slots[3] = 10 // group 1 end
+	slots[4] = -1 // group 2 start (not captured)
+	slots[5] = -1 // group 2 end (not captured)
 
 	captures := st.ExtractCaptures(3, 0, 15)
 

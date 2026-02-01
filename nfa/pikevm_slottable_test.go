@@ -175,18 +175,18 @@ func TestSearchWithSlotTableCaptures(t *testing.T) {
 			pattern:  "(a+)(b+)",
 			haystack: "xxxaaabbbyyy",
 			wantCaptures: [][]int{
-				{3, 9},  // group 0: entire match
-				{3, 6},  // group 1: a+
-				{6, 9},  // group 2: b+
+				{3, 9}, // group 0: entire match
+				{3, 6}, // group 1: a+
+				{6, 9}, // group 2: b+
 			},
 		},
 		{
 			pattern:  "([a-z]+)([0-9]+)",
 			haystack: "abc123xyz",
 			wantCaptures: [][]int{
-				{0, 6},  // group 0: entire match
-				{0, 3},  // group 1: [a-z]+
-				{3, 6},  // group 2: [0-9]+
+				{0, 6}, // group 0: entire match
+				{0, 3}, // group 1: [a-z]+
+				{3, 6}, // group 2: [0-9]+
 			},
 		},
 		{
@@ -279,7 +279,7 @@ func TestSearchWithSlotTable_Unicode(t *testing.T) {
 		wantEnd   int
 	}{
 		{"привет", "привет мир", 0, 12}, // Cyrillic
-		{"世界", "你好世界", 6, 12},        // Chinese
+		{"世界", "你好世界", 6, 12},           // Chinese
 	}
 
 	for _, tt := range tests {
