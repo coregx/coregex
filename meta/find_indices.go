@@ -915,6 +915,15 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 	if e.boundedBacktracker == nil {
 		return e.findIndicesNFAAtWithState(haystack, at, state)
 	}
+
+	// O(1) early rejection for anchored patterns using first-byte prefilter.
+	// For pattern ^/.*\.php, reject inputs not starting with "/" immediately.
+	if at == 0 && e.anchoredFirstBytes != nil && len(haystack) > 0 {
+		if !e.anchoredFirstBytes.Contains(haystack[0]) {
+			return -1, -1, false
+		}
+	}
+
 	atomic.AddUint64(&e.stats.NFASearches, 1)
 
 	// Slice to remaining portion for more efficient BoundedBacktracker usage.
