@@ -94,6 +94,15 @@ func (b *BoundedBacktracker) MaxVisitedSize() int {
 	return b.maxVisitedSize
 }
 
+// MaxInputSize returns the maximum input size this engine can handle.
+// This is derived from maxVisitedSize / numStates - 1.
+func (b *BoundedBacktracker) MaxInputSize() int {
+	if b.numStates == 0 {
+		return 0
+	}
+	return b.maxVisitedSize/b.numStates - 1
+}
+
 // CanHandle returns true if this engine can handle the given input size.
 // Returns false if the visited array would exceed maxVisitedSize entries.
 func (b *BoundedBacktracker) CanHandle(haystackLen int) bool {

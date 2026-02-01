@@ -901,7 +901,15 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 	// V11-002 ASCII optimization
 	if e.asciiBoundedBacktracker != nil && simd.IsASCII(remaining) {
 		if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
-			// Use optimized SlotTable-based search for large inputs
+			// V12 Windowed BoundedBacktracker for ASCII path
+			maxInput := e.asciiBoundedBacktracker.MaxInputSize()
+			if maxInput > 0 && len(remaining) > maxInput {
+				window := remaining[:maxInput]
+				start, end, found := e.asciiBoundedBacktracker.Search(window)
+				if found {
+					return at + start, at + end, true
+				}
+			}
 			return state.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
 		}
 		start, end, found := e.asciiBoundedBacktracker.Search(remaining)
@@ -912,7 +920,25 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 	}
 
 	if !e.boundedBacktracker.CanHandle(len(remaining)) {
-		// Use optimized SlotTable-based search for large inputs
+		// V12 Windowed BoundedBacktracker: For large inputs, try searching in a
+		// window of maxInputSize bytes first. Most patterns produce short matches
+		// (e.g., word patterns like (\w{2,8})+ match 2-8 chars), so the match
+		// will be found within the first window. Only fall back to PikeVM if
+		// no match is found in the window (rare for common patterns).
+		maxInput := e.boundedBacktracker.MaxInputSize()
+		if maxInput > 0 && len(remaining) > maxInput {
+			// Search in the first window
+			window := remaining[:maxInput]
+			start, end, found := e.boundedBacktracker.SearchWithState(window, state.backtracker)
+			if found {
+				// Match found within window - this is the common case
+				return at + start, at + end, true
+			}
+			// No match in window - could be:
+			// 1. No match exists in the full input
+			// 2. Match exists beyond the window
+			// Fall back to PikeVM to handle both cases correctly
+		}
 		return state.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
 	}
 
