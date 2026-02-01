@@ -38,6 +38,11 @@ type PikeVMState struct {
 	// This prevents processing the same state multiple times
 	Visited *sparse.SparseSet
 
+	// epsilonStack is used for loop-based epsilon closure in IsMatch (Rust pattern).
+	// Only stores StateID for split right branches - minimizes frame overhead.
+	// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:2198
+	epsilonStack []StateID
+
 	// Longest enables leftmost-longest (POSIX) matching semantics.
 	// By default (false), uses leftmost-first (Perl) semantics where
 	// the first alternative wins. When true, the longest match wins.
@@ -189,6 +194,8 @@ func (p *PikeVM) initState(state *PikeVMState) {
 	state.Queue = make([]thread, 0, capacity)
 	state.NextQueue = make([]thread, 0, capacity)
 	state.Visited = sparse.NewSparseSet(conv.IntToUint32(capacity))
+	// Pre-allocate epsilon stack for loop-based closure in IsMatch (Rust pattern)
+	state.epsilonStack = make([]StateID, 0, capacity)
 }
 
 // NewPikeVMState creates a new mutable state for use with PikeVM.
@@ -352,54 +359,89 @@ func (p *PikeVM) isMatchAnchored(haystack []byte) bool {
 	return false
 }
 
-// addThreadForMatch adds thread for IsMatch - simplified without captures/priority
+// addThreadForMatch adds thread for IsMatch - loop-based epsilon closure.
+// This follows the Rust regex pattern: inner loop for linear chains,
+// stack only for split right branches.
+// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:1664-1749
 func (p *PikeVM) addThreadForMatch(id StateID, haystack []byte, pos int) {
-	// Optimization: Insert returns false if already present, avoiding double Contains call
-	if !p.internalState.Visited.Insert(uint32(id)) {
-		return
-	}
+	// Use loop-based epsilon closure instead of recursion
+	p.internalState.epsilonStack = p.internalState.epsilonStack[:0]
+	sid := id
 
-	state := p.nfa.State(id)
-	if state == nil {
-		return
-	}
-
-	switch state.Kind() {
-	case StateMatch:
-		p.internalState.Queue = append(p.internalState.Queue, thread{state: id})
-
-	case StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
-		p.internalState.Queue = append(p.internalState.Queue, thread{state: id})
-
-	case StateEpsilon:
-		next := state.Epsilon()
-		if next != InvalidState {
-			p.addThreadForMatch(next, haystack, pos)
+	for {
+		// Check visited - Insert returns false if already present
+		if !p.internalState.Visited.Insert(uint32(sid)) {
+			// Pop next state from stack
+			if len(p.internalState.epsilonStack) == 0 {
+				return
+			}
+			n := len(p.internalState.epsilonStack)
+			sid = p.internalState.epsilonStack[n-1]
+			p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
+			continue
 		}
 
-	case StateSplit:
-		left, right := state.Split()
-		if left != InvalidState {
-			p.addThreadForMatch(left, haystack, pos)
-		}
-		if right != InvalidState {
-			p.addThreadForMatch(right, haystack, pos)
-		}
-
-	case StateCapture:
-		_, _, next := state.Capture()
-		if next != InvalidState {
-			p.addThreadForMatch(next, haystack, pos)
+		state := p.nfa.State(sid)
+		if state == nil {
+			// Pop next state from stack
+			if len(p.internalState.epsilonStack) == 0 {
+				return
+			}
+			n := len(p.internalState.epsilonStack)
+			sid = p.internalState.epsilonStack[n-1]
+			p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
+			continue
 		}
 
-	case StateLook:
-		look, next := state.Look()
-		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			p.addThreadForMatch(next, haystack, pos)
+		switch state.Kind() {
+		case StateMatch, StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
+			// Terminal states - add to queue and pop
+			p.internalState.Queue = append(p.internalState.Queue, thread{state: sid})
+
+		case StateEpsilon:
+			// Linear chain - continue inner loop (no push)
+			if next := state.Epsilon(); next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateSplit:
+			// Binary split - push right, continue with left
+			left, right := state.Split()
+			if right != InvalidState {
+				p.internalState.epsilonStack = append(p.internalState.epsilonStack, right)
+			}
+			if left != InvalidState {
+				sid = left
+				continue
+			}
+
+		case StateCapture:
+			// Capture is epsilon for IsMatch - continue inner loop
+			if _, _, next := state.Capture(); next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateLook:
+			// Check assertion - continue if passes
+			look, next := state.Look()
+			if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateFail:
+			// Dead state - do nothing
 		}
 
-	case StateFail:
-		// Dead state - ignore
+		// Pop next state from stack
+		if len(p.internalState.epsilonStack) == 0 {
+			return
+		}
+		n := len(p.internalState.epsilonStack)
+		sid = p.internalState.epsilonStack[n-1]
+		p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
 	}
 }
 
@@ -456,52 +498,89 @@ func (p *PikeVM) stepForMatch(t thread, b byte, haystack []byte, nextPos int) {
 	}
 }
 
-// addThreadToNextForMatch adds to next queue for IsMatch - simplified
+// addThreadToNextForMatch adds to next queue for IsMatch - loop-based epsilon closure.
+// This follows the Rust regex pattern: inner loop for linear chains,
+// stack only for split right branches.
 func (p *PikeVM) addThreadToNextForMatch(id StateID, haystack []byte, pos int) {
-	// Optimization: Insert returns false if already present, avoiding double Contains call
-	if !p.internalState.Visited.Insert(uint32(id)) {
-		return
+	// Use loop-based epsilon closure instead of recursion
+	p.internalState.epsilonStack = p.internalState.epsilonStack[:0]
+	sid := id
+
+	for {
+		// Check visited - Insert returns false if already present
+		if !p.internalState.Visited.Insert(uint32(sid)) {
+			// Pop next state from stack
+			if len(p.internalState.epsilonStack) == 0 {
+				return
+			}
+			n := len(p.internalState.epsilonStack)
+			sid = p.internalState.epsilonStack[n-1]
+			p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
+			continue
+		}
+
+		state := p.nfa.State(sid)
+		if state == nil {
+			// Pop next state from stack
+			if len(p.internalState.epsilonStack) == 0 {
+				return
+			}
+			n := len(p.internalState.epsilonStack)
+			sid = p.internalState.epsilonStack[n-1]
+			p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
+			continue
+		}
+
+		switch state.Kind() {
+		case StateMatch, StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
+			// Terminal states - add to next queue and pop
+			p.internalState.NextQueue = append(p.internalState.NextQueue, thread{state: sid})
+
+		case StateEpsilon:
+			// Linear chain - continue inner loop (no push)
+			if next := state.Epsilon(); next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateSplit:
+			// Binary split - push right, continue with left
+			left, right := state.Split()
+			if right != InvalidState {
+				p.internalState.epsilonStack = append(p.internalState.epsilonStack, right)
+			}
+			if left != InvalidState {
+				sid = left
+				continue
+			}
+
+		case StateCapture:
+			// Capture is epsilon for IsMatch - continue inner loop
+			if _, _, next := state.Capture(); next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateLook:
+			// Check assertion - continue if passes
+			look, next := state.Look()
+			if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+				sid = next
+				continue
+			}
+
+		case StateFail:
+			// Dead state - do nothing
+		}
+
+		// Pop next state from stack
+		if len(p.internalState.epsilonStack) == 0 {
+			return
+		}
+		n := len(p.internalState.epsilonStack)
+		sid = p.internalState.epsilonStack[n-1]
+		p.internalState.epsilonStack = p.internalState.epsilonStack[:n-1]
 	}
-
-	state := p.nfa.State(id)
-	if state == nil {
-		return
-	}
-
-	switch state.Kind() {
-	case StateEpsilon:
-		next := state.Epsilon()
-		if next != InvalidState {
-			p.addThreadToNextForMatch(next, haystack, pos)
-		}
-		return
-
-	case StateSplit:
-		left, right := state.Split()
-		if left != InvalidState {
-			p.addThreadToNextForMatch(left, haystack, pos)
-		}
-		if right != InvalidState {
-			p.addThreadToNextForMatch(right, haystack, pos)
-		}
-		return
-
-	case StateCapture:
-		_, _, next := state.Capture()
-		if next != InvalidState {
-			p.addThreadToNextForMatch(next, haystack, pos)
-		}
-		return
-
-	case StateLook:
-		look, next := state.Look()
-		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			p.addThreadToNextForMatch(next, haystack, pos)
-		}
-		return
-	}
-
-	p.internalState.NextQueue = append(p.internalState.NextQueue, thread{state: id})
 }
 
 // SearchAt finds the first match in the haystack starting from position 'at'.
