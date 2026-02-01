@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Performance
+- **Windowed BoundedBacktracker for large inputs** (Issue #107)
+  - V12 optimization: When input exceeds BoundedBacktracker's maxInput (~914KB),
+    search in a window of maxInput bytes first before falling back to PikeVM
+  - Most patterns produce short matches found within the first window
+  - **6MB now 1.46x FASTER than stdlib** (was 2.2x slower!)
+  - Benchmark for `(\w{2,8})+` on 6MB: 1900ms → 693ms (2.7x improvement)
 - **BoundedBacktracker optimizations for word_repeat patterns** (Issue #107)
   - Switch from uint32 to uint16 generation tracking (2x memory savings)
   - Cache-friendly memory layout: `pos * numStates + state`
@@ -16,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - ≤100KB: **37% faster** than stdlib (was 3.5x slower)
     - 332KB: **28% faster** than stdlib (was 2.3x slower)
     - 1MB: **parity** with stdlib (was 2.5x slower)
-    - 6MB: 2.2x slower (PikeVM fallback, same as Rust)
+    - 6MB: **1.46x faster** (was 2.2x slower - see windowed optimization above)
 - **PikeVM visited state tracking optimization**
   - Consolidate Contains+Insert to single Insert call
   - Saves ~8% of SparseSet operations in hot path
@@ -32,7 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Look-around assertions
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
 - SIMD prefilter for CompositeSequenceDFA (#83)
-- PikeVM optimizations for large inputs (#107)
 
 ---
 
