@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.8] - 2026-02-01
+
+### Fixed
+- **Critical regression in UseAnchoredLiteral strategy** (Issue #107)
+  - `FindIndices*` and `findIndicesAtWithState` were missing `UseAnchoredLiteral` case
+  - Pattern `^/.*[\w-]+\.php$` fell through to slow NFA path: 0.01ms → 408ms (40,000x slower)
+  - Added `findIndicesAnchoredLiteral` and `findIndicesAnchoredLiteralAt` methods
+  - Now correctly uses O(1) anchored literal matching: **408ms → 0.5ms**
+
+---
+
 ## [0.11.7] - 2026-02-01
 
 ### Fixed
