@@ -143,27 +143,38 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 			break
 		}
 
-		// Handle empty matches
-		if start == end {
-			if start == lastMatchEnd {
-				// Skip empty match right after previous match to avoid infinite loop
-				if pos < len(haystack) {
-					pos++
-				} else {
-					break
-				}
-				continue
+		// Skip empty matches that start exactly where the previous non-empty match ended.
+		// This matches Go's stdlib behavior:
+		// - "a*" on "ab" returns [[0 1] [2 2]], not [[0 1] [1 1] [2 2]]
+		if start == end && start == lastMatchEnd {
+			pos++
+			if pos > len(haystack) {
+				break
 			}
-			pos = end
-			if pos < len(haystack) {
-				pos++
-			}
-		} else {
-			pos = end
-			lastMatchEnd = end
+			continue
 		}
 
 		results = append(results, [2]int{start, end})
+
+		// Track non-empty match ends for the skip rule
+		if start != end {
+			lastMatchEnd = end
+		}
+
+		// Move position past this match
+		switch {
+		case start == end:
+			// Empty match: advance by 1 to avoid infinite loop
+			pos = end + 1
+		case end > pos:
+			pos = end
+		default:
+			pos++
+		}
+
+		if pos > len(haystack) {
+			break
+		}
 	}
 
 	return results
