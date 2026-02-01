@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.7] - 2026-02-01
+
+### Fixed
+- **FindAll now uses optimized state-reusing path** (Issue #107)
+  - FindAll was using slow per-match loop instead of optimized findAllIndicesStreaming
+  - Results for `(\w{2,8})+` on 6MB: 2179ms → 834ms (**2.6x faster**)
+  - Now **1.08x faster than stdlib** (was 2.4x slower in regex-bench)
+
+---
+
 ## [0.11.6] - 2026-02-01
 
 ### Performance
