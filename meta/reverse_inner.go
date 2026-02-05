@@ -333,8 +333,8 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 	// Therefore, we can return immediately on first confirmed match!
 
 	searchStart := 0
-	minPreStart := 0   // Track minimum position for quadratic detection
-	minMatchStart := 0 // Track where last reverse scan ended
+	minPreStart := 0   // Track minimum position for forward scan quadratic detection
+	minMatchStart := 0 // Anti-quadratic guard for reverse scan
 	for {
 		// Find next inner literal candidate
 		pos := s.prefilter.Find(haystack, searchStart)
@@ -345,7 +345,7 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 
 		// QUADRATIC BEHAVIOR DETECTION (from rust-regex):
 		// If the new candidate starts before the end of last forward scan,
-		// we have overlapping candidates which causes O(n²) behavior.
+		// we have overlapping candidates which causes O(n^2) behavior.
 		// Fall back to PikeVM which is O(n) in this case.
 		if pos < minPreStart {
 			// Quadratic behavior detected - use PikeVM fallback
@@ -356,10 +356,18 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 			return nil
 		}
 
-		// Step 1: Reverse search on PREFIX portion
-		// Check if we can reach this inner literal from an earlier position
-		// Use minMatchStart as lower bound to avoid re-scanning already verified area
-		matchStart := s.reverseDFA.SearchReverse(haystack, minMatchStart, pos)
+		// Step 1: Reverse search on PREFIX portion with anti-quadratic guard
+		// Check if we can reach this inner literal from an earlier position.
+		// Use minMatchStart to avoid re-scanning regions already proven to have no match.
+		matchStart := s.reverseDFA.SearchReverseLimited(haystack, 0, pos, minMatchStart)
+		if matchStart == lazy.SearchReverseLimitedQuadratic {
+			// Reverse scan hit the anti-quadratic guard - fall back to PikeVM
+			start, end, found := s.pikevm.Search(haystack)
+			if found {
+				return NewMatch(start, end, haystack)
+			}
+			return nil
+		}
 		if matchStart < 0 {
 			// Prefix doesn't match - try next candidate
 			searchStart = pos + 1
@@ -404,12 +412,12 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 //   - Uses bidirectional DFA for fast verification
 //   - No Match object allocation
 //   - Early termination on first match
-//   - ZERO PikeVM calls - DFA confirmation is sufficient
+//   - Anti-quadratic guard: tracks minStart to avoid re-scanning already-checked regions
 //
 // Algorithm:
 //  1. Prefilter finds inner literal candidates
 //  2. For each candidate:
-//     a. Reverse DFA checks if we can reach inner from start
+//     a. Reverse DFA checks if we can reach inner from start (with anti-quadratic guard)
 //     b. Forward DFA checks if we can reach end from inner
 //  3. Return true on first valid match
 func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
@@ -419,6 +427,7 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 
 	// Use prefilter to find inner literal candidates
 	searchStart := 0
+	minStart := 0 // Anti-quadratic guard for reverse scans
 	for {
 		// Find next inner literal candidate
 		pos := s.prefilter.Find(haystack, searchStart)
@@ -429,7 +438,7 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 
 		// BIDIRECTIONAL VERIFICATION:
 		//
-		// Step 1: Check if prefix matches (reverse DFA)
+		// Step 1: Check if prefix matches (reverse DFA with anti-quadratic guard)
 		// Special cases for pos=0:
 		//   - universalPrefix (.*): trivially matches empty prefix
 		//   - startAnchored (^, ^+): trivially matches at position 0
@@ -438,7 +447,14 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 			// Universal prefix (.*) or start anchor (^) matches at position 0
 			prefixMatches = true
 		} else if pos > 0 {
-			prefixMatches = s.reverseDFA.IsMatchReverse(haystack, 0, pos)
+			// Use SearchReverseLimited for anti-quadratic protection
+			revResult := s.reverseDFA.SearchReverseLimited(haystack, 0, pos, minStart)
+			if revResult == lazy.SearchReverseLimitedQuadratic {
+				// Quadratic behavior detected - fall back to PikeVM
+				_, _, matched := s.pikevm.Search(haystack)
+				return matched
+			}
+			prefixMatches = revResult >= 0
 		}
 
 		if prefixMatches {
@@ -448,6 +464,11 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 				// Both prefix and suffix match - pattern matches!
 				return true
 			}
+		}
+
+		// Update anti-quadratic guard: don't re-scan before this position
+		if pos+s.innerLen > minStart {
+			minStart = pos + s.innerLen
 		}
 
 		// Try next candidate
@@ -460,6 +481,7 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 
 // FindIndicesAt returns match indices starting from position 'at' - zero allocation version.
 // This is used by FindAll* operations for efficient iteration.
+// Includes anti-quadratic guard to prevent O(n^2) behavior with many inner literal false positives.
 func (s *ReverseInnerSearcher) FindIndicesAt(haystack []byte, at int) (start, end int, found bool) {
 	if at >= len(haystack) {
 		return -1, -1, false
@@ -479,7 +501,7 @@ func (s *ReverseInnerSearcher) FindIndicesAt(haystack []byte, at int) (start, en
 
 	// Search for inner literal starting from 'at'
 	searchStart := at
-	minMatchStart := at // Can't match before 'at'
+	minMatchStart := at // Anti-quadratic guard for reverse scans
 	for {
 		// Find next inner literal candidate
 		pos := s.prefilter.Find(haystack, searchStart)
@@ -487,9 +509,13 @@ func (s *ReverseInnerSearcher) FindIndicesAt(haystack []byte, at int) (start, en
 			break
 		}
 
-		// Step 1: Reverse search on PREFIX portion
-		// Use 'at' as lower bound - we can't find matches starting before 'at'
-		matchStart := s.reverseDFA.SearchReverse(haystack, minMatchStart, pos)
+		// Step 1: Reverse search on PREFIX portion with anti-quadratic guard
+		// Use minMatchStart to avoid re-scanning regions already checked
+		matchStart := s.reverseDFA.SearchReverseLimited(haystack, at, pos, minMatchStart)
+		if matchStart == lazy.SearchReverseLimitedQuadratic {
+			// Quadratic behavior detected - fall back to PikeVM
+			return s.pikevm.SearchAt(haystack, at)
+		}
 		if matchStart < 0 || matchStart < at {
 			// Prefix doesn't match or match starts before 'at' - try next candidate
 			searchStart = pos + 1

@@ -200,78 +200,112 @@ func (s *ReverseSuffixSearcher) Find(haystack []byte) *Match {
 // match starting at or after position 'at'. This is essential for FindAll iteration.
 //
 // Algorithm:
-//  1. Use prefilter to find FIRST suffix candidate >= at
-//  2. Use reverse DFA to find match START (from 'at' position)
-//  3. Return match [start, suffixEnd]
+//  1. Use prefilter to find suffix candidates >= at
+//  2. For each candidate, use reverse DFA to find match START (from 'at' position)
+//  3. Return first valid match [start, suffixEnd]
+//  4. Anti-quadratic guard (minStart) prevents re-scanning already-checked regions
 //
 // Performance:
 //   - Prefilter scan: O(n) from 'at' position
 //   - Reverse DFA verification: O(m) where m is match length
-//   - Total: O(n) per call
+//   - Anti-quadratic guard ensures total work across all candidates is O(n)
 func (s *ReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match {
 	if at >= len(haystack) {
 		return nil
 	}
 
-	// Find FIRST suffix candidate starting from 'at'
-	pos := s.prefilter.Find(haystack, at)
-	if pos == -1 {
-		return nil
-	}
+	searchStart := at
+	minStart := at // Anti-quadratic guard
+	for {
+		// Find next suffix candidate starting from searchStart
+		pos := s.prefilter.Find(haystack, searchStart)
+		if pos == -1 {
+			return nil
+		}
 
-	// Calculate suffix end position
-	suffixEnd := pos + s.suffixLen
-	if suffixEnd > len(haystack) {
-		suffixEnd = len(haystack)
-	}
+		// Calculate suffix end position
+		suffixEnd := pos + s.suffixLen
+		if suffixEnd > len(haystack) {
+			suffixEnd = len(haystack)
+		}
 
-	// For unanchored patterns (like .*@suffix), match can start from 'at'
-	// because .* matches any prefix from the starting position
-	if s.matchStartZero {
-		// Match starts at 'at' position (the search start)
-		return NewMatch(at, suffixEnd, haystack)
-	}
+		// For unanchored patterns (like .*@suffix), match can start from 'at'
+		// because .* matches any prefix from the starting position
+		if s.matchStartZero {
+			return NewMatch(at, suffixEnd, haystack)
+		}
 
-	// Use reverse DFA to find match START position (for anchored patterns)
-	matchStart := s.reverseDFA.SearchReverse(haystack, at, suffixEnd)
-	if matchStart >= 0 {
-		return NewMatch(matchStart, suffixEnd, haystack)
-	}
+		// Use reverse DFA with anti-quadratic guard to find match START position
+		matchStart := s.reverseDFA.SearchReverseLimited(haystack, at, suffixEnd, minStart)
+		if matchStart >= 0 {
+			return NewMatch(matchStart, suffixEnd, haystack)
+		}
+		if matchStart == lazy.SearchReverseLimitedQuadratic {
+			// Quadratic behavior detected - fall back to PikeVM
+			start, end, found := s.pikevm.SearchAt(haystack, at)
+			if found {
+				return NewMatch(start, end, haystack)
+			}
+			return nil
+		}
 
-	// No valid match found
-	return nil
+		// Update anti-quadratic guard
+		minStart = suffixEnd
+
+		// Try next candidate
+		searchStart = pos + 1
+		if searchStart >= len(haystack) {
+			return nil
+		}
+	}
 }
 
 // FindIndicesAt returns match indices starting from position 'at' - zero allocation version.
+// Includes anti-quadratic guard to prevent O(n^2) behavior with many suffix false positives.
 func (s *ReverseSuffixSearcher) FindIndicesAt(haystack []byte, at int) (start, end int, found bool) {
 	if at >= len(haystack) {
 		return -1, -1, false
 	}
 
-	// Find FIRST suffix candidate starting from 'at'
-	pos := s.prefilter.Find(haystack, at)
-	if pos == -1 {
-		return -1, -1, false
-	}
+	searchStart := at
+	minStart := at // Anti-quadratic guard
+	for {
+		// Find next suffix candidate starting from searchStart
+		pos := s.prefilter.Find(haystack, searchStart)
+		if pos == -1 {
+			return -1, -1, false
+		}
 
-	// Calculate suffix end position
-	suffixEnd := pos + s.suffixLen
-	if suffixEnd > len(haystack) {
-		suffixEnd = len(haystack)
-	}
+		// Calculate suffix end position
+		suffixEnd := pos + s.suffixLen
+		if suffixEnd > len(haystack) {
+			suffixEnd = len(haystack)
+		}
 
-	// For unanchored patterns (like .*@suffix), match starts at 'at'
-	if s.matchStartZero {
-		return at, suffixEnd, true
-	}
+		// For unanchored patterns (like .*@suffix), match starts at 'at'
+		if s.matchStartZero {
+			return at, suffixEnd, true
+		}
 
-	// Use reverse DFA to find match START position
-	matchStart := s.reverseDFA.SearchReverse(haystack, at, suffixEnd)
-	if matchStart >= 0 {
-		return matchStart, suffixEnd, true
-	}
+		// Use reverse DFA with anti-quadratic guard to find match START position
+		matchStart := s.reverseDFA.SearchReverseLimited(haystack, at, suffixEnd, minStart)
+		if matchStart >= 0 {
+			return matchStart, suffixEnd, true
+		}
+		if matchStart == lazy.SearchReverseLimitedQuadratic {
+			// Quadratic behavior detected - fall back to PikeVM
+			return s.pikevm.SearchAt(haystack, at)
+		}
 
-	return -1, -1, false
+		// Update anti-quadratic guard
+		minStart = suffixEnd
+
+		// Try next candidate
+		searchStart = pos + 1
+		if searchStart >= len(haystack) {
+			return -1, -1, false
+		}
+	}
 }
 
 // IsMatch checks if the pattern matches using suffix prefilter + reverse DFA.
@@ -282,6 +316,7 @@ func (s *ReverseSuffixSearcher) FindIndicesAt(haystack []byte, at int) (start, e
 //   - No Match object allocation
 //   - Early termination on first match
 //   - ZERO PikeVM calls - reverse DFA confirmation is sufficient
+//   - Anti-quadratic guard: tracks minStart to avoid re-scanning already-checked regions
 func (s *ReverseSuffixSearcher) IsMatch(haystack []byte) bool {
 	if len(haystack) == 0 {
 		return false
@@ -289,6 +324,10 @@ func (s *ReverseSuffixSearcher) IsMatch(haystack []byte) bool {
 
 	// Use prefilter to find suffix candidates
 	start := 0
+	// Anti-quadratic guard: tracks the minimum position the reverse scan should reach.
+	// After scanning [0, revEnd) and finding no match, there is no reason to scan
+	// that region again for subsequent candidates. Update minStart = revEnd.
+	minStart := 0
 	for {
 		// Find next suffix candidate
 		pos := s.prefilter.Find(haystack, start)
@@ -311,11 +350,22 @@ func (s *ReverseSuffixSearcher) IsMatch(haystack []byte) bool {
 		// matches haystack[0:revEnd]. No need to verify with PikeVM again!
 		// This eliminates the redundant full-haystack scan that was causing
 		// 6-8x slowdown vs stdlib.
-		if s.reverseDFA.IsMatchReverse(haystack, 0, revEnd) {
-			// Reverse DFA confirmed: pattern matches haystack[0:revEnd]
-			// Since suffix is at pos..revEnd, this is a valid match!
+		//
+		// Anti-quadratic: Use SearchReverseLimited to avoid re-scanning [0, minStart).
+		// If the limited search signals quadratic behavior, fall back to PikeVM.
+		revResult := s.reverseDFA.SearchReverseLimited(haystack, 0, revEnd, minStart)
+		if revResult >= 0 {
+			// Reverse DFA confirmed: pattern matches haystack[revResult:revEnd]
 			return true
 		}
+		if revResult == lazy.SearchReverseLimitedQuadratic {
+			// Quadratic behavior detected - fall back to PikeVM
+			_, _, matched := s.pikevm.Search(haystack)
+			return matched
+		}
+
+		// Update anti-quadratic guard: don't re-scan before this position
+		minStart = revEnd
 
 		// Try next candidate
 		start = pos + 1
