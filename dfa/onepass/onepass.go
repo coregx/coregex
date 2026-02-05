@@ -10,7 +10,7 @@
 //
 // Limitations:
 //   - Only supports anchored searches (no unanchored prefix)
-//   - Maximum 16 capture groups (32 slots)
+//   - Maximum 16 capture groups including group 0 (32 slots fit in uint32 mask)
 //   - Not all patterns are one-pass (e.g., `a*a`, `(.*)x` are NOT one-pass)
 //
 // Example one-pass patterns:
@@ -34,8 +34,9 @@ var (
 	// ErrNotOnePass is returned when a pattern is not one-pass.
 	ErrNotOnePass = errors.New("pattern is not one-pass")
 
-	// ErrTooManyCaptures is returned when a pattern has more than 16 capture groups.
-	ErrTooManyCaptures = errors.New("too many capture groups (max 16)")
+	// ErrTooManyCaptures is returned when a pattern has more than 16 capture groups
+	// (including group 0), i.e., more than 15 explicit capture groups.
+	ErrTooManyCaptures = errors.New("too many capture groups for onepass (max 16 including group 0)")
 )
 
 // StateID is a DFA state identifier (21 bits max = 2M states).
@@ -53,7 +54,7 @@ type StateID uint32
 // where stride is the next power of 2 >= alphabetLen.
 type DFA struct {
 	// Pattern information
-	numCaptures int // number of capture groups (max 16)
+	numCaptures int // number of capture groups including group 0 (max 16)
 
 	// Transition table: dense array indexed by [stateID][byteClass]
 	// Layout: [state0_class0, state0_class1, ..., state1_class0, ...]
