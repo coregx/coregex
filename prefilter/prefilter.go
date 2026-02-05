@@ -130,6 +130,28 @@ type Prefilter interface {
 	//   0 if no heap allocation
 	//   positive value indicating heap bytes used
 	HeapBytes() int
+
+	// IsFast returns true if the prefilter is believed to be "fast" -- that is,
+	// significantly faster than running the regex engine itself (typically
+	// because it uses SIMD acceleration).
+	//
+	// This is used as a gate for reverse search optimizations (ReverseSuffix,
+	// ReverseInner). When a fast prefix prefilter already exists, the overhead
+	// of reverse scanning is not worth it because the forward prefilter can
+	// already skip to candidate positions efficiently.
+	//
+	// Fast prefilters (return true):
+	//   - Memchr: SIMD single-byte search, always fast
+	//   - Memmem: SIMD substring search, always fast
+	//   - Teddy: SIMD multi-pattern, fast when minimum pattern length >= 3
+	//
+	// Slow prefilters (return false):
+	//   - DigitPrefilter: candidate-only, not a prefix literal prefilter
+	//   - Teddy with very short patterns (< 3 bytes): high false positive rate
+	//   - AhoCorasick: not significantly faster than DFA itself
+	//
+	// Reference: Rust regex-automata prefilter::PrefilterI::is_fast()
+	IsFast() bool
 }
 
 // MatchFinder is an optional interface for prefilters that can return
@@ -272,6 +294,47 @@ func selectPrefilter(prefixes, suffixes *literal.Seq) Prefilter {
 	return nil
 }
 
+// WouldBeFast reports whether a prefilter built from the given prefix literals
+// would be considered "fast" (SIMD-backed with low false positive rate).
+//
+// This is a zero-cost analysis that does NOT build the prefilter. It is used
+// by strategy selection to decide whether to skip reverse optimizations when
+// a good prefix prefilter already exists.
+//
+// The logic mirrors selectPrefilter but only checks the "fast" classification:
+//   - Single byte literal -> Memchr -> always fast
+//   - Single substring literal -> Memmem -> always fast
+//   - 2-64 literals, each >= 3 bytes -> Teddy -> fast (minLen >= 3)
+//   - No suitable literals -> no prefilter -> not fast
+//
+// Reference: Rust regex-automata strategy.rs gates ReverseSuffix and ReverseInner
+// on core.pre.as_ref().map_or(false, |p| p.is_fast())
+func WouldBeFast(prefixes *literal.Seq) bool {
+	if prefixes == nil || prefixes.IsEmpty() {
+		return false
+	}
+
+	// Single literal
+	if prefixes.Len() == 1 {
+		lit := prefixes.Get(0)
+		// Single byte -> Memchr (always fast)
+		if len(lit.Bytes) == 1 {
+			return true
+		}
+		// Single substring -> Memmem (always fast)
+		return true
+	}
+
+	// Multiple literals: Teddy is fast when minLen >= 3
+	if prefixes.Len() >= 2 && prefixes.Len() <= MaxTeddyPatterns {
+		ml := minLen(prefixes)
+		return ml >= 3
+	}
+
+	// >64 patterns would use Aho-Corasick, which is not considered fast
+	return false
+}
+
 // minLen returns the minimum literal length in the sequence.
 // Returns max int if sequence is empty.
 func minLen(seq *literal.Seq) int {
@@ -354,6 +417,13 @@ func (p *memchrPrefilter) HeapBytes() int {
 	return 0 // No heap allocation
 }
 
+// IsFast implements Prefilter.IsFast.
+// Memchr is always fast: it uses SIMD (AVX2/SSE4.2) to scan 32 bytes per
+// iteration, providing 10-15x speedup over the regex engine.
+func (p *memchrPrefilter) IsFast() bool {
+	return true
+}
+
 // memmemPrefilter wraps simd.Memmem as a Prefilter.
 //
 // This prefilter searches for a single substring literal using SIMD-accelerated
@@ -424,4 +494,12 @@ func (p *memmemPrefilter) LiteralLen() int {
 // Returns the size of the needle buffer (stored on heap).
 func (p *memmemPrefilter) HeapBytes() int {
 	return len(p.needle)
+}
+
+// IsFast implements Prefilter.IsFast.
+// Memmem is always fast: it uses SIMD-accelerated substring search with
+// rare byte heuristic, providing 5-10x speedup over the regex engine.
+// Reference: Rust regex-automata always returns true for Memmem.
+func (p *memmemPrefilter) IsFast() bool {
+	return true
 }

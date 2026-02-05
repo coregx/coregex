@@ -160,6 +160,11 @@ func (t *Tracker) HeapBytes() int {
 	return t.inner.HeapBytes()
 }
 
+// IsFast delegates to the inner prefilter's IsFast.
+func (t *Tracker) IsFast() bool {
+	return t.inner.IsFast()
+}
+
 // Stats returns the current tracking statistics.
 //
 // Returns (candidates, confirms, efficiency, active).
@@ -263,4 +268,9 @@ func (tp *TrackedPrefilter) LiteralLen() int {
 // HeapBytes implements Prefilter.HeapBytes.
 func (tp *TrackedPrefilter) HeapBytes() int {
 	return tp.Tracker.HeapBytes()
+}
+
+// IsFast implements Prefilter.IsFast.
+func (tp *TrackedPrefilter) IsFast() bool {
+	return tp.Tracker.IsFast()
 }

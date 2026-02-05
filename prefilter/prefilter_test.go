@@ -725,6 +725,187 @@ func TestPrefilter_EdgeCases(t *testing.T) {
 	})
 }
 
+// TestIsFast_Memchr verifies that memchr prefilter is always fast (SIMD-backed).
+func TestIsFast_Memchr(t *testing.T) {
+	pf := newMemchrPrefilter('a', false)
+	if !pf.IsFast() {
+		t.Error("memchrPrefilter.IsFast() = false, want true (always SIMD-backed)")
+	}
+
+	pfComplete := newMemchrPrefilter('z', true)
+	if !pfComplete.IsFast() {
+		t.Error("memchrPrefilter.IsFast() = false, want true (regardless of complete flag)")
+	}
+}
+
+// TestIsFast_Memmem verifies that memmem prefilter is always fast (SIMD-backed).
+func TestIsFast_Memmem(t *testing.T) {
+	pf := newMemmemPrefilter([]byte("hello"), false)
+	if !pf.IsFast() {
+		t.Error("memmemPrefilter.IsFast() = false, want true (always SIMD-backed)")
+	}
+
+	pfShort := newMemmemPrefilter([]byte("ab"), true)
+	if !pfShort.IsFast() {
+		t.Error("memmemPrefilter.IsFast() = false, want true (even for short needles)")
+	}
+}
+
+// TestIsFast_Teddy verifies that Teddy prefilter fast classification depends on minLen.
+func TestIsFast_Teddy(t *testing.T) {
+	// Teddy with patterns >= 3 bytes should be fast
+	teddyFast := NewTeddy([][]byte{
+		[]byte("foo"),
+		[]byte("bar"),
+		[]byte("baz"),
+	}, nil)
+	if teddyFast == nil {
+		t.Fatal("NewTeddy returned nil for valid patterns")
+	}
+	if !teddyFast.IsFast() {
+		t.Error("Teddy.IsFast() = false, want true (patterns >= 3 bytes)")
+	}
+
+	// Teddy with long patterns should also be fast
+	teddyLong := NewTeddy([][]byte{
+		[]byte("hello"),
+		[]byte("world"),
+	}, nil)
+	if teddyLong == nil {
+		t.Fatal("NewTeddy returned nil for valid patterns")
+	}
+	if !teddyLong.IsFast() {
+		t.Error("Teddy.IsFast() = false, want true (patterns >= 3 bytes)")
+	}
+}
+
+// TestIsFast_DigitPrefilter verifies that digit prefilter is NOT fast.
+func TestIsFast_DigitPrefilter(t *testing.T) {
+	pf := NewDigitPrefilter()
+	if pf.IsFast() {
+		t.Error("DigitPrefilter.IsFast() = true, want false (candidate-only, not a literal prefilter)")
+	}
+}
+
+// TestWouldBeFast verifies the static analysis function that predicts
+// whether a prefilter built from given literals would be fast.
+func TestWouldBeFast(t *testing.T) {
+	tests := []struct {
+		name     string
+		prefixes *literal.Seq
+		want     bool
+		reason   string
+	}{
+		{
+			name:     "nil prefixes",
+			prefixes: nil,
+			want:     false,
+			reason:   "no prefixes means no prefilter",
+		},
+		{
+			name:     "empty prefixes",
+			prefixes: literal.NewSeq(),
+			want:     false,
+			reason:   "empty prefixes means no prefilter",
+		},
+		{
+			name: "single byte -> Memchr (fast)",
+			prefixes: makeSeq(struct {
+				bytes    []byte
+				complete bool
+			}{[]byte("a"), true}),
+			want:   true,
+			reason: "single byte produces Memchr which is always fast",
+		},
+		{
+			name: "single substring -> Memmem (fast)",
+			prefixes: makeSeq(struct {
+				bytes    []byte
+				complete bool
+			}{[]byte("hello"), false}),
+			want:   true,
+			reason: "single substring produces Memmem which is always fast",
+		},
+		{
+			name: "2 literals, len>=3 -> Teddy (fast)",
+			prefixes: makeSeq(
+				struct {
+					bytes    []byte
+					complete bool
+				}{[]byte("foo"), true},
+				struct {
+					bytes    []byte
+					complete bool
+				}{[]byte("bar"), true},
+			),
+			want:   true,
+			reason: "2 patterns with minLen 3 produces fast Teddy",
+		},
+		{
+			name: "2 literals, len==2 -> Teddy (not fast)",
+			prefixes: makeSeq(
+				struct {
+					bytes    []byte
+					complete bool
+				}{[]byte("ab"), true},
+				struct {
+					bytes    []byte
+					complete bool
+				}{[]byte("cd"), true},
+			),
+			want:   false,
+			reason: "minLen < 3 means Teddy has high false positive rate",
+		},
+		{
+			name: "4 literals, len>=3 -> Teddy (fast)",
+			prefixes: makeSeq(
+				struct {
+					bytes    []byte
+					complete bool
+				}{[]byte("foo"), true},
+				struct {
+					bytes    []byte
+					complete bool
+				}{[]byte("bar"), true},
+				struct {
+					bytes    []byte
+					complete bool
+				}{[]byte("baz"), true},
+				struct {
+					bytes    []byte
+					complete bool
+				}{[]byte("qux"), true},
+			),
+			want:   true,
+			reason: "4 patterns with minLen 3 produces fast Teddy",
+		},
+		{
+			name: "mixed lengths, one short -> not fast",
+			prefixes: makeSeq(
+				struct {
+					bytes    []byte
+					complete bool
+				}{[]byte("foo"), true},
+				struct {
+					bytes    []byte
+					complete bool
+				}{[]byte("ab"), true},
+			),
+			want:   false,
+			reason: "minLen is 2 (from 'ab'), so Teddy would not be fast",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := WouldBeFast(tt.prefixes)
+			if got != tt.want {
+				t.Errorf("WouldBeFast() = %v, want %v (%s)", got, tt.want, tt.reason)
+			}
+		})
+	}
+}
+
 // BenchmarkPrefilter_Memchr benchmarks MemchrPrefilter
 func BenchmarkPrefilter_Memchr(b *testing.B) {
 	b.ReportAllocs()

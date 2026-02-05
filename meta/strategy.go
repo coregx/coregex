@@ -5,6 +5,7 @@ import (
 
 	"github.com/coregx/coregex/literal"
 	"github.com/coregx/coregex/nfa"
+	"github.com/coregx/coregex/prefilter"
 )
 
 // Strategy represents the execution strategy for regex matching.
@@ -830,6 +831,30 @@ func shouldUseReverseSuffixSet(prefixLiterals, suffixLiterals *literal.Seq) bool
 	return true
 }
 
+// hasFastPrefixPrefilter checks if the prefix literals would produce a "fast"
+// SIMD-backed prefilter. Used to gate reverse optimizations.
+//
+// Returns true when:
+//   - Prefix literals have a good LCP (Longest Common Prefix) that produces Memchr/Memmem
+//   - Prefix literals would produce a fast Teddy prefilter (multiple patterns, minLen >= 3)
+//
+// Returns false when:
+//   - No prefix literals exist
+//   - Prefix literals are too short for effective prefiltering
+//   - Only Aho-Corasick would be built (not considered fast enough to gate reverse)
+func hasFastPrefixPrefilter(literals *literal.Seq, config Config) bool {
+	if literals == nil || literals.IsEmpty() {
+		return false
+	}
+	// Good LCP means a single-literal prefilter (Memchr or Memmem) which is always fast
+	lcp := literals.LongestCommonPrefix()
+	if len(lcp) >= config.MinLiteralLen {
+		return true
+	}
+	// Check if a Teddy prefilter with good discrimination would be built
+	return prefilter.WouldBeFast(literals)
+}
+
 // selectReverseStrategy selects reverse-based strategies (ReverseSuffix, ReverseInner).
 // Returns 0 if no reverse strategy is suitable.
 //
@@ -878,17 +903,26 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 		}
 	}
 
-	// Check if we have good PREFIX literals - if so, prefer UseDFA
-	// This check comes AFTER multiline check because multiline patterns
-	// cannot benefit from prefix literals (match can be at any line start)
-	if literals != nil && !literals.IsEmpty() {
-		lcp := literals.LongestCommonPrefix()
-		if len(lcp) >= config.MinLiteralLen {
-			return 0 // Prefix literals available - use forward DFA
-		}
+	// Check if prefix literals would produce a fast forward prefilter.
+	// If so, skip reverse optimizations (the overhead is not worth it).
+	//
+	// Two conditions are checked:
+	//   1. Good LCP (common prefix) -> Memchr/Memmem prefilter (always fast)
+	//   2. WouldBeFast() -> Teddy prefilter with minLen >= 3 (fast SIMD)
+	//
+	// This comes AFTER multiline check because multiline patterns cannot
+	// benefit from prefix literals (match can be at any line start).
+	//
+	// Reference: Rust regex-automata strategy.rs:1162 and strategy.rs:1555
+	//   if core.pre.as_ref().map_or(false, |p| p.is_fast()) {
+	//       debug!("skipping reverse optimization because we already have a fast prefilter");
+	//       return Err(core);
+	//   }
+	if hasFastPrefixPrefilter(literals, config) {
+		return 0 // Fast prefix prefilter available - skip reverse optimizations
 	}
 
-	// No good prefix - check suffix and inner literals
+	// No good/fast prefix - check suffix and inner literals
 	// Check suffix literals (for patterns like `.*\.txt`)
 	suffixLiterals := extractor.ExtractSuffixes(re)
 	if suffixLiterals != nil && !suffixLiterals.IsEmpty() {
