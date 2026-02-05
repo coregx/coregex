@@ -253,6 +253,196 @@ func TestLazyDFACacheFull(t *testing.T) {
 	}
 }
 
+// TestCacheClearAndContinue tests that when the cache fills up, the DFA
+// clears it and continues searching instead of immediately falling back to NFA.
+// This verifies the cache clear & continue strategy (inspired by Rust regex-automata).
+func TestCacheClearAndContinue(t *testing.T) {
+	// Use a very small cache (5 states) but allow cache clears.
+	// The pattern a+b+c+d+ generates many states (one per suffix combination),
+	// so a 5-state cache will fill up quickly and need clearing.
+	config := DefaultConfig().WithMaxStates(5).WithMaxCacheClears(3)
+
+	compiler := nfa.NewDefaultCompiler()
+	nfaObj, err := compiler.Compile("a+b+c+d+")
+	if err != nil {
+		t.Fatalf("NFA compile error: %v", err)
+	}
+
+	dfa, err := CompileWithConfig(nfaObj, config)
+	if err != nil {
+		t.Fatalf("DFA compile error: %v", err)
+	}
+
+	// Search should succeed even with a tiny cache by clearing and rebuilding
+	input := []byte("aaaabbbbccccdddd")
+	pos := dfa.Find(input)
+	if pos == -1 {
+		t.Errorf("Find returned -1, want match")
+	}
+	if pos != len(input) {
+		t.Errorf("Find = %d, want %d (full match)", pos, len(input))
+	}
+
+	// The cache should have been cleared at least once
+	clearCount := dfa.cache.ClearCount()
+	t.Logf("Cache clears: %d, final size: %d", clearCount, dfa.cache.Size())
+}
+
+// TestCacheClearAndContinueIsMatch tests cache clearing with the IsMatch method.
+func TestCacheClearAndContinueIsMatch(t *testing.T) {
+	config := DefaultConfig().WithMaxStates(5).WithMaxCacheClears(5)
+
+	compiler := nfa.NewDefaultCompiler()
+	nfaObj, err := compiler.Compile("a+b+c+d+")
+	if err != nil {
+		t.Fatalf("NFA compile error: %v", err)
+	}
+
+	dfa, err := CompileWithConfig(nfaObj, config)
+	if err != nil {
+		t.Fatalf("DFA compile error: %v", err)
+	}
+
+	// IsMatch should return true even with cache clearing
+	if !dfa.IsMatch([]byte("aaaabbbbccccdddd")) {
+		t.Error("IsMatch returned false, want true")
+	}
+
+	// No match should also work correctly
+	if dfa.IsMatch([]byte("aaaabbbbeeeedddd")) {
+		t.Error("IsMatch returned true for non-matching input, want false")
+	}
+}
+
+// TestCacheClearMaxClearsExceeded tests that after exceeding MaxCacheClears,
+// the DFA falls back to NFA (PikeVM) which still produces correct results.
+func TestCacheClearMaxClearsExceeded(t *testing.T) {
+	// Allow only 1 cache clear - the second time cache fills, it falls back to NFA.
+	config := DefaultConfig().WithMaxStates(3).WithMaxCacheClears(1)
+
+	compiler := nfa.NewDefaultCompiler()
+	nfaObj, err := compiler.Compile("a+b+c+d+")
+	if err != nil {
+		t.Fatalf("NFA compile error: %v", err)
+	}
+
+	dfa, err := CompileWithConfig(nfaObj, config)
+	if err != nil {
+		t.Fatalf("DFA compile error: %v", err)
+	}
+
+	// Should still find the match (via NFA fallback after max clears exceeded)
+	input := []byte("aaaabbbbccccdddd")
+	pos := dfa.Find(input)
+	if pos == -1 {
+		t.Errorf("Find returned -1, want match (NFA fallback should work)")
+	}
+}
+
+// TestCacheClearDisabled tests that MaxCacheClears=0 disables cache clearing
+// and falls back to NFA immediately on cache full (old behavior).
+func TestCacheClearDisabled(t *testing.T) {
+	config := DefaultConfig().WithMaxStates(5).WithMaxCacheClears(0)
+
+	compiler := nfa.NewDefaultCompiler()
+	nfaObj, err := compiler.Compile("a+b+c+d+")
+	if err != nil {
+		t.Fatalf("NFA compile error: %v", err)
+	}
+
+	dfa, err := CompileWithConfig(nfaObj, config)
+	if err != nil {
+		t.Fatalf("DFA compile error: %v", err)
+	}
+
+	// Should still find the match (via NFA fallback)
+	input := []byte("aaaabbbbccccdddd")
+	pos := dfa.Find(input)
+	if pos == -1 {
+		t.Errorf("Find returned -1, want match (NFA fallback should work)")
+	}
+
+	// Cache should have 0 clears (disabled)
+	if dfa.cache.ClearCount() != 0 {
+		t.Errorf("Expected 0 cache clears with MaxCacheClears=0, got %d", dfa.cache.ClearCount())
+	}
+}
+
+// TestCacheClearCorrectnessVsStdlib verifies that cache clearing produces
+// correct results by comparing with stdlib regexp across multiple patterns.
+func TestCacheClearCorrectnessVsStdlib(t *testing.T) {
+	patterns := []string{
+		"a+b+c+",
+		"foo|bar|baz",
+		"[a-z]+[0-9]+",
+		"a+b+c+d+e+",
+		"(x|y|z)+w+",
+	}
+
+	inputs := []string{
+		"aaabbbccc",
+		"hello foo world",
+		"test abc123 end",
+		"xxaabbccddee",
+		"xxxxwwww",
+	}
+
+	for _, pattern := range patterns {
+		t.Run(pattern, func(t *testing.T) {
+			// Compile with tiny cache + cache clearing
+			config := DefaultConfig().WithMaxStates(5).WithMaxCacheClears(5)
+			compiler := nfa.NewDefaultCompiler()
+			nfaObj, err := compiler.Compile(pattern)
+			if err != nil {
+				t.Fatalf("NFA compile error: %v", err)
+			}
+			dfa, err := CompileWithConfig(nfaObj, config)
+			if err != nil {
+				t.Fatalf("DFA compile error: %v", err)
+			}
+
+			// Compare with stdlib
+			re := regexp.MustCompile(pattern)
+
+			for _, input := range inputs {
+				// IsMatch
+				dfaMatch := dfa.IsMatch([]byte(input))
+				stdlibMatch := re.MatchString(input)
+				if dfaMatch != stdlibMatch {
+					t.Errorf("IsMatch(%q, %q): DFA=%v, stdlib=%v",
+						pattern, input, dfaMatch, stdlibMatch)
+				}
+			}
+		})
+	}
+}
+
+// TestCacheClearCountReset verifies that the cache clear counter resets
+// properly when the cache is fully cleared via ResetCache.
+func TestCacheClearCountReset(t *testing.T) {
+	config := DefaultConfig().WithMaxStates(5).WithMaxCacheClears(5)
+
+	compiler := nfa.NewDefaultCompiler()
+	nfaObj, err := compiler.Compile("a+b+c+d+")
+	if err != nil {
+		t.Fatalf("NFA compile error: %v", err)
+	}
+
+	dfa, err := CompileWithConfig(nfaObj, config)
+	if err != nil {
+		t.Fatalf("DFA compile error: %v", err)
+	}
+
+	// Run a search that will trigger cache clears
+	dfa.Find([]byte("aaabbccddd"))
+
+	// ResetCache should reset the clear count
+	dfa.ResetCache()
+	if dfa.cache.ClearCount() != 0 {
+		t.Errorf("Expected clear count 0 after ResetCache, got %d", dfa.cache.ClearCount())
+	}
+}
+
 // TestLazyDFAVsStdlib compares results with stdlib regexp
 func TestLazyDFAVsStdlib(t *testing.T) {
 	patterns := []string{

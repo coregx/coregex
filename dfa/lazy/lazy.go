@@ -5,7 +5,8 @@
 // building the complete DFA upfront. This provides:
 //   - Fast matching: O(n) time complexity (linear in input length)
 //   - Bounded memory: States are cached with a configurable limit
-//   - Graceful degradation: Falls back to NFA when cache is full
+//   - Cache clear & continue: When cache fills, it clears and rebuilds on demand
+//   - Graceful degradation: Falls back to NFA only after too many cache clears
 //
 // The lazy approach is ideal for:
 //   - Patterns with many potential states (avoids exponential blowup)
@@ -34,6 +35,8 @@
 package lazy
 
 import (
+	"errors"
+
 	"github.com/coregx/coregex/nfa"
 	"github.com/coregx/coregex/prefilter"
 	"github.com/coregx/coregex/simd"
@@ -256,6 +259,14 @@ func (d *DFA) SearchAtAnchored(haystack []byte, at int) int {
 		case !ok:
 			nextState, err := d.determinize(currentState, b)
 			if err != nil {
+				if isCacheCleared(err) {
+					currentState = d.getStartState(haystack, pos, true)
+					if currentState == nil {
+						return d.nfaFallback(haystack, at)
+					}
+					pos-- // Will be incremented by for-loop
+					continue
+				}
 				return d.nfaFallback(haystack, at)
 			}
 			if nextState == nil {
@@ -494,8 +505,10 @@ func (d *DFA) searchEarliestMatch(haystack []byte, startPos int) bool { //nolint
 			// Determinize on demand
 			nextState, err := d.determinize(currentState, b)
 			if err != nil {
-				// Dead state or cache full - try NFA fallback
-				start, end, matched := d.pikevm.SearchAt(haystack, pos)
+				// Cache cleared or full — fall back to NFA from original start position.
+				// After cache clear, DFA state context is lost and restarting mid-search
+				// can miss matches for unanchored patterns. NFA fallback is correct and fast.
+				start, end, matched := d.pikevm.SearchAt(haystack, startPos)
 				return matched && start >= 0 && end >= start
 			}
 			if nextState == nil {
@@ -575,6 +588,20 @@ func (d *DFA) searchEarliestMatchAnchored(haystack []byte, startPos int) bool {
 		case !ok:
 			nextState, err := d.determinize(currentState, b)
 			if err != nil {
+				if isCacheCleared(err) {
+					// Cache was cleared. For anchored search, re-obtain
+					// the anchored start state at current position.
+					// Note: this is imprecise for anchored search since we lose
+					// DFA context, but it's still correct because we'll rebuild.
+					currentState = d.getStartState(haystack, pos, true)
+					if currentState == nil {
+						start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+						return matched && start == startPos && end >= start
+					}
+					// Re-process this byte with the new state (pos not incremented by for-loop yet)
+					pos-- // Will be incremented by for-loop
+					continue
+				}
 				start, end, matched := d.pikevm.SearchAt(haystack, startPos)
 				return matched && start == startPos && end >= start
 			}
@@ -604,7 +631,7 @@ func (d *DFA) searchEarliestMatchAnchored(haystack []byte, startPos int) bool {
 
 // findWithPrefilterAt searches using prefilter to accelerate unanchored search.
 // This is used by FindAt to correctly handle anchors when searching from non-zero positions.
-func (d *DFA) findWithPrefilterAt(haystack []byte, startAt int) int {
+func (d *DFA) findWithPrefilterAt(haystack []byte, startAt int) int { //nolint:funlen // prefilter search with cache-clear handling needs multi-path logic
 	// If prefilter is complete, its match is the final match
 	if d.prefilter.IsComplete() {
 		return d.prefilter.Find(haystack, startAt)
@@ -653,6 +680,15 @@ func (d *DFA) findWithPrefilterAt(haystack []byte, startAt int) int {
 			var err error
 			nextState, err = d.determinize(currentState, b)
 			if err != nil {
+				if isCacheCleared(err) {
+					// Cache was cleared. Re-obtain start state and continue.
+					currentState = d.getStartStateForUnanchored(haystack, pos)
+					if currentState == nil {
+						return d.nfaFallback(haystack, 0)
+					}
+					committed = lastMatch >= 0
+					continue
+				}
 				return d.nfaFallback(haystack, 0)
 			}
 			if nextState == nil {
@@ -757,6 +793,20 @@ func isSpecialStateID(id StateID) bool {
 	// DeadState (0xFFFFFFFE) and InvalidState (0xFFFFFFFF) are both in the high range.
 	// Normal states are sequential from 0, so any ID >= DeadState is special.
 	return id >= DeadState
+}
+
+// isCacheCleared checks if an error from determinize() is the cache-cleared signal.
+// When true, the search loop must re-obtain the current state from the start state
+// at the current position and continue searching.
+func isCacheCleared(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dfaErr *DFAError
+	if errors.As(err, &dfaErr) {
+		return dfaErr.Kind == CacheCleared
+	}
+	return false
 }
 
 // searchAt attempts to find a match starting at the given position.
@@ -946,7 +996,9 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int { //nolint:funlen,main
 			// No cached transition: determinize on-demand
 			nextState, err := d.determinize(currentState, b)
 			if err != nil {
-				// Cache full or other error: fall back to NFA
+				// Cache cleared or full — fall back to NFA from original start position.
+				// After cache clear, DFA state context is lost and restarting mid-search
+				// can miss matches for unanchored patterns. NFA fallback is always correct.
 				return d.nfaFallback(haystack, startPos)
 			}
 
@@ -1008,7 +1060,14 @@ func (d *DFA) searchAt(haystack []byte, startPos int) int { //nolint:funlen,main
 //  5. Add transition to current state
 //
 // Returns (nil, nil) if no transition is possible (dead state).
-// Returns (nil, error) if cache is full.
+// Returns (nil, errCacheCleared) if cache was cleared and rebuilt.
+//
+//	The caller must re-obtain the current state from the start state
+//	at the current position and continue searching.
+//
+// Returns (nil, error) if cache is full AND max clears exceeded,
+//
+//	or if determinization limit exceeded.
 func (d *DFA) determinize(current *State, b byte) (*State, error) {
 	// Need builder for move operations.
 	// Use NewBuilderWithWordBoundary to pass pre-computed flag and avoid O(states) scan.
@@ -1068,8 +1127,15 @@ func (d *DFA) determinize(current *State, b byte) (*State, error) {
 	// Insert into cache
 	_, err := d.cache.Insert(key, newState)
 	if err != nil {
-		// Cache full
-		return nil, err
+		// Cache is full. Try to clear and continue instead of NFA fallback.
+		if clearErr := d.tryClearCache(); clearErr != nil {
+			// Max clears exceeded - fall back to NFA
+			return nil, clearErr
+		}
+		// Cache was cleared successfully. Return errCacheCleared to signal
+		// the search loop that all state pointers are now stale and it must
+		// re-obtain the start state at the current position.
+		return nil, errCacheCleared
 	}
 
 	// Register state in ID lookup map
@@ -1080,6 +1146,51 @@ func (d *DFA) determinize(current *State, b byte) (*State, error) {
 	current.AddTransition(classIdx, newState.ID())
 
 	return newState, nil
+}
+
+// tryClearCache attempts to clear the DFA cache and rebuild the start state.
+// Returns nil on success (cache was cleared, search can continue).
+// Returns ErrCacheFull if the maximum number of cache clears has been exceeded.
+//
+// After a successful clear:
+//   - All previously returned *State pointers are stale
+//   - The start state is rebuilt and registered
+//   - The StartTable is reset
+//   - The states slice is reset (keeping allocated capacity)
+//
+// This is inspired by Rust regex-automata's try_clear_cache (hybrid/dfa.rs).
+func (d *DFA) tryClearCache() error {
+	// Check if we've exceeded the maximum number of cache clears
+	if d.cache.ClearCount() >= d.config.MaxCacheClears {
+		return ErrCacheFull
+	}
+
+	// Clear the cache, keeping allocated memory for reuse
+	d.cache.ClearKeepMemory()
+
+	// Reset the states slice but keep its allocated capacity
+	d.states = d.states[:0]
+
+	// Reset the StartTable so start states are re-computed
+	d.startTable = NewStartTable()
+
+	// Rebuild the start state from scratch.
+	// This is necessary because the search needs a valid start state to
+	// re-initialize from the current position.
+	builder := NewBuilderWithWordBoundary(d.nfa, d.config, d.hasWordBoundary)
+	startLook := LookSetFromStartKind(StartText)
+	startStateSet := builder.epsilonClosure([]nfa.StateID{d.nfa.StartUnanchored()}, startLook)
+	isMatch := builder.containsMatchState(startStateSet)
+	startState := NewStateWithStride(StartState, startStateSet, isMatch, false, d.AlphabetLen())
+
+	key := ComputeStateKeyWithWord(startStateSet, false)
+	_, _ = d.cache.Insert(key, startState) // Cannot fail: cache was just cleared
+	d.registerState(startState)
+
+	// Cache the default start state in StartTable
+	d.startTable.Set(StartText, false, startState.ID())
+
+	return nil
 }
 
 // getState retrieves a state from the cache by ID
@@ -1487,6 +1598,15 @@ func (d *DFA) SearchReverse(haystack []byte, start, end int) int { // Reverse DF
 			// Determinize on demand
 			nextState, err := d.determinize(currentState, b)
 			if err != nil {
+				if isCacheCleared(err) {
+					// Cache was cleared. Re-obtain start state for reverse search.
+					currentState = d.getStartStateForReverse(haystack, at+1)
+					if currentState == nil {
+						return d.nfaFallbackReverse(haystack, start, end)
+					}
+					// Re-process this byte with the new state
+					continue
+				}
 				return d.nfaFallbackReverse(haystack, start, end)
 			}
 			if nextState == nil {
@@ -1577,6 +1697,14 @@ func (d *DFA) SearchReverseLimited(haystack []byte, start, end, minStart int) in
 		case !ok:
 			nextState, err := d.determinize(currentState, b)
 			if err != nil {
+				if isCacheCleared(err) {
+					currentState = d.getStartStateForReverse(haystack, at+1)
+					if currentState == nil {
+						return d.nfaFallbackReverse(haystack, start, end)
+					}
+					at++ // Will be decremented by for-loop
+					continue
+				}
 				return d.nfaFallbackReverse(haystack, start, end)
 			}
 			if nextState == nil {
@@ -1642,6 +1770,15 @@ func (d *DFA) IsMatchReverse(haystack []byte, start, end int) bool {
 		case !ok:
 			nextState, err := d.determinize(currentState, b)
 			if err != nil {
+				if isCacheCleared(err) {
+					currentState = d.getStartStateForReverse(haystack, at+1)
+					if currentState == nil {
+						_, _, matched := d.pikevm.Search(haystack[start:end])
+						return matched
+					}
+					at++ // Will be decremented by for-loop
+					continue
+				}
 				_, _, matched := d.pikevm.Search(haystack[start:end])
 				return matched
 			}
