@@ -139,17 +139,21 @@ func TestBoundedBacktracker_CanHandle(t *testing.T) {
 		t.Error("Should handle small input")
 	}
 
-	// With 32M entries limit and ~6 states for \d+ pattern:
-	// Max input = 32M / 6 = ~5.3MB
-	// So 1MB should be handleable
+	// With 256M bit entries limit and ~6 states for \d+ pattern:
+	// Max input = 256M / 6 = ~42MB
+	// So 1MB and 10MB should both be handleable
 	if !bt.CanHandle(1_000_000) {
 		t.Error("Should handle 1MB input")
 	}
 
-	// 10MB input should NOT be handleable
-	// 10MB * 6 states = 60M entries > 32M limit
-	if bt.CanHandle(10_000_000) {
-		t.Error("Should not handle 10MB input with default limits")
+	if !bt.CanHandle(10_000_000) {
+		t.Error("Should handle 10MB input with 1-bit bitset")
+	}
+
+	// 100MB input should NOT be handleable
+	// 100MB * 6 states = 600M bit entries > 256M limit
+	if bt.CanHandle(100_000_000) {
+		t.Error("Should not handle 100MB input with default limits")
 	}
 }
 
@@ -188,6 +192,80 @@ func TestBoundedBacktracker_VsStdlib(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBoundedBacktracker_BitsetVisited(t *testing.T) {
+	// Test that the 1-bit visited table correctly tracks visited (state, pos) pairs
+	nfa := compileNFAForTest(`\d+`)
+	bt := NewBoundedBacktracker(nfa)
+	state := NewBacktrackerState()
+
+	// Reset with a small input
+	bt.reset(state, 10)
+
+	numStates := bt.NumStates()
+
+	// Verify initial state: nothing visited
+	for pos := 0; pos <= 10; pos++ {
+		for sid := 0; sid < numStates; sid++ {
+			if !bt.shouldVisit(state, StateID(sid), pos) {
+				t.Errorf("shouldVisit(state=%d, pos=%d) = false, want true (first visit)", sid, pos)
+			}
+		}
+	}
+
+	// Verify all are now visited (second visit should return false)
+	for pos := 0; pos <= 10; pos++ {
+		for sid := 0; sid < numStates; sid++ {
+			if bt.shouldVisit(state, StateID(sid), pos) {
+				t.Errorf("shouldVisit(state=%d, pos=%d) = true, want false (already visited)", sid, pos)
+			}
+		}
+	}
+
+	// After reset, all should be unvisited again
+	bt.reset(state, 10)
+	for pos := 0; pos <= 10; pos++ {
+		for sid := 0; sid < numStates; sid++ {
+			if !bt.shouldVisit(state, StateID(sid), pos) {
+				t.Errorf("after reset: shouldVisit(state=%d, pos=%d) = false, want true", sid, pos)
+			}
+		}
+	}
+}
+
+func TestBoundedBacktracker_BitsetMemoryReduction(t *testing.T) {
+	// Verify the bitset uses expected memory (1 bit per entry vs 16 bits previously)
+	nfa := compileNFAForTest(`\d+`)
+	bt := NewBoundedBacktracker(nfa)
+	state := NewBacktrackerState()
+
+	inputLen := 1000
+	bt.reset(state, inputLen)
+
+	numStates := bt.NumStates()
+	totalEntries := numStates * (inputLen + 1)
+	expectedBlocks := (totalEntries + 63) / 64
+
+	if len(state.Visited) != expectedBlocks {
+		t.Errorf("Visited blocks = %d, want %d (for %d bit entries)",
+			len(state.Visited), expectedBlocks, totalEntries)
+	}
+
+	// Memory in bytes: blocks * 8 (uint64)
+	actualBytes := len(state.Visited) * 8
+	oldBytes := totalEntries * 2 // uint16 = 2 bytes per entry
+
+	if actualBytes >= oldBytes {
+		t.Errorf("Bitset memory %d bytes >= old uint16 memory %d bytes; expected ~16x reduction",
+			actualBytes, oldBytes)
+	}
+
+	// Verify at least 10x reduction (theoretical 16x, allowing some overhead)
+	ratio := float64(oldBytes) / float64(actualBytes)
+	if ratio < 10.0 {
+		t.Errorf("Memory reduction ratio = %.1fx, want >= 10x", ratio)
 	}
 }
 

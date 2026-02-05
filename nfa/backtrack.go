@@ -1,11 +1,11 @@
 package nfa
 
 // BoundedBacktracker implements a bounded backtracking regex matcher.
-// It uses generation-based visited tracking with uint8 for (state, position) pairs,
-// providing 4x memory efficiency over uint32 tracking while maintaining O(1) reset.
+// It uses a 1-bit-per-entry visited bitset for (state, position) pairs,
+// matching the Rust regex crate's approach for optimal cache efficiency.
 //
-// Memory usage: 1 byte per (state, position) pair = numStates * inputLen bytes.
-// For 35 states and 6MB input: 35 * 6MB = 210MB.
+// Memory usage: 1 bit per (state, position) pair, packed into uint64 blocks.
+// For 35 states and 6MB input: 35 * 6M / 8 = ~26MB (16x less than uint16 approach).
 //
 // This engine is selected when:
 //   - numStates * (haystackLen + 1) <= maxVisitedSize
@@ -22,8 +22,8 @@ type BoundedBacktracker struct {
 	// numStates is cached for bounds checking (immutable)
 	numStates int
 
-	// maxVisitedSize limits memory usage (in entries/bytes)
-	// Default: 256M entries = 256MB memory, handles 6MB+ inputs for 35-state patterns
+	// maxVisitedSize limits memory usage (in bit entries)
+	// Default: 256M bit entries = 32MB memory, handles 6MB+ inputs for 35-state patterns
 	maxVisitedSize int
 
 	// internalState is used by legacy non-thread-safe methods.
@@ -35,16 +35,11 @@ type BoundedBacktracker struct {
 // This struct should be pooled (via sync.Pool) for concurrent usage.
 // Each goroutine must use its own BacktrackerState instance.
 type BacktrackerState struct {
-	// Visited stores generation numbers for (state, position) pairs.
-	// Layout: Visited[pos * NumStates + state] = generation when visited.
-	// Uses uint16 for 2x memory savings over uint32 (65536 generations before overflow).
-	// Generation-based approach enables O(1) reset between search attempts.
-	Visited []uint16
-
-	// Generation is incremented for each new search attempt (0-65535).
-	// A position is considered visited if Visited[idx] == Generation.
-	// When overflow occurs, array is cleared and generation resets to 1.
-	Generation uint16
+	// Visited is a bitset storing 1 bit per (state, position) pair.
+	// Layout: bit index = pos * NumStates + state
+	// Packed into uint64 blocks: Visited[bitIndex/64] & (1 << (bitIndex%64))
+	// This provides 16x memory savings over the previous uint16 generation approach.
+	Visited []uint64
 
 	// NumStates is cached for index calculations (column stride)
 	NumStates int
@@ -59,14 +54,14 @@ type BacktrackerState struct {
 }
 
 // NewBoundedBacktracker creates a new bounded backtracker for the given NFA.
-// Default maxVisitedSize is 32M entries (32MB memory with uint8), allowing
-// ~900KB inputs for patterns with 35 states like (\w{2,8})+.
-// Uses uint8 generation tracking (4x memory savings vs uint32, O(1) reset).
+// Default maxVisitedSize is 256M bit entries (32MB memory with 1-bit bitset), allowing
+// ~7MB inputs for patterns with 35 states like (\w{2,8})+.
+// Uses 1-bit-per-entry bitset (16x memory savings vs uint16, matching Rust regex crate).
 func NewBoundedBacktracker(nfa *NFA) *BoundedBacktracker {
 	return &BoundedBacktracker{
 		nfa:            nfa,
 		numStates:      nfa.States(),
-		maxVisitedSize: 32 * 1024 * 1024, // 32M entries = 64MB memory (2 bytes per entry)
+		maxVisitedSize: 256 * 1024 * 1024, // 256M bit entries = 32MB memory (1 bit per entry)
 	}
 }
 
@@ -89,7 +84,7 @@ func (b *BoundedBacktracker) NumStates() int {
 	return b.numStates
 }
 
-// MaxVisitedSize returns the maximum visited array size in entries.
+// MaxVisitedSize returns the maximum visited bitset size in bit entries.
 func (b *BoundedBacktracker) MaxVisitedSize() int {
 	return b.maxVisitedSize
 }
@@ -104,38 +99,37 @@ func (b *BoundedBacktracker) MaxInputSize() int {
 }
 
 // CanHandle returns true if this engine can handle the given input size.
-// Returns false if the visited array would exceed maxVisitedSize entries.
+// Returns false if the visited bitset would exceed maxVisitedSize bit entries.
 func (b *BoundedBacktracker) CanHandle(haystackLen int) bool {
-	// Need (numStates * (haystackLen + 1)) entries
+	// Need (numStates * (haystackLen + 1)) bit entries
 	entriesNeeded := b.numStates * (haystackLen + 1)
 	return entriesNeeded <= b.maxVisitedSize
 }
 
 // reset prepares the given state for a new search.
 // This is an internal method that operates on external state.
+// The bitset is cleared on each reset, which is fast because:
+// 1. The bitset is 16x smaller than uint16 arrays (better cache utilization)
+// 2. Sequential clearing is cache-friendly (memset-like pattern)
 func (b *BoundedBacktracker) reset(state *BacktrackerState, haystackLen int) {
 	state.InputLen = haystackLen
 	state.NumStates = b.numStates
 
-	// Calculate required size in entries
-	entriesNeeded := b.numStates * (haystackLen + 1)
+	// Calculate required size in bit entries, then convert to uint64 blocks
+	bitEntries := b.numStates * (haystackLen + 1)
+	blocksNeeded := (bitEntries + 63) / 64 // div_ceil(bitEntries, 64)
 
-	// Reuse or allocate visited array
-	if cap(state.Visited) >= entriesNeeded {
-		state.Visited = state.Visited[:entriesNeeded]
+	// Reuse or allocate visited bitset
+	if cap(state.Visited) >= blocksNeeded {
+		state.Visited = state.Visited[:blocksNeeded]
 	} else {
-		state.Visited = make([]uint16, entriesNeeded)
-		state.Generation = 0 // New array starts fresh
+		state.Visited = make([]uint64, blocksNeeded)
+		return // New array is already zeroed
 	}
 
-	// Increment generation for fresh visited state (O(1) instead of O(n) clear)
-	state.Generation++
-	// Handle overflow by clearing array (every 65536 searches - rare)
-	if state.Generation == 0 {
-		for i := range state.Visited {
-			state.Visited[i] = 0
-		}
-		state.Generation = 1
+	// Clear the bitset for fresh search state
+	for i := range state.Visited {
+		state.Visited[i] = 0
 	}
 }
 
@@ -144,17 +138,23 @@ func (b *BoundedBacktracker) reset(state *BacktrackerState, haystackLen int) {
 // This is the hot path - must be as fast as possible.
 // This method operates on external state for thread safety.
 //
-// Layout: Visited[pos * numStates + state] provides cache locality when
+// Layout: bit index = pos * numStates + state provides cache locality when
 // checking multiple states at the same position (common in epsilon traversal).
+// Bits are packed into uint64 blocks: block = Visited[bitIndex/64], mask = 1 << (bitIndex%64).
 func (b *BoundedBacktracker) shouldVisit(s *BacktrackerState, state StateID, pos int) bool {
-	// Calculate index: pos * numStates + state (cache-friendly layout)
-	idx := pos*s.NumStates + int(state)
+	// Calculate bit index: pos * numStates + state (cache-friendly layout)
+	bitIdx := pos*s.NumStates + int(state)
 
-	// Check if visited in current generation
-	if s.Visited[idx] == s.Generation {
+	// Extract block index and bit position within the block.
+	// bitIdx is always non-negative (pos >= 0, state >= 0), so the shift and mask are safe.
+	blockIdx := bitIdx >> 6                    // bitIdx / 64
+	mask := uint64(1) << (uint64(bitIdx) & 63) //nolint:gosec // bitIdx is always non-negative
+
+	// Check if visited and mark in one operation
+	if s.Visited[blockIdx]&mask != 0 {
 		return false // Already visited
 	}
-	s.Visited[idx] = s.Generation
+	s.Visited[blockIdx] |= mask
 	return true
 }
 
@@ -245,15 +245,11 @@ func (b *BoundedBacktracker) SearchAtWithState(haystack []byte, at int, state *B
 		if end >= 0 {
 			return startPos, end, true
 		}
-		// O(1) reset: increment generation instead of O(n) array clear
-		// This is the key optimization that makes Search fast on large inputs
-		state.Generation++
-		// Handle overflow by resetting the array (every 256 searches)
-		if state.Generation == 0 {
-			for i := range state.Visited {
-				state.Visited[i] = 0
-			}
-			state.Generation = 1
+		// Clear the bitset for the next start position attempt.
+		// With 1-bit packing, the bitset is 16x smaller than the old uint16 array,
+		// so clearing is fast and cache-friendly.
+		for i := range state.Visited {
+			state.Visited[i] = 0
 		}
 	}
 	return -1, -1, false
