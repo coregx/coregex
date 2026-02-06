@@ -738,6 +738,14 @@ func (e *Engine) findIndicesDigitPrefilter(haystack []byte) (int, int, bool) {
 		}
 
 		pos = digitPos + 1
+		// When the leading digit class is greedy unbounded (\d+, \d*), all
+		// positions in the same digit run reach the same DFA state after
+		// consuming digits, so they all fail identically. Skip the entire run.
+		if e.digitRunSkipSafe {
+			for pos < len(haystack) && haystack[pos] >= '0' && haystack[pos] <= '9' {
+				pos++
+			}
+		}
 	}
 
 	return -1, -1, false
@@ -775,6 +783,11 @@ func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int,
 		}
 
 		pos = digitPos + 1
+		if e.digitRunSkipSafe {
+			for pos < len(haystack) && haystack[pos] >= '0' && haystack[pos] <= '9' {
+				pos++
+			}
+		}
 	}
 
 	return -1, -1, false

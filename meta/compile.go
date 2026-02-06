@@ -104,6 +104,7 @@ type strategyEngines struct {
 	reverseInnerSearcher           *ReverseInnerSearcher
 	multilineReverseSuffixSearcher *MultilineReverseSuffixSearcher // Issue #97
 	digitPrefilter                 *prefilter.DigitPrefilter
+	digitRunSkipSafe               bool
 	ahoCorasick                    *ahocorasick.Automaton
 	finalStrategy                  Strategy
 }
@@ -167,6 +168,7 @@ func buildStrategyEngines(
 	// For digit prefilter strategy, create the digit prefilter
 	if result.finalStrategy == UseDigitPrefilter {
 		result.digitPrefilter = prefilter.NewDigitPrefilter()
+		result.digitRunSkipSafe = isDigitRunSkipSafe(re)
 	}
 
 	return result
@@ -504,6 +506,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		reverseInnerSearcher:           engines.reverseInnerSearcher,
 		multilineReverseSuffixSearcher: engines.multilineReverseSuffixSearcher,
 		digitPrefilter:                 engines.digitPrefilter,
+		digitRunSkipSafe:               engines.digitRunSkipSafe,
 		ahoCorasick:                    engines.ahoCorasick,
 		anchoredLiteralInfo:            anchoredLiteralInfo,
 		prefilter:                      pf,

@@ -12,6 +12,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.1] - 2026-02-06
+
+### Performance
+- **Digit-run skip optimization** — For `\d+`-leading patterns (IP addresses,
+  version numbers), skip entire digit run on DFA failure instead of advancing
+  one byte at a time. Only enabled when the leading digit class has a greedy
+  unbounded quantifier.
+
+### Fixed
+- **CompositeSequenceDFA overmatching for bounded patterns** — Bare character
+  classes like `\w` (maxMatch=1) were treated as unbounded by the DFA, causing
+  `\w\w` on "000" to return "000" instead of "00". Now rejects patterns with
+  bounded maxMatch, falling back to CompositeSearcher backtracking.
+- **AVX2 Teddy assembly correctness** — Fixed `teddySlimAVX2_2` returning
+  position -1 (not-found sentinel) for valid candidates in short haystacks,
+  caused by `DECQ SI` executing when there was no prior chunk boundary to cover.
+  AVX2 dispatch remains disabled by default (SSSE3 is 4x faster on AMD EPYC
+  due to VZEROUPPER overhead on frequent verification restarts).
+
 ## [0.12.0] - 2026-02-06
 
 ### Performance
