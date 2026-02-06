@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.12.1] - 2026-02-06
 
 ### Performance
+- **DFA bidirectional fallback for BoundedBacktracker** — When BoundedBacktracker
+  can't handle large inputs (exceeds 32M entry limit), use forward DFA + reverse
+  DFA instead of PikeVM. Forward DFA finds match end, reverse DFA finds match
+  start. O(n) total vs PikeVM's O(n*states). ~3x speedup on `(\w{2,8})+` at 6MB.
 - **Digit-run skip optimization** — For `\d+`-leading patterns (IP addresses,
   version numbers), skip entire digit run on DFA failure instead of advancing
   one byte at a time. Only enabled when the leading digit class has a greedy

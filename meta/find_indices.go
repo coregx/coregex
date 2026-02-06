@@ -483,6 +483,25 @@ func (e *Engine) findIndicesMultilineReverseSuffixAt(haystack []byte, at int) (i
 	return e.multilineReverseSuffixSearcher.FindIndicesAt(haystack, at)
 }
 
+// findIndicesBidirectionalDFA uses forward DFA + reverse DFA for exact match bounds.
+// Forward DFA finds match end, reverse DFA finds match start. O(n) total.
+// Used as fallback when BoundedBacktracker can't handle large inputs.
+func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int, bool) {
+	atomic.AddUint64(&e.stats.DFASearches, 1)
+	end := e.dfa.FindAt(haystack, at)
+	if end == -1 {
+		return -1, -1, false
+	}
+	if end == at {
+		return at, at, true // Empty match
+	}
+	start := e.reverseDFA.SearchReverse(haystack, at, end)
+	if start < 0 {
+		return -1, -1, false // Reverse DFA failed (cache full)
+	}
+	return start, end, true
+}
+
 // findIndicesBoundedBacktracker searches using bounded backtracker - zero alloc.
 // Thread-safe: uses pooled state.
 func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool) {
@@ -499,7 +518,10 @@ func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool)
 
 	atomic.AddUint64(&e.stats.NFASearches, 1)
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
-		// Use optimized SlotTable-based search for large inputs
+		// Bidirectional DFA: O(n) vs PikeVM's O(n*states) for large inputs
+		if e.dfa != nil && e.reverseDFA != nil {
+			return e.findIndicesBidirectionalDFA(haystack, 0)
+		}
 		return e.pikevm.SearchWithSlotTable(haystack, nfa.SearchModeFind)
 	}
 
@@ -539,7 +561,9 @@ func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, 
 		}
 		if simd.IsASCII(asciiCheck) {
 			if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
-				// Use optimized SlotTable-based search for large inputs
+				if e.dfa != nil && e.reverseDFA != nil {
+					return e.findIndicesBidirectionalDFA(haystack, at)
+				}
 				return e.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
 			}
 			start, end, found := e.asciiBoundedBacktracker.Search(remaining)
@@ -551,7 +575,9 @@ func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, 
 	}
 
 	if !e.boundedBacktracker.CanHandle(len(remaining)) {
-		// Delegate to NFA path which uses prefilter if available
+		if e.dfa != nil && e.reverseDFA != nil {
+			return e.findIndicesBidirectionalDFA(haystack, at)
+		}
 		return e.findIndicesNFAAt(haystack, at)
 	}
 
@@ -962,6 +988,10 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 		}
 		if simd.IsASCII(asciiCheck) {
 			if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
+				// Bidirectional DFA: O(n) vs PikeVM's O(n*states)
+				if e.dfa != nil && e.reverseDFA != nil {
+					return e.findIndicesBidirectionalDFA(haystack, at)
+				}
 				// V12 Windowed BoundedBacktracker for ASCII path
 				maxInput := e.asciiBoundedBacktracker.MaxInputSize()
 				if maxInput > 0 && len(remaining) > maxInput {
@@ -982,24 +1012,18 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 	}
 
 	if !e.boundedBacktracker.CanHandle(len(remaining)) {
-		// V12 Windowed BoundedBacktracker: For large inputs, try searching in a
-		// window of maxInputSize bytes first. Most patterns produce short matches
-		// (e.g., word patterns like (\w{2,8})+ match 2-8 chars), so the match
-		// will be found within the first window. Only fall back to PikeVM if
-		// no match is found in the window (rare for common patterns).
+		// Bidirectional DFA: O(n) vs PikeVM's O(n*states) for large inputs
+		if e.dfa != nil && e.reverseDFA != nil {
+			return e.findIndicesBidirectionalDFA(haystack, at)
+		}
+		// V12 Windowed BoundedBacktracker fallback
 		maxInput := e.boundedBacktracker.MaxInputSize()
 		if maxInput > 0 && len(remaining) > maxInput {
-			// Search in the first window
 			window := remaining[:maxInput]
 			start, end, found := e.boundedBacktracker.SearchWithState(window, state.backtracker)
 			if found {
-				// Match found within window - this is the common case
 				return at + start, at + end, true
 			}
-			// No match in window - could be:
-			// 1. No match exists in the full input
-			// 2. Match exists beyond the window
-			// Fall back to PikeVM to handle both cases correctly
 		}
 		return state.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
 	}

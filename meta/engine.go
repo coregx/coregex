@@ -68,6 +68,7 @@ type Engine struct {
 	asciiNFA                       *nfa.NFA
 	asciiBoundedBacktracker        *nfa.BoundedBacktracker // BoundedBacktracker for asciiNFA
 	dfa                            *lazy.DFA
+	reverseDFA                     *lazy.DFA // Reverse DFA for bidirectional search (forward DFA → end, reverse DFA → start)
 	pikevm                         *nfa.PikeVM
 	boundedBacktracker             *nfa.BoundedBacktracker
 	charClassSearcher              *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
