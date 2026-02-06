@@ -98,7 +98,6 @@ func (c configSet) has(part int, metMin bool) bool {
 	return (c & (1 << idx)) != 0
 }
 
-//nolint:unparam // metMin always true for minMatch>=1 patterns, but keeps API consistent with has()
 func (c configSet) add(part int, metMin bool) configSet {
 	idx := part * 2
 	if metMin {
@@ -158,10 +157,12 @@ func (d *CompositeSequenceDFA) buildDFASubsetConstruction(parts []*charClassPart
 			// Compute next config set for this class
 			next := d.computeNextConfigs(current, class, parts)
 
-			// If dead and matches first part, can restart (consuming this char)
-			if next == 0 && d.classMatchesPart(class, parts[0]) {
-				next = configSet(0).add(0, true) // metMin=true since we consumed 1 char
-			}
+			// NOTE: We intentionally do NOT restart from non-dead states.
+			// If computeNextConfigs returns dead (0), the search loop's outer
+			// iteration handles restarts via dead state transitions.
+			// Baking restarts into non-dead transitions would cause the DFA
+			// to continue past match boundaries (e.g. "ab123cd456" with
+			// [a-zA-Z]+\d+ would incorrectly return (0,10) instead of (0,5)).
 
 			// Get or create DFA state for next config set
 			if nextID, ok := configToState[next]; ok {
@@ -302,6 +303,7 @@ func (d *CompositeSequenceDFA) SearchAt(haystack []byte, at int) (int, int, bool
 				if lastAcceptEnd > 0 {
 					return matchStart, lastAcceptEnd, true
 				}
+				start = pos - 1 // Skip: dead byte at pos, outer loop start++ → pos
 				goto nextStart
 			}
 			if accepting[state] {
@@ -316,6 +318,7 @@ func (d *CompositeSequenceDFA) SearchAt(haystack []byte, at int) (int, int, bool
 				if lastAcceptEnd > 0 {
 					return matchStart, lastAcceptEnd, true
 				}
+				start = pos // Skip: dead byte at pos+1
 				goto nextStart
 			}
 			if accepting[state] {
@@ -330,6 +333,7 @@ func (d *CompositeSequenceDFA) SearchAt(haystack []byte, at int) (int, int, bool
 				if lastAcceptEnd > 0 {
 					return matchStart, lastAcceptEnd, true
 				}
+				start = pos + 1 // Skip: dead byte at pos+2
 				goto nextStart
 			}
 			if accepting[state] {
@@ -344,6 +348,7 @@ func (d *CompositeSequenceDFA) SearchAt(haystack []byte, at int) (int, int, bool
 				if lastAcceptEnd > 0 {
 					return matchStart, lastAcceptEnd, true
 				}
+				start = pos + 2 // Skip: dead byte at pos+3
 				goto nextStart
 			}
 			if accepting[state] {
@@ -364,7 +369,7 @@ func (d *CompositeSequenceDFA) SearchAt(haystack []byte, at int) (int, int, bool
 				if lastAcceptEnd > 0 {
 					return matchStart, lastAcceptEnd, true
 				}
-				break
+				break // Dead state, rely on unified skip after loop
 			}
 
 			state = nextState
@@ -379,6 +384,9 @@ func (d *CompositeSequenceDFA) SearchAt(haystack []byte, at int) (int, int, bool
 		if lastAcceptEnd > 0 {
 			return matchStart, lastAcceptEnd, true
 		}
+
+		// Skip: all bytes up to pos already processed, advance outer loop
+		start = pos - 1
 
 	nextStart:
 	}
