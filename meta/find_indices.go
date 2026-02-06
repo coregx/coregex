@@ -529,17 +529,25 @@ func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, 
 	// to search the remaining portion, not the full haystack.
 	remaining := haystack[at:]
 
-	// V11-002 ASCII optimization
-	if e.asciiBoundedBacktracker != nil && simd.IsASCII(remaining) {
-		if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
-			// Use optimized SlotTable-based search for large inputs
-			return e.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
+	// V11-002 ASCII optimization.
+	// For start-anchored patterns, limit the IsASCII check to a small prefix
+	// to avoid O(n) scan of the entire input when only position 0 matters.
+	if e.asciiBoundedBacktracker != nil {
+		asciiCheck := remaining
+		if e.isStartAnchored && len(asciiCheck) > 4096 {
+			asciiCheck = asciiCheck[:4096]
 		}
-		start, end, found := e.asciiBoundedBacktracker.Search(remaining)
-		if found {
-			return at + start, at + end, true
+		if simd.IsASCII(asciiCheck) {
+			if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
+				// Use optimized SlotTable-based search for large inputs
+				return e.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
+			}
+			start, end, found := e.asciiBoundedBacktracker.Search(remaining)
+			if found {
+				return at + start, at + end, true
+			}
+			return -1, -1, false
 		}
-		return -1, -1, false
 	}
 
 	if !e.boundedBacktracker.CanHandle(len(remaining)) {
@@ -931,25 +939,33 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 	// to search the remaining portion, not the full haystack.
 	remaining := haystack[at:]
 
-	// V11-002 ASCII optimization
-	if e.asciiBoundedBacktracker != nil && simd.IsASCII(remaining) {
-		if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
-			// V12 Windowed BoundedBacktracker for ASCII path
-			maxInput := e.asciiBoundedBacktracker.MaxInputSize()
-			if maxInput > 0 && len(remaining) > maxInput {
-				window := remaining[:maxInput]
-				start, end, found := e.asciiBoundedBacktracker.Search(window)
-				if found {
-					return at + start, at + end, true
+	// V11-002 ASCII optimization.
+	// For start-anchored patterns, limit the IsASCII check to a small prefix
+	// to avoid O(n) scan of the entire input when only position 0 matters.
+	if e.asciiBoundedBacktracker != nil {
+		asciiCheck := remaining
+		if e.isStartAnchored && len(asciiCheck) > 4096 {
+			asciiCheck = asciiCheck[:4096]
+		}
+		if simd.IsASCII(asciiCheck) {
+			if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
+				// V12 Windowed BoundedBacktracker for ASCII path
+				maxInput := e.asciiBoundedBacktracker.MaxInputSize()
+				if maxInput > 0 && len(remaining) > maxInput {
+					window := remaining[:maxInput]
+					start, end, found := e.asciiBoundedBacktracker.Search(window)
+					if found {
+						return at + start, at + end, true
+					}
 				}
+				return state.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
 			}
-			return state.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
+			start, end, found := e.asciiBoundedBacktracker.Search(remaining)
+			if found {
+				return at + start, at + end, true
+			}
+			return -1, -1, false
 		}
-		start, end, found := e.asciiBoundedBacktracker.Search(remaining)
-		if found {
-			return at + start, at + end, true
-		}
-		return -1, -1, false
 	}
 
 	if !e.boundedBacktracker.CanHandle(len(remaining)) {
