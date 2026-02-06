@@ -38,10 +38,11 @@ type stackEntry struct {
 
 // Build attempts to build a one-pass DFA from the given NFA.
 // Returns (nil, ErrNotOnePass) if the pattern is not one-pass.
-// Returns (nil, ErrTooManyCaptures) if more than 16 capture groups.
+// Returns (nil, ErrTooManyCaptures) if more than 16 capture groups (including group 0).
 func Build(n *nfa.NFA) (*DFA, error) {
-	// Check capture count limit (max 16 explicit captures + group 0)
-	if n.CaptureCount() > 17 {
+	// Check capture count limit: uint32 slot mask has 32 bits, so max 16 groups
+	// (group 0 + 15 explicit captures = 32 slots = bits 0..31)
+	if n.CaptureCount() > 16 {
 		return nil, ErrTooManyCaptures
 	}
 
@@ -373,7 +374,7 @@ func IsOnePass(n *nfa.NFA) bool {
 	}
 
 	// Check capture count
-	if n.CaptureCount() > 17 {
+	if n.CaptureCount() > 16 {
 		return false
 	}
 

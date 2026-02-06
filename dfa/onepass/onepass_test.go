@@ -107,6 +107,61 @@ func TestBuildNotOnePass(t *testing.T) {
 	}
 }
 
+// TestCaptureGroupLimit verifies the uint32 slot mask boundary.
+// With 16 groups (group 0 + 15 explicit) we have 32 slots fitting in uint32.
+// With 17 groups (group 0 + 16 explicit) we have 34 slots overflowing uint32.
+func TestCaptureGroupLimit(t *testing.T) {
+	t.Run("15 explicit captures (16 total) should not exceed limit", func(t *testing.T) {
+		// 15 explicit captures + group 0 = 16 groups = 32 slots = fits uint32
+		pattern := `(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)(m)(n)(o)`
+		n := compilePattern(t, pattern)
+
+		if n.CaptureCount() != 16 {
+			t.Fatalf("expected CaptureCount=16, got %d", n.CaptureCount())
+		}
+
+		dfa, err := Build(n)
+		if errors.Is(err, ErrTooManyCaptures) {
+			t.Fatalf("16 capture groups should be within limit, got ErrTooManyCaptures")
+		}
+		// ErrNotOnePass is acceptable (pattern may not be one-pass for other reasons)
+		if err != nil && !errors.Is(err, ErrNotOnePass) {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if err == nil && dfa != nil {
+			// If build succeeded, verify it matches the expected input
+			got := dfa.IsMatch([]byte("abcdefghijklmno"))
+			if !got {
+				t.Error("expected match for input 'abcdefghijklmno'")
+			}
+		}
+	})
+
+	t.Run("16 explicit captures (17 total) should exceed limit", func(t *testing.T) {
+		// 16 explicit captures + group 0 = 17 groups = 34 slots = overflows uint32
+		pattern := `(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)(m)(n)(o)(p)`
+		n := compilePattern(t, pattern)
+
+		if n.CaptureCount() != 17 {
+			t.Fatalf("expected CaptureCount=17, got %d", n.CaptureCount())
+		}
+
+		dfa, err := Build(n)
+		if err == nil {
+			t.Fatal("expected error for 17 capture groups, but Build succeeded")
+		}
+
+		if !errors.Is(err, ErrTooManyCaptures) {
+			t.Errorf("expected ErrTooManyCaptures, got: %v", err)
+		}
+
+		if dfa != nil {
+			t.Error("expected nil DFA when capture limit exceeded")
+		}
+	})
+}
+
 func TestIsMatch(t *testing.T) {
 	tests := []struct {
 		pattern string

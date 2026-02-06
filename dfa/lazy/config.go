@@ -6,7 +6,9 @@ package lazy
 // performance. Larger caches provide better hit rates but consume more memory.
 type Config struct {
 	// MaxStates is the maximum number of DFA states to cache.
-	// When this limit is reached, the DFA falls back to NFA execution.
+	// When this limit is reached, the DFA clears the cache and continues
+	// DFA search (up to MaxCacheClears times per search), then falls back
+	// to NFA execution if the clear limit is exceeded.
 	//
 	// Default: 10,000 states (~1MB with 256-byte transition tables)
 	// Memory usage: ~100-200 bytes per state (depending on transitions)
@@ -16,6 +18,25 @@ type Config struct {
 	//   - Complex patterns: 10,000-100,000 states
 	//   - Memory-constrained: 1,000 states (~100KB)
 	MaxStates uint32
+
+	// MaxCacheClears is the maximum number of times the DFA cache can be
+	// cleared and rebuilt during a single search before falling back to NFA.
+	//
+	// When the cache fills up during determinization, instead of immediately
+	// falling back to the NFA (PikeVM), the DFA clears the cache, re-creates
+	// the start state, and continues searching from the current position.
+	// This is much faster than NFA fallback for large inputs with complex
+	// patterns that generate many DFA states.
+	//
+	// After MaxCacheClears clears, the DFA gives up and falls back to NFA
+	// permanently. This prevents pathological cases where the cache thrashes
+	// endlessly (clearing and refilling every few bytes).
+	//
+	// Default: 5
+	// Set to 0 to disable cache clearing (always fall back to NFA on full cache).
+	//
+	// Inspired by Rust regex-automata's hybrid DFA cache clearing strategy.
+	MaxCacheClears int
 
 	// CacheHitThreshold is the minimum cache hit rate (0.0-1.0) to continue
 	// using DFA. If hit rate falls below this, fall back to NFA.
@@ -64,6 +85,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		MaxStates:            10_000,
+		MaxCacheClears:       5,   // Allow 5 cache clears before NFA fallback
 		CacheHitThreshold:    0.0, // Disabled by default
 		UsePrefilter:         true,
 		MinPrefilterLen:      3,
@@ -78,6 +100,13 @@ func (c *Config) Validate() error {
 		return &DFAError{
 			Kind:    InvalidConfig,
 			Message: "MaxStates must be > 0",
+		}
+	}
+
+	if c.MaxCacheClears < 0 {
+		return &DFAError{
+			Kind:    InvalidConfig,
+			Message: "MaxCacheClears must be >= 0",
 		}
 	}
 
@@ -108,6 +137,13 @@ func (c *Config) Validate() error {
 // WithMaxStates returns a new config with the specified max states
 func (c Config) WithMaxStates(maxStates uint32) Config {
 	c.MaxStates = maxStates
+	return c
+}
+
+// WithMaxCacheClears returns a new config with the specified max cache clears.
+// Set to 0 to disable cache clearing (always fall back to NFA on full cache).
+func (c Config) WithMaxCacheClears(maxClears int) Config {
+	c.MaxCacheClears = maxClears
 	return c
 }
 

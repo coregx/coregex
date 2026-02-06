@@ -570,6 +570,21 @@ func (t *Teddy) LiteralLen() int {
 	return 0
 }
 
+// IsFast implements Prefilter.IsFast.
+//
+// Teddy is considered fast when the minimum pattern length is >= 3 bytes.
+// With very short patterns (1 or 2 bytes), the false positive rate is higher,
+// which can negate the SIMD speedup advantage.
+//
+// Reference: Rust regex-automata teddy.rs:
+//
+//	"when there is a very small literal (1 or 2 bytes), it is far more likely
+//	 that it leads to a higher false positive rate... But when we have 3 bytes,
+//	 we have a really good chance of being quite discriminatory and thus fast."
+func (t *Teddy) IsFast() bool {
+	return t.minLen >= 3
+}
+
 // HeapBytes implements Prefilter.HeapBytes.
 //
 // Returns approximate heap memory used by Teddy:

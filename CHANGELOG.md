@@ -12,6 +12,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.0] - 2026-02-06
+
+### Performance
+- **Anti-quadratic guard for reverse searches** — Track `minStart` position in
+  ReverseSuffix, ReverseInner, and ReverseSuffixSet searchers to prevent O(n²)
+  degradation on high false-positive suffix workloads. Falls back to PikeVM
+  when quadratic behavior detected. Inspired by Rust regex `meta/limited.rs`.
+- **Lazy DFA 4x loop unrolling** — Process 4 state transitions per inner loop
+  iteration in forward and reverse DFA search. Check special states only between
+  batches. Direct field access for minimal per-transition overhead.
+  Expected 15-40% throughput on DFA-heavy patterns (alpha_digit, word_digit).
+- **Prefilter `IsFast()` gate** — Skip reverse search optimizations when a fast
+  SIMD-backed prefix prefilter already exists. Heuristic: Memchr/Memmem always
+  fast, Teddy fast when `minLen >= 3`. Inspired by Rust regex `is_fast()`.
+- **DFA cache clear & continue** — On cache overflow, clear and fall back to
+  PikeVM for current search instead of permanently disabling DFA. Configurable
+  `MaxCacheClears` limit (default 5). Inspired by Rust regex `try_clear_cache`.
+
+### Fixed
+- **OnePass DFA capture limit** — Tighten from 17 to 16 capture groups.
+  `uint32` slot mask (32 bits) can only track 16 groups (slots 0..31).
+  Group 17 silently dropped end position due to `slotIdx < 32` guard.
+
 ---
 
 ## [0.11.9] - 2026-02-02

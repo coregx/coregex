@@ -4,7 +4,8 @@ import "fmt"
 
 // Error types for Lazy DFA operations
 
-// ErrCacheFull indicates that the DFA state cache has exceeded its maximum size.
+// ErrCacheFull indicates that the DFA state cache has exceeded its maximum size
+// AND the maximum number of cache clears has been reached.
 // When this occurs, the DFA falls back to NFA execution (PikeVM) for the
 // remainder of the search.
 //
@@ -13,6 +14,17 @@ import "fmt"
 var ErrCacheFull = &DFAError{
 	Kind:    CacheFull,
 	Message: "DFA state cache is full",
+}
+
+// errCacheCleared is an internal sentinel error returned by determinize()
+// when the cache was cleared and rebuilt. The search loop must re-obtain
+// the current state from the start state at the current position and continue.
+//
+// This is NOT a real error - it signals that the search should restart
+// DFA processing from the current position with a fresh cache.
+var errCacheCleared = &DFAError{
+	Kind:    CacheCleared,
+	Message: "DFA cache was cleared and rebuilt",
 }
 
 // ErrStateLimitExceeded indicates that the DFA has reached the maximum number
@@ -36,7 +48,13 @@ type ErrorKind uint8
 
 const (
 	// CacheFull indicates the state cache reached its size limit
+	// and cannot be cleared further (max clears exceeded)
 	CacheFull ErrorKind = iota
+
+	// CacheCleared indicates the cache was cleared and rebuilt.
+	// This is an internal signal, not a real error. The search loop
+	// should re-obtain the current state and continue from the current position.
+	CacheCleared
 
 	// StateLimitExceeded indicates too many states were created
 	StateLimitExceeded
@@ -54,6 +72,8 @@ func (k ErrorKind) String() string {
 	switch k {
 	case CacheFull:
 		return "CacheFull"
+	case CacheCleared:
+		return "CacheCleared"
 	case StateLimitExceeded:
 		return "StateLimitExceeded"
 	case InvalidConfig:

@@ -9,15 +9,16 @@ import (
 // Cache provides thread-safe storage for DFA states with bounded memory.
 //
 // The cache maps StateKey (NFA state set hash) → DFA State.
-// When the cache reaches maxStates, it stops accepting new entries and
-// the DFA must fall back to NFA for uncached transitions.
+// When the cache reaches maxStates, it can be cleared and rebuilt
+// (up to a configured limit) before falling back to NFA.
 //
 // Thread safety: All methods are safe for concurrent access via RWMutex.
 //
 // Memory management:
-//   - States are never evicted (LRU would require additional overhead)
-//   - When cache is full, new states trigger NFA fallback
-//   - This is simple and efficient for most patterns
+//   - States are never evicted individually (no LRU overhead)
+//   - When cache is full, it is cleared entirely and search continues
+//   - After too many clears, falls back to NFA
+//   - Clearing keeps allocated memory to avoid re-allocation
 type Cache struct {
 	// mu protects all fields below
 	// RWMutex allows concurrent reads (common case during search)
@@ -32,6 +33,12 @@ type Cache struct {
 	// nextID is the next available state ID
 	// Start at 1 (0 is reserved for StartState)
 	nextID StateID
+
+	// clearCount tracks how many times the cache has been cleared during
+	// the current search. This is used to detect pathological cache thrashing
+	// and trigger NFA fallback when clears exceed the configured limit.
+	// Inspired by Rust regex-automata's hybrid DFA cache clearing strategy.
+	clearCount int
 
 	// Statistics for cache performance tuning
 	hits   uint64 // Number of cache hits
@@ -175,7 +182,7 @@ func (c *Cache) ResetStats() {
 }
 
 // Clear removes all states from the cache and resets statistics.
-// This is primarily for testing.
+// This also resets the clear counter. Primarily for testing.
 func (c *Cache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -183,6 +190,50 @@ func (c *Cache) Clear() {
 	// Clear map (GC will reclaim memory)
 	c.states = make(map[StateKey]*State, c.maxStates)
 	c.nextID = StartState + 1
+	c.clearCount = 0
 	c.hits = 0
 	c.misses = 0
+}
+
+// ClearKeepMemory clears all states from the cache but keeps the allocated
+// map memory for reuse and increments the clear counter. This is used during
+// search when the cache is full: instead of falling back to NFA permanently,
+// we clear the cache and continue DFA search, rebuilding states on demand.
+//
+// Unlike Clear(), this method:
+//   - Increments clearCount (tracks clears during a search)
+//   - Does NOT reset hit/miss statistics (they accumulate across clears)
+//   - Reuses map memory via Go's map clearing optimization
+//
+// After calling this, all previously returned *State pointers are stale
+// and must not be used. The caller must re-obtain the start state.
+//
+// Inspired by Rust regex-automata's cache clearing strategy (hybrid/dfa.rs).
+func (c *Cache) ClearKeepMemory() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Clear the map using Go's optimized clear-by-range idiom.
+	// This reuses the map's internal memory (buckets) instead of reallocating.
+	for k := range c.states {
+		delete(c.states, k)
+	}
+	c.nextID = StartState + 1
+	c.clearCount++
+}
+
+// ClearCount returns how many times the cache has been cleared.
+// Used to check against the MaxCacheClears limit.
+func (c *Cache) ClearCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.clearCount
+}
+
+// ResetClearCount resets the clear counter to zero.
+// Called at the start of each new search to give the DFA a fresh budget.
+func (c *Cache) ResetClearCount() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.clearCount = 0
 }

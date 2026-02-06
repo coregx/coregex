@@ -439,6 +439,15 @@ func (t *FatTeddy) LiteralLen() int {
 	return 0
 }
 
+// IsFast implements Prefilter.IsFast.
+//
+// FatTeddy follows the same heuristic as Slim Teddy: fast when minimum
+// pattern length >= 3. Short patterns have higher false positive rates.
+// Reference: Rust regex-automata teddy.rs is_fast() → self.minimum_len >= 3
+func (t *FatTeddy) IsFast() bool {
+	return t.minLen >= 3
+}
+
 // HeapBytes implements Prefilter.HeapBytes.
 func (t *FatTeddy) HeapBytes() int {
 	heapBytes := 264 // sizeof(fatTeddyMasks)

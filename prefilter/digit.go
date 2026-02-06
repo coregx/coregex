@@ -98,3 +98,12 @@ func (p *DigitPrefilter) LiteralLen() int {
 func (p *DigitPrefilter) HeapBytes() int {
 	return 0
 }
+
+// IsFast implements Prefilter.IsFast.
+//
+// DigitPrefilter returns false because it is a candidate-only filter for
+// digit-lead patterns, not a prefix literal prefilter. It does not search
+// for specific literal bytes, so it should not gate reverse optimizations.
+func (p *DigitPrefilter) IsFast() bool {
+	return false
+}
