@@ -67,9 +67,8 @@ type Engine struct {
 	//   - ASCII optimization is disabled via config
 	asciiNFA                       *nfa.NFA
 	asciiBoundedBacktracker        *nfa.BoundedBacktracker // BoundedBacktracker for asciiNFA
-	dfa                            *lazy.DFA
-	reverseDFA                     *lazy.DFA // Reverse DFA for bidirectional search (forward DFA → end, reverse DFA → start)
-	pikevm                         *nfa.PikeVM
+	dfa    *lazy.DFA
+	pikevm *nfa.PikeVM
 	boundedBacktracker             *nfa.BoundedBacktracker
 	charClassSearcher              *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
 	compositeSearcher              *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
@@ -99,6 +98,13 @@ type Engine struct {
 	// This is independent of strategy - used by FindSubmatch when available
 	// Note: The cache is now stored in pooled SearchState for thread-safety
 	onepass *onepass.DFA
+
+	// reverseDFA is a reverse lazy DFA for bidirectional search fallback.
+	// When BoundedBacktracker can't handle large inputs, forward DFA finds
+	// match end and reverseDFA finds match start. O(n) total.
+	// Placed after onepass to preserve field offsets of hot-path fields
+	// (charClassSearcher, strategy, etc.) for cache alignment stability.
+	reverseDFA *lazy.DFA
 
 	// statePool provides thread-safe pooling of per-search mutable state.
 	// This enables concurrent searches on the same Engine instance.
