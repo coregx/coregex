@@ -23,10 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   iteration in forward and reverse DFA search. Check special states only between
   batches. Direct field access for minimal per-transition overhead.
   Expected 15-40% throughput on DFA-heavy patterns (alpha_digit, word_digit).
-- **BoundedBacktracker 1-bit visited table** — Replace `[]uint16` generation-based
-  visited table with `[]uint64` bitset (1 bit per entry). 16x memory savings,
-  reduced cache pressure on patterns like `word_repeat`.
-  Inspired by Rust regex `backtrack.rs`.
 - **Prefilter `IsFast()` gate** — Skip reverse search optimizations when a fast
   SIMD-backed prefix prefilter already exists. Heuristic: Memchr/Memmem always
   fast, Teddy fast when `minLen >= 3`. Inspired by Rust regex `is_fast()`.
