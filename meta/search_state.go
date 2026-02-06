@@ -59,8 +59,11 @@ func newSearchState(nfaEngine *nfa.NFA, numCaptures int) *SearchState {
 func (s *SearchState) reset() {
 	// Reset backtracker state
 	if s.backtracker != nil {
-		// The 1-bit visited bitset is cleared by BoundedBacktracker.reset() at the
-		// start of each search, so we only need to reset metadata fields here.
+		// IMPORTANT: Do NOT reset Generation here!
+		// The generation counter must keep incrementing to ensure the Visited array
+		// doesn't contain stale entries from previous searches. The BoundedBacktracker.reset()
+		// will increment it before each search, so we just need to preserve its current value.
+		// Only reset InputLen and Longest.
 		s.backtracker.InputLen = 0
 		s.backtracker.Longest = false
 	}
