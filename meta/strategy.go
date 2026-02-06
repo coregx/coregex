@@ -522,6 +522,43 @@ func shouldUseDigitPrefilter(re *syntax.Regexp, nfaSize int, config Config) bool
 	return isDigitLeadPattern(re)
 }
 
+// isDigitRunSkipSafe returns true if the pattern's leading digit class has a
+// greedy unbounded quantifier (\d+, \d*, \d{N,}). When true, on DFA failure
+// within a digit run, all other starting positions in the same run will also
+// fail — the greedy quantifier consumes to the same end-of-run regardless of
+// starting position, so the DFA reaches the same state at the same byte.
+func isDigitRunSkipSafe(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+	switch re.Op {
+	case syntax.OpConcat:
+		if len(re.Sub) == 0 {
+			return false
+		}
+		return isDigitRunSkipSafe(re.Sub[0])
+	case syntax.OpCapture:
+		if len(re.Sub) == 0 {
+			return false
+		}
+		return isDigitRunSkipSafe(re.Sub[0])
+	case syntax.OpPlus, syntax.OpStar:
+		// + or * on a digit class: greedy unbounded → safe to skip
+		if len(re.Sub) == 1 && re.Sub[0].Op == syntax.OpCharClass {
+			return isDigitOnlyClass(re.Sub[0].Rune)
+		}
+		return false
+	case syntax.OpRepeat:
+		// {N,} with no upper bound (Max == -1): greedy unbounded → safe
+		if re.Max == -1 && len(re.Sub) == 1 && re.Sub[0].Op == syntax.OpCharClass {
+			return isDigitOnlyClass(re.Sub[0].Rune)
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 // isSafeForReverseSuffix checks if a pattern is safe for UseReverseSuffix strategy.
 // Returns true only for patterns where reverse search is proven to work correctly.
 //

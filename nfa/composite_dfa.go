@@ -42,9 +42,15 @@ func NewCompositeSequenceDFA(re *syntax.Regexp) *CompositeSequenceDFA {
 	}
 
 	// Check all parts have minMatch >= 1 (no * quantifiers for now)
+	// and maxMatch == 0 (unbounded). Bounded maxMatch (e.g., bare \w with
+	// maxMatch=1, or \w{2,8}) requires counting characters per part, which
+	// the DFA doesn't support — fall back to CompositeSearcher backtracking.
 	for _, p := range parts {
 		if p.minMatch == 0 {
 			return nil // Star quantifiers need more complex handling
+		}
+		if p.maxMatch > 0 {
+			return nil // Bounded max requires character counting
 		}
 	}
 
@@ -411,9 +417,12 @@ func IsCompositeSequenceDFAPattern(re *syntax.Regexp) bool {
 		return false
 	}
 
-	// Check all parts have minMatch >= 1
+	// Check all parts have minMatch >= 1 and maxMatch == 0 (unbounded)
 	for _, p := range parts {
 		if p.minMatch == 0 {
+			return false
+		}
+		if p.maxMatch > 0 {
 			return false
 		}
 	}

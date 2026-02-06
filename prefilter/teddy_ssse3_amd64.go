@@ -71,23 +71,19 @@ func teddySlimSSSE3_2(masks *teddyMasks, haystack []byte) (pos int, bucketMask u
 // bucketMask contains bits for ALL matching buckets (not just first).
 // Caller should iterate through all set bits using bits.TrailingZeros8.
 func (t *Teddy) findSIMD(haystack []byte) (pos int, bucketMask uint8) {
-	// Check fingerprint length
 	fpLen := int(t.masks.fingerprintLen)
 
-	// NOTE: AVX2 Slim Teddy (teddySlimAVX2_1/2) is available and faster for
-	// throughput benchmarks on large inputs with few matches. However, in
-	// real-world usage with the verification loop (many false positives),
-	// SSSE3 performs better due to:
-	// - Lower per-call overhead (128-bit vs 256-bit registers)
-	// - No AVX-SSE transition penalty (VZEROUPPER)
-	// - Better performance with frequent restarts after verification
+	// NOTE: AVX2 Slim Teddy (teddySlimAVX2_1/2) processes 32 bytes/iteration
+	// (2x throughput vs SSSE3) but is 4x SLOWER on AMD EPYC in regex-bench due
+	// to VZEROUPPER overhead. Each findSIMD() call crosses Go/assembly boundary
+	// and pays ~35 cycles for VZEROUPPER on return. With frequent verification
+	// restarts (literal_alt: 18.09ms AVX2 vs 4.32ms SSSE3), the per-call
+	// overhead dominates. Rust avoids this by inlining the entire find+verify
+	// loop, eliminating function call boundaries.
 	//
-	// We keep SSSE3 for the integrated Teddy prefilter. AVX2 functions
-	// are available for direct use in specialized benchmarks.
-	//
-	// See: https://github.com/rust-lang/regex/pull/456
+	// AVX2 functions are available for direct use (bug-fixed in v0.12.1)
+	// but SSSE3 remains the default for the integrated prefilter.
 
-	// Fall back to SSSE3 (16 bytes/iteration)
 	if hasSSSE3 {
 		switch fpLen {
 		case 1:
@@ -95,7 +91,6 @@ func (t *Teddy) findSIMD(haystack []byte) (pos int, bucketMask uint8) {
 		case 2:
 			return teddySlimSSSE3_2(t.masks, haystack)
 		}
-		// 3-4 byte fingerprints: fall through to scalar
 	}
 
 	// No SIMD support, use scalar fallback

@@ -544,6 +544,8 @@ scalar_tail_2:
 	// The shift algorithm leaves one position unchecked at chunk boundaries.
 	DECQ    SI                          // SI = SI - 1 (check position SI-1)
 
+scalar_tail_2_nodec:
+	// Entry point for short_haystack_2 (no prior chunk, no DECQ needed)
 	CMPQ    SI, R9
 	JAE     not_found_2
 
@@ -609,7 +611,8 @@ short_haystack_2:
 	// Set up for scalar loop
 	MOVQ    SI, DI                      // DI = haystack start
 	LEAQ    (SI)(DX*1), R9              // R9 = end pointer
-	JMP     scalar_tail_2
+	// Skip DECQ in scalar_tail_2: no prior chunk boundary to cover
+	JMP     scalar_tail_2_nodec
 
 found_candidate_2_first:
 	// Candidate found in first 32-byte chunk (processed with two-load approach)
