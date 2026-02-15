@@ -67,8 +67,8 @@ type Engine struct {
 	//   - ASCII optimization is disabled via config
 	asciiNFA                       *nfa.NFA
 	asciiBoundedBacktracker        *nfa.BoundedBacktracker // BoundedBacktracker for asciiNFA
-	dfa    *lazy.DFA
-	pikevm *nfa.PikeVM
+	dfa                            *lazy.DFA
+	pikevm                         *nfa.PikeVM
 	boundedBacktracker             *nfa.BoundedBacktracker
 	charClassSearcher              *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
 	compositeSearcher              *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
