@@ -522,6 +522,43 @@ func shouldUseDigitPrefilter(re *syntax.Regexp, nfaSize int, config Config) bool
 	return isDigitLeadPattern(re)
 }
 
+// isDigitRunSkipSafe returns true if the pattern's leading digit class has a
+// greedy unbounded quantifier (\d+, \d*, \d{N,}). When true, on DFA failure
+// within a digit run, all other starting positions in the same run will also
+// fail — the greedy quantifier consumes to the same end-of-run regardless of
+// starting position, so the DFA reaches the same state at the same byte.
+func isDigitRunSkipSafe(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+	switch re.Op {
+	case syntax.OpConcat:
+		if len(re.Sub) == 0 {
+			return false
+		}
+		return isDigitRunSkipSafe(re.Sub[0])
+	case syntax.OpCapture:
+		if len(re.Sub) == 0 {
+			return false
+		}
+		return isDigitRunSkipSafe(re.Sub[0])
+	case syntax.OpPlus, syntax.OpStar:
+		// + or * on a digit class: greedy unbounded → safe to skip
+		if len(re.Sub) == 1 && re.Sub[0].Op == syntax.OpCharClass {
+			return isDigitOnlyClass(re.Sub[0].Rune)
+		}
+		return false
+	case syntax.OpRepeat:
+		// {N,} with no upper bound (Max == -1): greedy unbounded → safe
+		if re.Max == -1 && len(re.Sub) == 1 && re.Sub[0].Op == syntax.OpCharClass {
+			return isDigitOnlyClass(re.Sub[0].Rune)
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 // isSafeForReverseSuffix checks if a pattern is safe for UseReverseSuffix strategy.
 // Returns true only for patterns where reverse search is proven to work correctly.
 //
@@ -530,31 +567,49 @@ func shouldUseDigitPrefilter(re *syntax.Regexp, nfaSize int, config Config) bool
 //   - `.+suffix` - AnyChar Plus followed by literal
 //   - `[charclass]+suffix` - CharClass Plus followed by literal (e.g., `[^\s]+\.txt`)
 //   - `prefix.*suffix` - literal, AnyChar Star, literal
+//   - `(pattern){n,m}suffix` - bounded repetition with min>=1 (Issue #115)
 //
 // Unsafe patterns (blacklist - excluded):
 //   - Quest (?) before suffix: `0?0`, `a?b` - reverse NFA bug with optional
 //   - Internal anchors: `0?^0`, `a$b` - position constraints don't reverse
 //   - Star of CharClass: `[^\s]*suffix` - zero-width match edge cases
+
+// isWildcardSubexpression checks if a subexpression acts as a "wildcard" that can
+// consume variable-length input. Used by isSafeForReverseSuffix to identify patterns
+// suitable for reverse suffix search.
+func isWildcardSubexpression(re *syntax.Regexp) bool {
+	// Unwrap capture groups: (pattern) → pattern
+	for re.Op == syntax.OpCapture && len(re.Sub) > 0 {
+		re = re.Sub[0]
+	}
+	// .* or .+
+	if (re.Op == syntax.OpStar || re.Op == syntax.OpPlus) &&
+		len(re.Sub) > 0 &&
+		(re.Sub[0].Op == syntax.OpAnyChar || re.Sub[0].Op == syntax.OpAnyCharNotNL) {
+		return true
+	}
+	// [charclass]+
+	if re.Op == syntax.OpPlus && len(re.Sub) > 0 && re.Sub[0].Op == syntax.OpCharClass {
+		return true
+	}
+	// {n,m} with n >= 1: bounded repetitions like {1,50}, {2,8} (Issue #115)
+	// These consume at least min characters, safe for reverse DFA search.
+	if re.Op == syntax.OpRepeat && re.Min >= 1 {
+		return true
+	}
+	return false
+}
+
 func isSafeForReverseSuffix(re *syntax.Regexp) bool {
 	switch re.Op {
 	case syntax.OpConcat:
 		if len(re.Sub) < 2 {
 			return false
 		}
-		// Check for wildcard patterns: .*suffix, .+suffix, [charclass]+suffix
-		// Look for AnyChar Star/Plus or CharClass Plus anywhere in concat
+		// Check for wildcard patterns anywhere in concat (excluding last element = suffix)
 		hasWildcard := false
 		for i := 0; i < len(re.Sub)-1; i++ {
-			sub := re.Sub[i]
-			// AnyChar Star/Plus: .* or .+
-			if (sub.Op == syntax.OpStar || sub.Op == syntax.OpPlus) &&
-				len(sub.Sub) > 0 &&
-				(sub.Sub[0].Op == syntax.OpAnyChar || sub.Sub[0].Op == syntax.OpAnyCharNotNL) {
-				hasWildcard = true
-				break
-			}
-			// CharClass Plus: [^\s]+, [\w]+, etc. (requires at least one char match)
-			if sub.Op == syntax.OpPlus && len(sub.Sub) > 0 && sub.Sub[0].Op == syntax.OpCharClass {
+			if isWildcardSubexpression(re.Sub[i]) {
 				hasWildcard = true
 				break
 			}

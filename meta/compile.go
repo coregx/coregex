@@ -98,12 +98,14 @@ func buildOnePassDFA(re *syntax.Regexp, nfaEngine *nfa.NFA, config Config) *onep
 // strategyEngines holds all strategy-specific engines built by buildStrategyEngines.
 type strategyEngines struct {
 	dfa                            *lazy.DFA
+	reverseDFA                     *lazy.DFA // Reverse DFA for bidirectional search fallback
 	reverseSearcher                *ReverseAnchoredSearcher
 	reverseSuffixSearcher          *ReverseSuffixSearcher
 	reverseSuffixSetSearcher       *ReverseSuffixSetSearcher
 	reverseInnerSearcher           *ReverseInnerSearcher
 	multilineReverseSuffixSearcher *MultilineReverseSuffixSearcher // Issue #97
 	digitPrefilter                 *prefilter.DigitPrefilter
+	digitRunSkipSafe               bool
 	ahoCorasick                    *ahocorasick.Automaton
 	finalStrategy                  Strategy
 }
@@ -141,7 +143,8 @@ func buildStrategyEngines(
 	needsDFA := strategy == UseDFA || strategy == UseBoth ||
 		strategy == UseReverseAnchored || strategy == UseReverseSuffix ||
 		strategy == UseReverseSuffixSet || strategy == UseReverseInner ||
-		strategy == UseMultilineReverseSuffix || strategy == UseDigitPrefilter
+		strategy == UseMultilineReverseSuffix || strategy == UseDigitPrefilter ||
+		strategy == UseBoundedBacktracker
 
 	if !needsDFA {
 		return result
@@ -164,9 +167,25 @@ func buildStrategyEngines(
 		}
 	}
 
+	// Build forward+reverse DFA for BoundedBacktracker bidirectional fallback.
+	// When BoundedBacktracker can't handle large inputs (CanHandle fails),
+	// bidirectional DFA (forward→end, reverse→start) is O(n) vs PikeVM's O(n*states).
+	if result.finalStrategy == UseBoundedBacktracker {
+		fwdDFA, err := lazy.CompileWithPrefilter(nfaEngine, dfaConfig, pf)
+		if err == nil {
+			result.dfa = fwdDFA
+			reverseNFA := nfa.ReverseAnchored(nfaEngine)
+			revDFA, revErr := lazy.CompileWithConfig(reverseNFA, dfaConfig)
+			if revErr == nil {
+				result.reverseDFA = revDFA
+			}
+		}
+	}
+
 	// For digit prefilter strategy, create the digit prefilter
 	if result.finalStrategy == UseDigitPrefilter {
 		result.digitPrefilter = prefilter.NewDigitPrefilter()
+		result.digitRunSkipSafe = isDigitRunSkipSafe(re)
 	}
 
 	return result
@@ -490,6 +509,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		asciiNFA:                       asciiNFAEngine,
 		asciiBoundedBacktracker:        asciiBT,
 		dfa:                            engines.dfa,
+		reverseDFA:                     engines.reverseDFA,
 		pikevm:                         pikevm,
 		boundedBacktracker:             charClassResult.boundedBT,
 		charClassSearcher:              charClassResult.charClassSrch,
@@ -504,6 +524,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		reverseInnerSearcher:           engines.reverseInnerSearcher,
 		multilineReverseSuffixSearcher: engines.multilineReverseSuffixSearcher,
 		digitPrefilter:                 engines.digitPrefilter,
+		digitRunSkipSafe:               engines.digitRunSkipSafe,
 		ahoCorasick:                    engines.ahoCorasick,
 		anchoredLiteralInfo:            anchoredLiteralInfo,
 		prefilter:                      pf,

@@ -99,6 +99,13 @@ type Engine struct {
 	// Note: The cache is now stored in pooled SearchState for thread-safety
 	onepass *onepass.DFA
 
+	// reverseDFA is a reverse lazy DFA for bidirectional search fallback.
+	// When BoundedBacktracker can't handle large inputs, forward DFA finds
+	// match end and reverseDFA finds match start. O(n) total.
+	// Placed after onepass to preserve field offsets of hot-path fields
+	// (charClassSearcher, strategy, etc.) for cache alignment stability.
+	reverseDFA *lazy.DFA
+
 	// statePool provides thread-safe pooling of per-search mutable state.
 	// This enables concurrent searches on the same Engine instance.
 	statePool *searchStatePool
@@ -115,6 +122,12 @@ type Engine struct {
 	// isStartAnchored is true if the pattern is anchored at start (^).
 	// Used for first-byte prefilter optimization.
 	isStartAnchored bool
+
+	// digitRunSkipSafe is true when the leading digit class has a greedy
+	// unbounded quantifier (\d+, \d*). On DFA failure, all positions in the
+	// same digit run produce the same result, so the inner loop can skip
+	// the entire run instead of trying each digit.
+	digitRunSkipSafe bool
 }
 
 // Stats tracks execution statistics for performance analysis.
