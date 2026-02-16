@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.2] - 2026-02-16
+
+### Fixed
+- **Alternation patterns misrouted to ReverseSuffixSet** (Issue #116) —
+  Patterns like `[cgt]gggtaaa|tttaccc[acg]` (alternation without `.*` prefix)
+  were incorrectly routed to UseReverseSuffixSet strategy, which assumed
+  match always starts at position 0. This produced wrong match boundaries
+  (e.g., `[0, 37976]` instead of `[3, 11]`). Fix: added `isSafeForReverseSuffix`
+  guard before UseReverseSuffixSet selection.
+- **`matchStartZero` optimization too aggressive** — The reverse DFA skip
+  optimization (`matchStartZero`) was enabled for all unanchored patterns,
+  but is only correct for `.*` prefix patterns. Patterns like `[^\s]+\.txt`
+  or `.+\.txt` could return wrong match start positions. Fix: restricted
+  `matchStartZero` to patterns with explicit `OpStar(AnyChar)` prefix.
+
 ## [0.12.1] - 2026-02-15
 
 ### Performance

@@ -217,7 +217,7 @@ func buildReverseSearchers(
 
 	case UseReverseSuffix:
 		suffixLiterals := extractor.ExtractSuffixes(re)
-		searcher, err := NewReverseSuffixSearcher(nfaEngine, suffixLiterals, dfaConfig)
+		searcher, err := NewReverseSuffixSearcher(nfaEngine, suffixLiterals, dfaConfig, hasDotStarPrefix(re))
 		if err != nil {
 			result.finalStrategy = UseDFA
 		} else {
@@ -226,7 +226,7 @@ func buildReverseSearchers(
 
 	case UseReverseSuffixSet:
 		suffixLiterals := extractor.ExtractSuffixes(re)
-		searcher, err := NewReverseSuffixSetSearcher(nfaEngine, suffixLiterals, dfaConfig)
+		searcher, err := NewReverseSuffixSetSearcher(nfaEngine, suffixLiterals, dfaConfig, hasDotStarPrefix(re))
 		if err != nil {
 			result.finalStrategy = UseBoth
 		} else {
