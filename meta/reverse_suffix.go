@@ -72,6 +72,7 @@ func NewReverseSuffixSearcher(
 	forwardNFA *nfa.NFA,
 	suffixLiterals *literal.Seq,
 	config lazy.Config,
+	matchStartZero bool,
 ) (*ReverseSuffixSearcher, error) {
 	// Get suffix bytes from longest common suffix
 	var suffixBytes []byte
@@ -111,11 +112,9 @@ func NewReverseSuffixSearcher(
 	// Create PikeVM for fallback
 	pikevm := nfa.NewPikeVM(forwardNFA)
 
-	// Check if pattern is unanchored (starts matching from position 0)
-	// For unanchored patterns with .* prefix, match always starts at 0
-	// This allows us to skip the reverse DFA scan entirely!
-	matchStartZero := !forwardNFA.IsAlwaysAnchored()
-
+	// matchStartZero is true only when pattern has .* prefix (e.g., `.*\.txt`).
+	// Only OpStar(AnyChar) guarantees match starts at 0/at — skip reverse DFA.
+	// Other wildcards like .+, [^\s]+, \w{2,8} do NOT guarantee this.
 	return &ReverseSuffixSearcher{
 		forwardNFA:     forwardNFA,
 		reverseNFA:     reverseNFA,

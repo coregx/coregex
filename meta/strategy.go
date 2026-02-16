@@ -574,6 +574,30 @@ func isDigitRunSkipSafe(re *syntax.Regexp) bool {
 //   - Internal anchors: `0?^0`, `a$b` - position constraints don't reverse
 //   - Star of CharClass: `[^\s]*suffix` - zero-width match edge cases
 
+// hasDotStarPrefix checks if a pattern has `.*` as its first subexpression.
+// Only `.*` (OpStar of AnyChar/AnyCharNotNL) guarantees matching from position 0
+// to any position without fail. Used to determine if reverse DFA scan can be skipped.
+//
+// Returns true for: `.*\.txt`, `(.*)\.txt`
+// Returns false for: `.+\.txt`, `[^\s]+\.txt`, `\w{2,8}\.txt`, `foo|bar`
+func hasDotStarPrefix(re *syntax.Regexp) bool {
+	// Unwrap captures
+	for re.Op == syntax.OpCapture && len(re.Sub) > 0 {
+		re = re.Sub[0]
+	}
+	if re.Op != syntax.OpConcat || len(re.Sub) < 2 {
+		return false
+	}
+	first := re.Sub[0]
+	// Unwrap captures on first sub
+	for first.Op == syntax.OpCapture && len(first.Sub) > 0 {
+		first = first.Sub[0]
+	}
+	// .* = OpStar(OpAnyChar or OpAnyCharNotNL)
+	return first.Op == syntax.OpStar && len(first.Sub) > 0 &&
+		(first.Sub[0].Op == syntax.OpAnyChar || first.Sub[0].Op == syntax.OpAnyCharNotNL)
+}
+
 // isWildcardSubexpression checks if a subexpression acts as a "wildcard" that can
 // consume variable-length input. Used by isSafeForReverseSuffix to identify patterns
 // suitable for reverse suffix search.
@@ -995,7 +1019,9 @@ func selectReverseStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq,
 
 	// No common suffix (LCS empty), but check if multiple suffix literals available
 	// for Teddy multi-suffix prefilter. This handles patterns like `.*\.(txt|log|md)`.
-	if shouldUseReverseSuffixSet(literals, suffixLiterals) {
+	// Must also pass isSafeForReverseSuffix to reject patterns without wildcard prefix
+	// (e.g., `[cgt]gggtaaa|tttaccc[acg]` — Issue #116).
+	if isSafeForReverseSuffix(re) && shouldUseReverseSuffixSet(literals, suffixLiterals) {
 		return UseReverseSuffixSet
 	}
 

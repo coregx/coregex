@@ -61,6 +61,7 @@ func NewReverseSuffixSetSearcher(
 	forwardNFA *nfa.NFA,
 	suffixLiterals *literal.Seq,
 	config lazy.Config,
+	matchStartZero bool,
 ) (*ReverseSuffixSetSearcher, error) {
 	if suffixLiterals == nil || suffixLiterals.IsEmpty() {
 		return nil, ErrNoSuffixSet
@@ -103,9 +104,8 @@ func NewReverseSuffixSetSearcher(
 	// Create PikeVM for fallback
 	pikevm := nfa.NewPikeVM(forwardNFA)
 
-	// Check if pattern is unanchored (starts matching from position 0)
-	matchStartZero := !forwardNFA.IsAlwaysAnchored()
-
+	// matchStartZero is true only when pattern has .* prefix (e.g., `.*\.(txt|log|md)`).
+	// Only OpStar(AnyChar) guarantees match starts at 0/at — skip reverse DFA.
 	return &ReverseSuffixSetSearcher{
 		forwardNFA:     forwardNFA,
 		reverseNFA:     reverseNFA,

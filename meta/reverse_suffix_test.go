@@ -391,3 +391,88 @@ func TestReverseSuffix_EdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// TestIssue116_AlternationWithoutWildcard tests that alternation patterns without
+// wildcard prefix (like `[cgt]gggtaaa|tttaccc[acg]`) are NOT routed to
+// UseReverseSuffixSet, which would produce wrong match positions.
+// See: https://github.com/coregx/coregex/issues/116
+func TestIssue116_AlternationWithoutWildcard(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+		want    []string
+	}{
+		{
+			name:    "original bug report pattern",
+			pattern: `[cgt]gggtaaa|tttaccc[acg]`,
+			input:   "xxxcgggtaaaxxx",
+			want:    []string{"cgggtaaa"},
+		},
+		{
+			name:    "original bug report pattern - second alt",
+			pattern: `[cgt]gggtaaa|tttaccc[acg]`,
+			input:   "xxxtttacccaxxx",
+			want:    []string{"tttaccca"},
+		},
+		{
+			name:    "multiple matches",
+			pattern: `[cgt]gggtaaa|tttaccc[acg]`,
+			input:   "cgggtaaa tttaccca ggggtaaa tttacccg",
+			want:    []string{"cgggtaaa", "tttaccca", "ggggtaaa", "tttacccg"},
+		},
+		{
+			name:    "no match",
+			pattern: `[cgt]gggtaaa|tttaccc[acg]`,
+			input:   "agggtaaa tttacccd",
+			want:    nil,
+		},
+		{
+			name:    "simple alternation without char class",
+			pattern: `foo|bar`,
+			input:   "xxxfooxxxbarxxx",
+			want:    []string{"foo", "bar"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := Compile(tt.pattern)
+			if err != nil {
+				t.Fatalf("Compile(%q) failed: %v", tt.pattern, err)
+			}
+
+			// Verify strategy is NOT UseReverseSuffixSet for these patterns
+			strategy := e.Strategy()
+			if strategy == UseReverseSuffixSet {
+				t.Errorf("pattern %q should NOT use UseReverseSuffixSet strategy", tt.pattern)
+			}
+
+			var got []string
+			haystack := []byte(tt.input)
+			at := 0
+			for at < len(haystack) {
+				start, end, found := e.FindIndicesAt(haystack, at)
+				if !found {
+					break
+				}
+				got = append(got, string(haystack[start:end]))
+				if end > at {
+					at = end
+				} else {
+					at++
+				}
+			}
+
+			if len(got) != len(tt.want) {
+				t.Fatalf("FindAll(%q) = %v (%d matches), want %v (%d matches)",
+					tt.input, got, len(got), tt.want, len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("match[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
