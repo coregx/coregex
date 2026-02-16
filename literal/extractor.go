@@ -37,6 +37,16 @@ type ExtractorConfig struct {
 	// Large classes like [a-z] (26 chars) are NOT expanded if > MaxClassSize.
 	// Default: 10.
 	MaxClassSize int
+
+	// CrossProductLimit is the maximum total number of intermediate literals allowed
+	// during cross-product expansion in OpConcat traversal. When a concatenation
+	// contains small character classes (e.g., ag[act]gtaaa), the extractor computes
+	// the cross-product of accumulated literals with each class expansion.
+	// This limit prevents combinatorial explosion from patterns with many classes.
+	//
+	// When exceeded, literals are truncated to 4 bytes (Teddy fingerprint size),
+	// deduplicated, and marked as inexact. Default: 250 (matching Rust regex-syntax).
+	CrossProductLimit int
 }
 
 // DefaultConfig returns the default extractor configuration.
@@ -51,9 +61,10 @@ type ExtractorConfig struct {
 //	extractor := literal.New(literal.DefaultConfig())
 func DefaultConfig() ExtractorConfig {
 	return ExtractorConfig{
-		MaxLiterals:   64,
-		MaxLiteralLen: 64,
-		MaxClassSize:  10,
+		MaxLiterals:       64,
+		MaxLiteralLen:     64,
+		MaxClassSize:      10,
+		CrossProductLimit: 250,
 	}
 }
 
@@ -119,8 +130,6 @@ func (e *Extractor) ExtractPrefixes(re *syntax.Regexp) *Seq {
 
 // extractPrefixes is the internal recursive implementation.
 // The depth parameter prevents infinite recursion on malformed patterns.
-//
-//nolint:cyclop // complexity 26 vs 25 limit due to FoldCase check (Issue #87 fix)
 func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 	// Guard against excessive recursion (malformed or deeply nested patterns)
 	// Also skip case-insensitive patterns because prefilter does case-sensitive
@@ -139,41 +148,20 @@ func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 		return NewSeq(NewLiteral(bytes, true))
 
 	case syntax.OpConcat:
-		// Concatenation: take prefix from first sub-expression
-		// "abc" → extract from "a" (first part)
-		// "hello.*world" → extract from "hello" (first part)
-		// "^foo" → skip anchor, extract from "foo"
-		if len(re.Sub) == 0 {
-			return NewSeq()
-		}
-
-		// Skip leading anchors (OpBeginLine, OpBeginText, etc.)
-		startIdx := 0
-		for startIdx < len(re.Sub) {
-			op := re.Sub[startIdx].Op
-			if op == syntax.OpBeginLine || op == syntax.OpBeginText {
-				startIdx++
-			} else {
-				break
-			}
-		}
-
-		if startIdx >= len(re.Sub) {
-			return NewSeq() // Only anchors, no literals
-		}
-
-		// Get prefixes from first non-anchor part
-		firstPrefixes := e.extractPrefixes(re.Sub[startIdx], depth+1)
-
-		// Try to expand factored patterns (e.g., ba[rz] → bar, baz)
-		if firstPrefixes.Len() > 0 && startIdx+1 < len(re.Sub) {
-			expanded := e.tryExpandConcatSuffix(firstPrefixes, re.Sub, startIdx, depth)
-			if expanded != nil {
-				return expanded
-			}
-		}
-
-		return firstPrefixes
+		// Cross-product expansion through the entire concatenation.
+		// For each sub-expression, we extend accumulated literals:
+		//   - OpLiteral: append literal bytes to all exact accumulated literals
+		//   - OpCharClass (small): cross-product with expanded class
+		//   - OpAlternate (all-literal): cross-product with alternation branches
+		//   - OpCapture: unwrap and handle inner
+		//   - Other (wildcard, repeat, etc.): mark inexact, stop extending
+		//
+		// Example: ag[act]gtaaa
+		//   Step 0: acc = [""] (one empty complete literal)
+		//   Step 1: sub="ag" → acc = ["ag"]
+		//   Step 2: sub=[act] → acc = ["aga", "agc", "agt"]
+		//   Step 3: sub="gtaaa" → acc = ["agagtaaa", "agcgtaaa", "agtgtaaa"]
+		return e.extractPrefixesConcat(re, depth)
 
 	case syntax.OpAlternate:
 		// Alternation: union of all alternatives
@@ -183,6 +171,7 @@ func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 		// the whole alternation has no prefix requirement.
 		// Example: abc|.*? → [] (.*? can match anything, so "abc" isn't required)
 		var allLits []Literal
+		truncated := false
 		for _, sub := range re.Sub {
 			seq := e.extractPrefixes(sub, depth+1)
 			if seq.IsEmpty() {
@@ -194,8 +183,20 @@ func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 				allLits = append(allLits, seq.Get(i))
 				// Respect MaxLiterals limit
 				if len(allLits) >= e.config.MaxLiterals {
-					return NewSeq(allLits...)
+					truncated = true
+					break
 				}
+			}
+			if truncated {
+				break
+			}
+		}
+		// If we hit MaxLiterals before processing all branches, the literal set
+		// is incomplete -- it does not cover all alternatives. Mark all as inexact
+		// to prevent literal-engine-bypass (Teddy/AhoCorasick without DFA verification).
+		if truncated {
+			for i := range allLits {
+				allLits[i].Complete = false
 			}
 		}
 		return NewSeq(allLits...)
@@ -234,6 +235,205 @@ func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 		// OpEmptyMatch, OpRepeat, etc.: no extractable prefix
 		return NewSeq()
 	}
+}
+
+// extractPrefixesConcat handles cross-product literal expansion for OpConcat.
+// It walks through all sub-expressions in the concatenation, extending accumulated
+// literals with each literal or small character class encountered.
+//
+// This enables extracting full literals from patterns like ag[act]gtaaa where a
+// char class appears in the middle, producing ["agagtaaa", "agcgtaaa", "agtgtaaa"]
+// instead of just ["ag"].
+func (e *Extractor) extractPrefixesConcat(re *syntax.Regexp, depth int) *Seq {
+	if len(re.Sub) == 0 {
+		return NewSeq()
+	}
+
+	// Skip leading anchors (OpBeginLine, OpBeginText)
+	startIdx := 0
+	for startIdx < len(re.Sub) {
+		op := re.Sub[startIdx].Op
+		if op == syntax.OpBeginLine || op == syntax.OpBeginText {
+			startIdx++
+		} else {
+			break
+		}
+	}
+	if startIdx >= len(re.Sub) {
+		return NewSeq()
+	}
+
+	// Resolve CrossProductLimit: use default if not set
+	crossLimit := e.config.CrossProductLimit
+	if crossLimit <= 0 {
+		crossLimit = 250
+	}
+
+	// Start with one empty complete literal as the accumulator seed.
+	acc := NewSeq(NewLiteral([]byte{}, true))
+
+	for i := startIdx; i < len(re.Sub); i++ {
+		// If all accumulated literals are inexact, we cannot extend further.
+		if !e.hasAnyExact(acc) {
+			break
+		}
+
+		sub := re.Sub[i]
+		contribution := e.concatSubContribution(sub, depth)
+
+		if contribution == nil {
+			// Non-expandable sub-expression (wildcard, repetition, etc.)
+			// Mark all accumulated literals as inexact and stop.
+			e.markAllInexact(acc)
+			break
+		}
+
+		// Compute cross-product of accumulator with contribution
+		acc.CrossForward(contribution)
+
+		// Enforce overflow limits
+		if acc.Len() > crossLimit || acc.Len() > e.config.MaxLiterals {
+			acc = e.handleCrossProductOverflow(acc)
+			break
+		}
+
+		// Enforce per-literal length limit
+		e.enforceMaxLiteralLen(acc)
+	}
+
+	// Remove the seed empty literal if nothing was extracted
+	if acc.Len() == 1 && len(acc.Get(0).Bytes) == 0 {
+		return NewSeq()
+	}
+
+	return acc
+}
+
+// concatSubContribution returns a Seq representing a sub-expression's contribution
+// to cross-product expansion, or nil if the sub-expression is not expandable.
+//
+// Expandable types:
+//   - OpLiteral (case-sensitive only): returns the literal as a single-element Seq
+//   - OpCharClass (small): returns expanded individual character literals
+//   - OpAlternate (all-literal branches): returns union of branch literals
+//   - OpCapture: unwraps and recurses
+//
+// Case-insensitive (FoldCase) sub-expressions are NOT expandable because the
+// prefilter does case-sensitive byte matching. Extracting only the uppercase bytes
+// from a FoldCase literal would miss lowercase matches. (Issue #87)
+func (e *Extractor) concatSubContribution(sub *syntax.Regexp, depth int) *Seq {
+	// Skip case-insensitive sub-expressions entirely
+	if sub.Flags&syntax.FoldCase != 0 {
+		return nil
+	}
+
+	switch sub.Op {
+	case syntax.OpLiteral:
+		b := runeSliceToBytes(sub.Rune)
+		return NewSeq(NewLiteral(b, true))
+
+	case syntax.OpCharClass:
+		expanded := e.expandCharClass(sub)
+		if expanded.IsEmpty() {
+			return nil // Class too large
+		}
+		return expanded
+
+	case syntax.OpAlternate:
+		// Try to expand all-literal alternation (e.g., factored prefix patterns)
+		return e.expandAlternateContribution(sub, depth)
+
+	case syntax.OpCapture:
+		if len(sub.Sub) == 0 {
+			return nil
+		}
+		return e.concatSubContribution(sub.Sub[0], depth)
+
+	case syntax.OpRepeat:
+		// Repetition with min >= 1 (e.g., {2,5}) has at least one occurrence.
+		// Extract prefix from the inner expression for cross-product.
+		// The result is always inexact since repetition means more content follows.
+		if sub.Min >= 1 && len(sub.Sub) > 0 {
+			inner := e.concatSubContribution(sub.Sub[0], depth)
+			if inner == nil {
+				return nil
+			}
+			// Mark all as inexact since repetition continues beyond
+			for i := range inner.literals {
+				inner.literals[i].Complete = false
+			}
+			return inner
+		}
+		return nil
+
+	default:
+		return nil
+	}
+}
+
+// expandAlternateContribution tries to expand an alternation inside a concat
+// into a set of literals for cross-product. Returns nil if any branch is not
+// a simple literal/class that can be expanded.
+func (e *Extractor) expandAlternateContribution(alt *syntax.Regexp, depth int) *Seq {
+	if alt.Op != syntax.OpAlternate {
+		return nil
+	}
+	var allLits []Literal
+	for _, sub := range alt.Sub {
+		seq := e.extractPrefixes(sub, depth+1)
+		if seq.IsEmpty() {
+			return nil // One branch has no literals, cannot expand
+		}
+		for i := 0; i < seq.Len(); i++ {
+			allLits = append(allLits, seq.Get(i))
+			if len(allLits) > e.config.MaxLiterals {
+				return nil // Too many
+			}
+		}
+	}
+	return NewSeq(allLits...)
+}
+
+// hasAnyExact returns true if at least one literal in the Seq is Complete (exact).
+func (e *Extractor) hasAnyExact(s *Seq) bool {
+	for i := 0; i < s.Len(); i++ {
+		if s.Get(i).Complete {
+			return true
+		}
+	}
+	return false
+}
+
+// markAllInexact sets Complete=false on all literals in the Seq.
+func (e *Extractor) markAllInexact(s *Seq) {
+	for i := range s.literals {
+		s.literals[i].Complete = false
+	}
+}
+
+// enforceMaxLiteralLen truncates any literal exceeding MaxLiteralLen.
+func (e *Extractor) enforceMaxLiteralLen(s *Seq) {
+	for i := range s.literals {
+		if len(s.literals[i].Bytes) > e.config.MaxLiteralLen {
+			s.literals[i].Bytes = s.literals[i].Bytes[:e.config.MaxLiteralLen]
+			s.literals[i].Complete = false
+		}
+	}
+}
+
+// handleCrossProductOverflow handles the case where cross-product expansion exceeds
+// limits. It truncates all literals to 4 bytes (Teddy fingerprint size), deduplicates,
+// and marks all as inexact.
+func (e *Extractor) handleCrossProductOverflow(s *Seq) *Seq {
+	s.KeepFirstBytes(4)
+	e.markAllInexact(s)
+	s.Dedup()
+
+	// If still over MaxLiterals after dedup, truncate the list
+	if s.Len() > e.config.MaxLiterals {
+		s.literals = s.literals[:e.config.MaxLiterals]
+	}
+	return s
 }
 
 // ExtractSuffixes extracts suffix literals from the regex.
@@ -487,221 +687,6 @@ func (e *Extractor) extractInner(re *syntax.Regexp, depth int) *Seq {
 // MaxClassSize, returning an empty Seq instead.
 //
 // Algorithm:
-// expandLiteralCharClass expands a combination of prefix literals and a CharClass
-// into multiple complete literals.
-//
-// This handles the case where the regex parser optimizes "bar|baz" to "ba[rz]".
-// We expand it back to ["bar", "baz"] for effective Teddy prefilter matching.
-//
-// Parameters:
-//   - prefixes: the literal prefixes (e.g., ["ba"])
-//   - charClass: the character class regex node (e.g., [rz])
-//   - hasMore: true if there are more elements after the CharClass
-//
-// Returns nil if expansion is not possible or would exceed limits.
-func (e *Extractor) expandLiteralCharClass(prefixes *Seq, charClass *syntax.Regexp, hasMore bool) *Seq {
-	if charClass.Op != syntax.OpCharClass {
-		return nil
-	}
-
-	// Count characters in the class
-	classSize := 0
-	for i := 0; i < len(charClass.Rune); i += 2 {
-		lo, hi := charClass.Rune[i], charClass.Rune[i+1]
-		classSize += int(hi - lo + 1)
-		if classSize > e.config.MaxClassSize {
-			return nil // Class too large
-		}
-	}
-
-	// Calculate total number of expanded literals
-	totalLits := prefixes.Len() * classSize
-	if totalLits > e.config.MaxLiterals {
-		return nil // Would exceed limit
-	}
-
-	// Expand: each prefix combined with each char class character
-	var lits []Literal
-	for i := 0; i < prefixes.Len(); i++ {
-		prefix := prefixes.Get(i)
-		for j := 0; j < len(charClass.Rune); j += 2 {
-			lo, hi := charClass.Rune[j], charClass.Rune[j+1]
-			for r := lo; r <= hi; r++ {
-				// Combine prefix + char
-				combined := make([]byte, len(prefix.Bytes)+len(string(r)))
-				copy(combined, prefix.Bytes)
-				copy(combined[len(prefix.Bytes):], string(r))
-
-				// Truncate if needed
-				if len(combined) > e.config.MaxLiteralLen {
-					combined = combined[:e.config.MaxLiteralLen]
-				}
-
-				// Mark as incomplete if more elements follow
-				lits = append(lits, NewLiteral(combined, !hasMore))
-
-				if len(lits) >= e.config.MaxLiterals {
-					return NewSeq(lits...)
-				}
-			}
-		}
-	}
-
-	return NewSeq(lits...)
-}
-
-// tryExpandConcatSuffix attempts to expand factored patterns in a concatenation.
-// This handles cases where the regex parser factors common prefixes:
-//   - "bar|baz" → ba[rz] (CharClass suffix)
-//   - (Wanderlust|Weltanschauung) → W(anderlust|eltanschauung) (Alternation suffix)
-//
-// Returns expanded Seq or nil if expansion is not possible.
-func (e *Extractor) tryExpandConcatSuffix(prefixes *Seq, subs []*syntax.Regexp, startIdx int, depth int) *Seq {
-	nextSub := subs[startIdx+1]
-	hasMore := startIdx+2 < len(subs)
-
-	// Try CharClass expansion: ba[rz] → bar, baz
-	if nextSub.Op == syntax.OpCharClass {
-		expanded := e.expandLiteralCharClass(prefixes, nextSub, hasMore)
-		if expanded != nil && !expanded.IsEmpty() {
-			return expanded
-		}
-	}
-
-	// Try Alternation expansion: W(anderlust|eltanschauung) → Wanderlust, Weltanschauung
-	if nextSub.Op == syntax.OpAlternate {
-		expanded := e.expandLiteralAlternate(prefixes, nextSub, hasMore, depth)
-		if expanded != nil && !expanded.IsEmpty() {
-			return expanded
-		}
-	}
-
-	// Try Capture/Repeat group expansion: =(\$...){2} → =$...
-	// Extract literal prefix from inside the group and append to our prefixes.
-	// This handles patterns like `=(\$\w{1,10}...){2}` where `=$` is a better prefilter than just `=`.
-	if expanded := e.tryExpandRepeatCapture(prefixes, nextSub, depth); expanded != nil {
-		return expanded
-	}
-
-	// Default: mark prefixes as incomplete since more elements follow
-	lits := make([]Literal, prefixes.Len())
-	for i := 0; i < prefixes.Len(); i++ {
-		lit := prefixes.Get(i)
-		lits[i] = NewLiteral(lit.Bytes, false) // Incomplete
-	}
-	return NewSeq(lits...)
-}
-
-// tryExpandRepeatCapture attempts to extract literals from inside OpRepeat/OpCapture groups.
-// For pattern `=(\$\w...){2}`, this extracts `=$` instead of just `=`.
-// Returns nil if no expansion is possible.
-func (e *Extractor) tryExpandRepeatCapture(prefixes *Seq, nextSub *syntax.Regexp, depth int) *Seq {
-	// Unwrap OpRepeat if present (e.g., {2,2} or {1,10})
-	innerNode := nextSub
-	if innerNode.Op == syntax.OpRepeat && len(innerNode.Sub) > 0 && innerNode.Min >= 1 {
-		innerNode = innerNode.Sub[0]
-	}
-	// Unwrap OpCapture if present
-	if innerNode.Op == syntax.OpCapture && len(innerNode.Sub) > 0 {
-		innerNode = innerNode.Sub[0]
-	}
-	// Only proceed if we actually unwrapped something
-	if innerNode == nextSub {
-		return nil
-	}
-
-	innerPrefixes := e.extractPrefixes(innerNode, depth+1)
-	if innerPrefixes.IsEmpty() {
-		return nil
-	}
-
-	// Append inner prefixes to our prefixes
-	var expanded []Literal
-	for i := 0; i < prefixes.Len(); i++ {
-		prefix := prefixes.Get(i)
-		for j := 0; j < innerPrefixes.Len(); j++ {
-			inner := innerPrefixes.Get(j)
-			combined := append([]byte{}, prefix.Bytes...)
-			combined = append(combined, inner.Bytes...)
-			if len(combined) > e.config.MaxLiteralLen {
-				combined = combined[:e.config.MaxLiteralLen]
-			}
-			expanded = append(expanded, NewLiteral(combined, false))
-		}
-	}
-	if len(expanded) == 0 {
-		return nil
-	}
-	return NewSeq(expanded...)
-}
-
-// expandLiteralAlternate expands Literal + Alternation back into individual complete literals.
-// This handles the case where the regex parser factors common prefixes:
-//
-//	(Wanderlust|Weltanschauung) → W(anderlust|eltanschauung)
-//
-// We expand this back to ["Wanderlust", "Weltanschauung"] so that Teddy and Aho-Corasick
-// can efficiently search for the complete patterns.
-//
-// Parameters:
-//   - prefixes: the common prefix literals (e.g., ["W"])
-//   - alternate: the OpAlternate node containing suffixes
-//   - hasMore: true if more elements follow the alternation
-//   - depth: current recursion depth
-//
-// Returns nil if expansion is not possible or would exceed limits.
-func (e *Extractor) expandLiteralAlternate(prefixes *Seq, alternate *syntax.Regexp, hasMore bool, depth int) *Seq {
-	if alternate.Op != syntax.OpAlternate {
-		return nil
-	}
-
-	// Extract suffix literals from each alternative
-	var suffixLits []Literal
-	for _, sub := range alternate.Sub {
-		seq := e.extractPrefixes(sub, depth+1)
-		if seq.IsEmpty() {
-			// One branch has no extractable literal - can't expand
-			return nil
-		}
-		for i := 0; i < seq.Len(); i++ {
-			suffixLits = append(suffixLits, seq.Get(i))
-		}
-	}
-
-	// Calculate total expanded literals
-	totalLits := prefixes.Len() * len(suffixLits)
-	if totalLits > e.config.MaxLiterals {
-		return nil // Would exceed limit
-	}
-
-	// Expand: each prefix combined with each suffix
-	var lits []Literal
-	for i := 0; i < prefixes.Len(); i++ {
-		prefix := prefixes.Get(i)
-		for _, suffix := range suffixLits {
-			// Combine prefix + suffix
-			combined := make([]byte, len(prefix.Bytes)+len(suffix.Bytes))
-			copy(combined, prefix.Bytes)
-			copy(combined[len(prefix.Bytes):], suffix.Bytes)
-
-			// Truncate if needed
-			if len(combined) > e.config.MaxLiteralLen {
-				combined = combined[:e.config.MaxLiteralLen]
-			}
-
-			// Mark as complete only if: no more elements follow AND suffix was complete
-			complete := !hasMore && suffix.Complete
-			lits = append(lits, NewLiteral(combined, complete))
-
-			if len(lits) >= e.config.MaxLiterals {
-				return NewSeq(lits...)
-			}
-		}
-	}
-
-	return NewSeq(lits...)
-}
-
 //  1. Count total runes in the character class
 //  2. If count > MaxClassSize, return empty (too large)
 //  3. Otherwise, iterate through rune ranges and create a literal for each

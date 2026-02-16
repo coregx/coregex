@@ -400,6 +400,96 @@ func (s *Seq) LongestCommonSuffix() []byte {
 	return result
 }
 
+// CrossForward computes the cross-product of s with other, appending other's
+// bytes to each literal in s. Only exact (Complete) literals in s are extended;
+// inexact literals are kept as-is because they already represent truncated prefixes
+// that cannot be meaningfully extended.
+//
+// The result is Complete only if both the source literal and the other literal
+// are Complete. This preserves the semantic that Complete means the literal
+// captures the entire pattern up to this point.
+//
+// If either s or other is empty, s is left unchanged.
+//
+// Example:
+//
+//	s = ["ab", "cd"] (complete)
+//	other = ["x", "y"] (complete)
+//	s.CrossForward(other) → ["abx", "aby", "cdx", "cdy"]
+func (s *Seq) CrossForward(other *Seq) {
+	if s.IsEmpty() || other.IsEmpty() {
+		return
+	}
+
+	result := make([]Literal, 0, len(s.literals)*len(other.literals))
+	for _, left := range s.literals {
+		if !left.Complete {
+			// Inexact literal: keep as-is, cannot extend further
+			result = append(result, left)
+			continue
+		}
+		for _, right := range other.literals {
+			combined := make([]byte, len(left.Bytes)+len(right.Bytes))
+			copy(combined, left.Bytes)
+			copy(combined[len(left.Bytes):], right.Bytes)
+			result = append(result, Literal{
+				Bytes:    combined,
+				Complete: right.Complete,
+			})
+		}
+	}
+	s.literals = result
+}
+
+// KeepFirstBytes truncates all literals to at most n bytes.
+// Truncated literals are marked as incomplete (Complete = false)
+// since they no longer represent the full extracted sequence.
+//
+// This is used for overflow handling when cross-product expansion exceeds limits:
+// truncating to 4 bytes (Teddy fingerprint size) preserves prefilter effectiveness
+// while bounding memory usage.
+//
+// Example:
+//
+//	s = ["abcdef", "xy"] (complete)
+//	s.KeepFirstBytes(4) → ["abcd" (incomplete), "xy" (complete)]
+func (s *Seq) KeepFirstBytes(n int) {
+	if s.IsEmpty() || n <= 0 {
+		return
+	}
+	for i := range s.literals {
+		if len(s.literals[i].Bytes) > n {
+			s.literals[i].Bytes = s.literals[i].Bytes[:n]
+			s.literals[i].Complete = false
+		}
+	}
+}
+
+// Dedup removes duplicate literals from the sequence, keeping the first occurrence.
+// Two literals are considered duplicates if their byte content is identical,
+// regardless of their Complete flag. When duplicates exist, the first occurrence
+// is kept (which preserves the most accurate Complete status from earlier processing).
+//
+// Example:
+//
+//	s = ["abc", "def", "abc", "ghi"]
+//	s.Dedup() → ["abc", "def", "ghi"]
+func (s *Seq) Dedup() {
+	if s.IsEmpty() {
+		return
+	}
+	seen := make(map[string]struct{}, len(s.literals))
+	kept := make([]Literal, 0, len(s.literals))
+	for _, lit := range s.literals {
+		key := string(lit.Bytes)
+		if _, exists := seen[key]; !exists {
+			seen[key] = struct{}{}
+			kept = append(kept, lit)
+		}
+	}
+	s.literals = kept
+}
+
 // Helper functions
 
 // isPrefix returns true if prefix is a prefix of s.
