@@ -133,7 +133,7 @@ func TestExtractPrefixesCharClass(t *testing.T) {
 	}{
 		{"[abc]", []string{"a", "b", "c"}, "simple class"},
 		{"[a-c]", []string{"a", "b", "c"}, "range class"},
-		{"[xyz]test", []string{"x", "y", "z"}, "class + literal"},
+		{"[xyz]test", []string{"xtest", "ytest", "ztest"}, "class + literal (cross-product)"},
 		{"[0-9]", []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}, "class at limit (10 == 10 limit)"},
 		{"[a-z]", []string{}, "class too large (26 > 10 limit)"},
 	}
@@ -154,13 +154,12 @@ func TestExtractPrefixesCharClass(t *testing.T) {
 
 // TestExtractPrefixesCharClassConcat tests character class followed by literal
 func TestExtractPrefixesCharClassConcat(t *testing.T) {
-	// [abc]test should extract prefixes from the character class only
-	// because the concat extracts from first sub-expression
+	// [abc]test should now produce full cross-product: ["atest", "btest", "ctest"]
+	// because cross-product expansion walks through the entire concat chain
 	pattern := "[abc]test"
 	seq := extractPrefixes(t, pattern)
 
-	// Should extract "a", "b", "c" from the char class (first part of concat)
-	expected := []string{"a", "b", "c"}
+	expected := []string{"atest", "btest", "ctest"}
 	checkLiterals(t, seq, expected)
 }
 
@@ -777,4 +776,252 @@ func TestExtractPrefixesFactoredPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCrossProductExpansion tests cross-product literal expansion for char classes
+// in the middle of concatenations.
+func TestCrossProductExpansion(t *testing.T) {
+	tests := []struct {
+		name     string
+		pattern  string
+		expected []string
+		complete bool // Whether all literals should be complete
+	}{
+		{
+			name:     "simple concat with middle char class",
+			pattern:  "ab[cd]ef",
+			expected: []string{"abcef", "abdef"},
+			complete: true,
+		},
+		{
+			name:     "DNA pattern: ag[act]gtaaa",
+			pattern:  "ag[act]gtaaa",
+			expected: []string{"agagtaaa", "agcgtaaa", "agtgtaaa"},
+			complete: true,
+		},
+		{
+			name:     "DNA pattern: tttac[agt]ct",
+			pattern:  "tttac[agt]ct",
+			expected: []string{"tttacact", "tttacgct", "tttactct"},
+			complete: true,
+		},
+		{
+			name:     "two char classes: [ab][cd]",
+			pattern:  "[ab][cd]",
+			expected: []string{"ac", "ad", "bc", "bd"},
+			complete: true,
+		},
+		{
+			name:     "char class at start: [abc]test",
+			pattern:  "[abc]test",
+			expected: []string{"atest", "btest", "ctest"},
+			complete: true,
+		},
+		{
+			name:     "char class at end: test[abc]",
+			pattern:  "test[abc]",
+			expected: []string{"testa", "testb", "testc"},
+			complete: true,
+		},
+		{
+			name:     "char class too large stops expansion",
+			pattern:  "[a-z]test",
+			expected: []string{}, // [a-z] has 26 chars > MaxClassSize=10
+			complete: false,
+		},
+		{
+			name:     "wildcard stops expansion",
+			pattern:  "ab.*cd",
+			expected: []string{"ab"},
+			complete: false,
+		},
+		{
+			name:     "repetition stops expansion",
+			pattern:  "ab[cd]+ef",
+			expected: []string{"ab"},
+			complete: false,
+		},
+	}
+
+	extractor := New(DefaultConfig())
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			re, err := syntax.Parse(tc.pattern, syntax.Perl)
+			if err != nil {
+				t.Fatalf("failed to parse pattern: %v", err)
+			}
+
+			seq := extractor.ExtractPrefixes(re)
+
+			if len(tc.expected) == 0 {
+				if !seq.IsEmpty() {
+					t.Errorf("expected empty seq, got %d literals:", seq.Len())
+					for i := 0; i < seq.Len(); i++ {
+						t.Logf("  [%d] %q complete=%v", i, seq.Get(i).Bytes, seq.Get(i).Complete)
+					}
+				}
+				return
+			}
+
+			if seq.Len() != len(tc.expected) {
+				t.Errorf("expected %d literals, got %d", len(tc.expected), seq.Len())
+				for i := 0; i < seq.Len(); i++ {
+					t.Logf("  [%d] %q complete=%v", i, seq.Get(i).Bytes, seq.Get(i).Complete)
+				}
+				return
+			}
+
+			for i, exp := range tc.expected {
+				got := string(seq.Get(i).Bytes)
+				if got != exp {
+					t.Errorf("literal %d: expected %q, got %q", i, exp, got)
+				}
+				if seq.Get(i).Complete != tc.complete {
+					t.Errorf("literal %d %q: expected complete=%v, got complete=%v",
+						i, got, tc.complete, seq.Get(i).Complete)
+				}
+			}
+		})
+	}
+}
+
+// TestCrossProductDNAAlternation tests the full DNA alternation pattern
+// that motivated this feature.
+func TestCrossProductDNAAlternation(t *testing.T) {
+	pattern := "ag[act]gtaaa|tttac[agt]ct"
+
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		t.Fatalf("failed to parse pattern: %v", err)
+	}
+
+	extractor := New(DefaultConfig())
+	seq := extractor.ExtractPrefixes(re)
+
+	// Should produce 6 literals: 3 from each branch
+	expected := map[string]bool{
+		"agagtaaa": true,
+		"agcgtaaa": true,
+		"agtgtaaa": true,
+		"tttacact": true,
+		"tttacgct": true,
+		"tttactct": true,
+	}
+
+	if seq.Len() != 6 {
+		t.Errorf("expected 6 literals, got %d", seq.Len())
+		for i := 0; i < seq.Len(); i++ {
+			t.Logf("  [%d] %q complete=%v", i, seq.Get(i).Bytes, seq.Get(i).Complete)
+		}
+		return
+	}
+
+	for i := 0; i < seq.Len(); i++ {
+		lit := seq.Get(i)
+		key := string(lit.Bytes)
+		if !expected[key] {
+			t.Errorf("unexpected literal: %q", key)
+		}
+		if !lit.Complete {
+			t.Errorf("literal %q should be complete", key)
+		}
+	}
+}
+
+// TestCrossProductOverflowHandling tests that overflow is handled gracefully
+// when cross-product expansion would produce too many literals.
+func TestCrossProductOverflowHandling(t *testing.T) {
+	// Pattern with multiple char classes: [0-9][0-9][0-9] = 10*10*10 = 1000 literals
+	// Should trigger overflow handling since 1000 > CrossProductLimit=250
+	pattern := "[0-9][0-9][0-9]"
+
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		t.Fatalf("failed to parse pattern: %v", err)
+	}
+
+	extractor := New(DefaultConfig())
+	seq := extractor.ExtractPrefixes(re)
+
+	// After overflow: truncated to 4 bytes, deduplicated, marked inexact
+	// [0-9][0-9] = 100 literals, each 2 bytes. 100 > MaxLiterals=64 → overflow triggers
+	// (overflow check: acc.Len() > crossLimit || acc.Len() > MaxLiterals)
+	// KeepFirstBytes(4): 2-byte literals < 4, no truncation
+	// Dedup: all 100 are distinct → no removal
+	// Final cap: 100 > MaxLiterals=64 → truncated to exactly 64
+	// Third [0-9] is never reached because overflow breaks out of the concat loop.
+
+	if seq.IsEmpty() {
+		t.Error("expected non-empty seq after overflow handling")
+		return
+	}
+
+	if seq.Len() != 64 {
+		t.Errorf("expected exactly 64 literals after overflow, got %d", seq.Len())
+	}
+
+	// Each literal should be exactly 2 bytes (one digit from each of the first two [0-9] classes;
+	// the third class is never reached because overflow triggers after the second cross-product)
+	for i := 0; i < seq.Len(); i++ {
+		if len(seq.Get(i).Bytes) != 2 {
+			t.Errorf("literal %d: expected 2 bytes, got %d bytes (%q)",
+				i, len(seq.Get(i).Bytes), seq.Get(i).Bytes)
+		}
+		if seq.Get(i).Complete {
+			t.Errorf("literal %q should be inexact after overflow", seq.Get(i).Bytes)
+		}
+	}
+}
+
+// TestCrossProductMaxLiteralsLimit tests that MaxLiterals is respected.
+func TestCrossProductMaxLiteralsLimit(t *testing.T) {
+	config := DefaultConfig()
+	config.MaxLiterals = 4
+
+	extractor := New(config)
+
+	// [0-9]test would produce 10 literals, but MaxLiterals=4 limits the output
+	pattern := "[0-9]test"
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		t.Fatalf("failed to parse pattern: %v", err)
+	}
+
+	seq := extractor.ExtractPrefixes(re)
+
+	// Cross-product of 10 class chars * 1 literal = 10, exceeds MaxLiterals=4
+	// Overflow handling: truncate to 4 bytes, dedup, cap at MaxLiterals
+	if seq.Len() > 4 {
+		t.Errorf("expected at most 4 literals (MaxLiterals=4), got %d", seq.Len())
+	}
+}
+
+// TestCrossProductCompleteFlag tests that Complete flag is correctly propagated.
+func TestCrossProductCompleteFlag(t *testing.T) {
+	extractor := New(DefaultConfig())
+
+	// Pattern where entire concat is captured: ab[cd]
+	// All resulting literals should be complete
+	t.Run("all_complete", func(t *testing.T) {
+		re, _ := syntax.Parse("ab[cd]", syntax.Perl)
+		seq := extractor.ExtractPrefixes(re)
+		for i := 0; i < seq.Len(); i++ {
+			if !seq.Get(i).Complete {
+				t.Errorf("literal %q should be complete", seq.Get(i).Bytes)
+			}
+		}
+	})
+
+	// Pattern with trailing wildcard: ab[cd].*
+	// All resulting literals should be incomplete
+	t.Run("incomplete_with_wildcard", func(t *testing.T) {
+		re, _ := syntax.Parse("ab[cd].*", syntax.Perl)
+		seq := extractor.ExtractPrefixes(re)
+		for i := 0; i < seq.Len(); i++ {
+			if seq.Get(i).Complete {
+				t.Errorf("literal %q should be incomplete (wildcard follows)", seq.Get(i).Bytes)
+			}
+		}
+	})
 }

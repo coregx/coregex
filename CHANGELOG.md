@@ -12,6 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.3] - 2026-02-16
+
+### Fixed
+- **Alternation patterns with char classes 120x slower than Rust** — Patterns
+  like `ag[act]gtaaa|tttac[agt]ct` (char class in the middle of a concatenation)
+  were routed to UseDFA (pure lazy DFA scan) because the char class broke literal
+  extraction. The extractor only extracted the short prefix before the char class
+  (e.g., "ag"), producing non-discriminating literals with no prefilter.
+  On 6 MB input: **460ms (1.3x slower than stdlib!)**.
+  Fix: cross-product literal expansion — the extractor now computes the cartesian
+  product through small char classes (≤10 chars), producing full-length literals
+  suitable for Teddy SIMD prefilter. `ag[act]gtaaa` now extracts
+  `["agagtaaa", "agcgtaaa", "agtgtaaa"]` (3 exact 8-byte literals).
+  All 9 regexdna patterns now use UseTeddy. **460ms → ~4ms (110x speedup)**.
+  Reported by [@kostya](https://github.com/kostya) via [regexdna benchmark](https://benchmarksgame-team.pages.debian.net/benchmarksgame/).
+
 ## [0.12.2] - 2026-02-16
 
 ### Fixed

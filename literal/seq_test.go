@@ -559,6 +559,297 @@ func TestHelperFunctions(t *testing.T) {
 	})
 }
 
+// TestCrossForward tests CrossForward method directly
+func TestCrossForward(t *testing.T) {
+	t.Run("empty left x non-empty right", func(t *testing.T) {
+		left := NewSeq()
+		right := NewSeq(NewLiteral([]byte("x"), true))
+		left.CrossForward(right)
+
+		if !left.IsEmpty() {
+			t.Errorf("expected empty result, got %d literals", left.Len())
+		}
+	})
+
+	t.Run("non-empty left x empty right", func(t *testing.T) {
+		left := NewSeq(
+			NewLiteral([]byte("ab"), true),
+			NewLiteral([]byte("cd"), false),
+		)
+		right := NewSeq()
+		left.CrossForward(right)
+
+		// When right is empty, left remains unchanged
+		if left.Len() != 2 {
+			t.Fatalf("expected 2 literals, got %d", left.Len())
+		}
+		if string(left.Get(0).Bytes) != "ab" {
+			t.Errorf("literal 0: expected %q, got %q", "ab", left.Get(0).Bytes)
+		}
+		if string(left.Get(1).Bytes) != "cd" {
+			t.Errorf("literal 1: expected %q, got %q", "cd", left.Get(1).Bytes)
+		}
+	})
+
+	t.Run("single x single both complete", func(t *testing.T) {
+		left := NewSeq(NewLiteral([]byte("ab"), true))
+		right := NewSeq(NewLiteral([]byte("cd"), true))
+		left.CrossForward(right)
+
+		if left.Len() != 1 {
+			t.Fatalf("expected 1 literal, got %d", left.Len())
+		}
+		if string(left.Get(0).Bytes) != "abcd" {
+			t.Errorf("expected %q, got %q", "abcd", left.Get(0).Bytes)
+		}
+		if !left.Get(0).Complete {
+			t.Errorf("expected complete=true, got false")
+		}
+	})
+
+	t.Run("complete left x complete right", func(t *testing.T) {
+		left := NewSeq(NewLiteral([]byte("ab"), true))
+		right := NewSeq(NewLiteral([]byte("cd"), true))
+		left.CrossForward(right)
+
+		if left.Len() != 1 {
+			t.Fatalf("expected 1 literal, got %d", left.Len())
+		}
+		if string(left.Get(0).Bytes) != "abcd" {
+			t.Errorf("expected %q, got %q", "abcd", left.Get(0).Bytes)
+		}
+		if !left.Get(0).Complete {
+			t.Errorf("expected complete=true when both sides complete")
+		}
+	})
+
+	t.Run("incomplete left x complete right", func(t *testing.T) {
+		// Inexact (Complete=false) literals are kept as-is, not extended
+		left := NewSeq(NewLiteral([]byte("ab"), false))
+		right := NewSeq(NewLiteral([]byte("cd"), true))
+		left.CrossForward(right)
+
+		if left.Len() != 1 {
+			t.Fatalf("expected 1 literal, got %d", left.Len())
+		}
+		if string(left.Get(0).Bytes) != "ab" {
+			t.Errorf("expected %q (unchanged), got %q", "ab", left.Get(0).Bytes)
+		}
+		if left.Get(0).Complete {
+			t.Errorf("expected complete=false for inexact literal")
+		}
+	})
+
+	t.Run("cross-product 2x2", func(t *testing.T) {
+		left := NewSeq(
+			NewLiteral([]byte("a"), true),
+			NewLiteral([]byte("b"), true),
+		)
+		right := NewSeq(
+			NewLiteral([]byte("c"), true),
+			NewLiteral([]byte("d"), true),
+		)
+		left.CrossForward(right)
+
+		if left.Len() != 4 {
+			t.Fatalf("expected 4 literals, got %d", left.Len())
+		}
+
+		expected := map[string]bool{"ac": true, "ad": true, "bc": true, "bd": true}
+		for i := 0; i < left.Len(); i++ {
+			got := string(left.Get(i).Bytes)
+			if !expected[got] {
+				t.Errorf("unexpected literal %q at index %d", got, i)
+			}
+			if !left.Get(i).Complete {
+				t.Errorf("literal %q should be complete", got)
+			}
+		}
+	})
+
+	t.Run("complete left x incomplete right propagates incomplete", func(t *testing.T) {
+		left := NewSeq(NewLiteral([]byte("ab"), true))
+		right := NewSeq(NewLiteral([]byte("cd"), false))
+		left.CrossForward(right)
+
+		if left.Len() != 1 {
+			t.Fatalf("expected 1 literal, got %d", left.Len())
+		}
+		if string(left.Get(0).Bytes) != "abcd" {
+			t.Errorf("expected %q, got %q", "abcd", left.Get(0).Bytes)
+		}
+		if left.Get(0).Complete {
+			t.Errorf("expected complete=false when right is incomplete")
+		}
+	})
+}
+
+// TestKeepFirstBytes tests KeepFirstBytes method directly
+func TestKeepFirstBytes(t *testing.T) {
+	t.Run("n=0 is no-op", func(t *testing.T) {
+		seq := NewSeq(
+			NewLiteral([]byte("abc"), true),
+			NewLiteral([]byte("def"), true),
+		)
+		seq.KeepFirstBytes(0)
+
+		// n=0 triggers early return, no changes
+		if seq.Len() != 2 {
+			t.Fatalf("expected 2 literals, got %d", seq.Len())
+		}
+		if string(seq.Get(0).Bytes) != "abc" {
+			t.Errorf("literal 0: expected %q, got %q", "abc", seq.Get(0).Bytes)
+		}
+	})
+
+	t.Run("n=1 truncates to first byte", func(t *testing.T) {
+		seq := NewSeq(
+			NewLiteral([]byte("abc"), true),
+			NewLiteral([]byte("def"), true),
+		)
+		seq.KeepFirstBytes(1)
+
+		if seq.Len() != 2 {
+			t.Fatalf("expected 2 literals, got %d", seq.Len())
+		}
+		if string(seq.Get(0).Bytes) != "a" {
+			t.Errorf("literal 0: expected %q, got %q", "a", seq.Get(0).Bytes)
+		}
+		if seq.Get(0).Complete {
+			t.Errorf("literal 0: expected complete=false after truncation")
+		}
+		if string(seq.Get(1).Bytes) != "d" {
+			t.Errorf("literal 1: expected %q, got %q", "d", seq.Get(1).Bytes)
+		}
+		if seq.Get(1).Complete {
+			t.Errorf("literal 1: expected complete=false after truncation")
+		}
+	})
+
+	t.Run("n > all literal lengths is no-op", func(t *testing.T) {
+		seq := NewSeq(
+			NewLiteral([]byte("ab"), true),
+			NewLiteral([]byte("cde"), true),
+		)
+		seq.KeepFirstBytes(10)
+
+		if seq.Len() != 2 {
+			t.Fatalf("expected 2 literals, got %d", seq.Len())
+		}
+		if string(seq.Get(0).Bytes) != "ab" {
+			t.Errorf("literal 0: expected %q, got %q", "ab", seq.Get(0).Bytes)
+		}
+		if !seq.Get(0).Complete {
+			t.Errorf("literal 0: expected complete=true (not truncated)")
+		}
+		if string(seq.Get(1).Bytes) != "cde" {
+			t.Errorf("literal 1: expected %q, got %q", "cde", seq.Get(1).Bytes)
+		}
+		if !seq.Get(1).Complete {
+			t.Errorf("literal 1: expected complete=true (not truncated)")
+		}
+	})
+
+	t.Run("n=4 truncates long keeps short", func(t *testing.T) {
+		seq := NewSeq(
+			NewLiteral([]byte("ab"), true),        // 2 bytes, keep as-is
+			NewLiteral([]byte("abcdef"), true),     // 6 bytes, truncate to 4
+			NewLiteral([]byte("xyz"), true),         // 3 bytes, keep as-is
+			NewLiteral([]byte("longstring"), false), // 10 bytes, truncate to 4
+		)
+		seq.KeepFirstBytes(4)
+
+		if seq.Len() != 4 {
+			t.Fatalf("expected 4 literals, got %d", seq.Len())
+		}
+
+		// "ab" (2 bytes) - unchanged
+		if string(seq.Get(0).Bytes) != "ab" || !seq.Get(0).Complete {
+			t.Errorf("literal 0: expected {%q, complete=true}, got {%q, complete=%v}",
+				"ab", seq.Get(0).Bytes, seq.Get(0).Complete)
+		}
+
+		// "abcdef" -> "abcd" (truncated, marked incomplete)
+		if string(seq.Get(1).Bytes) != "abcd" || seq.Get(1).Complete {
+			t.Errorf("literal 1: expected {%q, complete=false}, got {%q, complete=%v}",
+				"abcd", seq.Get(1).Bytes, seq.Get(1).Complete)
+		}
+
+		// "xyz" (3 bytes) - unchanged
+		if string(seq.Get(2).Bytes) != "xyz" || !seq.Get(2).Complete {
+			t.Errorf("literal 2: expected {%q, complete=true}, got {%q, complete=%v}",
+				"xyz", seq.Get(2).Bytes, seq.Get(2).Complete)
+		}
+
+		// "longstring" -> "long" (truncated, was already incomplete)
+		if string(seq.Get(3).Bytes) != "long" || seq.Get(3).Complete {
+			t.Errorf("literal 3: expected {%q, complete=false}, got {%q, complete=%v}",
+				"long", seq.Get(3).Bytes, seq.Get(3).Complete)
+		}
+	})
+}
+
+// TestDedupCompleteFlag tests that Dedup keeps the first occurrence's Complete flag
+func TestDedupCompleteFlag(t *testing.T) {
+	t.Run("complete then incomplete keeps complete", func(t *testing.T) {
+		seq := NewSeq(
+			NewLiteral([]byte("abc"), true),
+			NewLiteral([]byte("abc"), false),
+		)
+		seq.Dedup()
+
+		if seq.Len() != 1 {
+			t.Fatalf("expected 1 literal after dedup, got %d", seq.Len())
+		}
+		if string(seq.Get(0).Bytes) != "abc" {
+			t.Errorf("expected %q, got %q", "abc", seq.Get(0).Bytes)
+		}
+		if !seq.Get(0).Complete {
+			t.Errorf("expected complete=true (first occurrence was complete)")
+		}
+	})
+
+	t.Run("incomplete then complete keeps incomplete", func(t *testing.T) {
+		seq := NewSeq(
+			NewLiteral([]byte("abc"), false),
+			NewLiteral([]byte("abc"), true),
+		)
+		seq.Dedup()
+
+		if seq.Len() != 1 {
+			t.Fatalf("expected 1 literal after dedup, got %d", seq.Len())
+		}
+		if string(seq.Get(0).Bytes) != "abc" {
+			t.Errorf("expected %q, got %q", "abc", seq.Get(0).Bytes)
+		}
+		if seq.Get(0).Complete {
+			t.Errorf("expected complete=false (first occurrence was incomplete)")
+		}
+	})
+
+	t.Run("no duplicates unchanged", func(t *testing.T) {
+		seq := NewSeq(
+			NewLiteral([]byte("abc"), true),
+			NewLiteral([]byte("def"), false),
+			NewLiteral([]byte("ghi"), true),
+		)
+		seq.Dedup()
+
+		if seq.Len() != 3 {
+			t.Fatalf("expected 3 literals (no duplicates), got %d", seq.Len())
+		}
+		if string(seq.Get(0).Bytes) != "abc" || !seq.Get(0).Complete {
+			t.Errorf("literal 0 changed unexpectedly")
+		}
+		if string(seq.Get(1).Bytes) != "def" || seq.Get(1).Complete {
+			t.Errorf("literal 1 changed unexpectedly")
+		}
+		if string(seq.Get(2).Bytes) != "ghi" || !seq.Get(2).Complete {
+			t.Errorf("literal 2 changed unexpectedly")
+		}
+	})
+}
+
 // Benchmarks
 
 func BenchmarkMinimize(b *testing.B) {
