@@ -244,7 +244,6 @@ func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 // This enables extracting full literals from patterns like ag[act]gtaaa where a
 // char class appears in the middle, producing ["agagtaaa", "agcgtaaa", "agtgtaaa"]
 // instead of just ["ag"].
-//
 func (e *Extractor) extractPrefixesConcat(re *syntax.Regexp, depth int) *Seq {
 	if len(re.Sub) == 0 {
 		return NewSeq()

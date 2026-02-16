@@ -752,8 +752,8 @@ func TestKeepFirstBytes(t *testing.T) {
 
 	t.Run("n=4 truncates long keeps short", func(t *testing.T) {
 		seq := NewSeq(
-			NewLiteral([]byte("ab"), true),        // 2 bytes, keep as-is
-			NewLiteral([]byte("abcdef"), true),     // 6 bytes, truncate to 4
+			NewLiteral([]byte("ab"), true),          // 2 bytes, keep as-is
+			NewLiteral([]byte("abcdef"), true),      // 6 bytes, truncate to 4
 			NewLiteral([]byte("xyz"), true),         // 3 bytes, keep as-is
 			NewLiteral([]byte("longstring"), false), // 10 bytes, truncate to 4
 		)

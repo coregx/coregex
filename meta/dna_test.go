@@ -35,8 +35,8 @@ var dnaPatterns = []struct {
 //	a=0.3029549427, c=0.1979883005, g=0.1975473066, t=0.3015094502
 func generateDNA(size int) []byte {
 	const (
-		freqA  = 0.3029549427
-		freqAC = freqA + 0.1979883005
+		freqA   = 0.3029549427
+		freqAC  = freqA + 0.1979883005
 		freqACG = freqAC + 0.1975473066
 	)
 
