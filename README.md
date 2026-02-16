@@ -269,3 +269,13 @@ MIT — see [LICENSE](LICENSE).
 **Status:** Pre-1.0 (API may change). Ready for testing and feedback.
 
 [Releases](https://github.com/coregx/coregex/releases) · [Issues](https://github.com/coregx/coregex/issues) · [Discussions](https://github.com/coregx/coregex/discussions)
+
+## Star History
+
+<a href="https://star-history.com/#coregx/coregex&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=coregx/coregex&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=coregx/coregex&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=coregx/coregex&type=Date" />
+ </picture>
+</a>
