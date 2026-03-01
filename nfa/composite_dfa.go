@@ -136,7 +136,7 @@ func (d *CompositeSequenceDFA) buildDFASubsetConstruction(parts []*charClassPart
 	// we go to state (part0, metMin=true) since minMatch=1 and we consumed 1 char
 	firstCharState := configSet(0).add(0, true) // After consuming 1 char of first part
 	if _, ok := configToState[firstCharState]; !ok {
-		configToState[firstCharState] = uint16(len(states)) //nolint:gosec // max 8 parts = max 512 states, fits uint16
+		configToState[firstCharState] = uint16(len(states))
 		states = append(states, firstCharState)
 		queue = append(queue, firstCharState)
 	}
@@ -174,7 +174,7 @@ func (d *CompositeSequenceDFA) buildDFASubsetConstruction(parts []*charClassPart
 			if nextID, ok := configToState[next]; ok {
 				trans[class] = nextID
 			} else {
-				nextID := uint16(len(states)) //nolint:gosec // max 8 parts = max 512 states, fits uint16
+				nextID := uint16(len(states))
 				configToState[next] = nextID
 				states = append(states, next)
 				queue = append(queue, next)

@@ -232,8 +232,6 @@ func extractLiteral(re *syntax.Regexp) []byte {
 // encodeRuneToBytes encodes a rune as UTF-8 into buf.
 // Returns the number of bytes written.
 // buf must be at least 4 bytes.
-//
-//nolint:gosec // G602: buf is always 4 bytes (passed from extractLiteralSuffix)
 func encodeRuneToBytes(r rune, buf []byte) int {
 	if r < 0x80 {
 		buf[0] = byte(r)

@@ -77,7 +77,6 @@ func (s *SparseSet) Insert(value uint32) bool {
 // This is the key operation - O(1) with cross-validation to handle garbage.
 func (s *SparseSet) Contains(value uint32) bool {
 	// Bounds check: value must be within sparse array capacity
-	//nolint:gosec // G115: len() is always non-negative, safe for slice capacity
 	if value >= uint32(len(s.sparse)) {
 		return false
 	}
@@ -129,7 +128,6 @@ func (s *SparseSet) IsEmpty() bool {
 
 // Capacity returns the maximum value that can be stored + 1.
 func (s *SparseSet) Capacity() uint32 {
-	//nolint:gosec // G115: len() is always non-negative, safe for slice capacity
 	return uint32(len(s.sparse))
 }
 
@@ -155,7 +153,6 @@ func (s *SparseSet) Resize(newCapacity uint32) {
 	if newCapacity == 0 {
 		newCapacity = 64
 	}
-	//nolint:gosec // G115: len() is always non-negative, safe for slice capacity
 	currentCap := uint32(len(s.sparse))
 	if newCapacity <= currentCap {
 		// Shrinking or same size - just clear
