@@ -116,10 +116,8 @@ func TestSearchAtBasic(t *testing.T) {
 							got[0], got[1], tt.wantSlots[0], tt.wantSlots[1])
 					}
 				}
-			} else {
-				if got != nil {
-					t.Errorf("SearchAt(%q, %d) = %v, want nil", tt.input, tt.start, got)
-				}
+			} else if got != nil {
+				t.Errorf("SearchAt(%q, %d) = %v, want nil", tt.input, tt.start, got)
 			}
 		})
 	}
@@ -319,7 +317,7 @@ func TestSearchAtConsecutiveCalls(t *testing.T) {
 
 	// First search
 	got1 := dfa.SearchAt([]byte("abc"), 0, cache)
-	if got1 == nil || got1[1] != 3 {
+	if len(got1) < 2 || got1[1] != 3 {
 		t.Fatalf("First SearchAt: unexpected result %v", got1)
 	}
 

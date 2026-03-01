@@ -225,10 +225,8 @@ func TestSearchWithCaptureAlternation(t *testing.T) {
 						t.Errorf("group 1 = %q, want %q", g1, tt.wantGroup)
 					}
 				}
-			} else {
-				if got != nil {
-					t.Errorf("expected no match, got slots %v", got)
-				}
+			} else if got != nil {
+				t.Errorf("expected no match, got slots %v", got)
 			}
 		})
 	}
@@ -410,10 +408,8 @@ func TestSearchAtWithCaptureGroupOffsets(t *testing.T) {
 						t.Errorf("slots[%d] = %d, want %d", i, got[i], tt.wantSlots[i])
 					}
 				}
-			} else {
-				if got != nil {
-					t.Errorf("expected nil, got %v", got)
-				}
+			} else if got != nil {
+				t.Errorf("expected nil, got %v", got)
 			}
 		})
 	}
@@ -430,13 +426,13 @@ func TestCacheReuse(t *testing.T) {
 
 	// First search
 	got1 := dfa.Search([]byte("abc"), cache)
-	if got1 == nil || got1[0] != 0 || got1[1] != 3 {
+	if len(got1) < 2 || got1[0] != 0 || got1[1] != 3 {
 		t.Fatalf("First search failed: %v", got1)
 	}
 
 	// Second search (cache should be reset internally by Search)
 	got2 := dfa.Search([]byte("xyz"), cache)
-	if got2 == nil || got2[0] != 0 || got2[1] != 3 {
+	if len(got2) < 2 || got2[0] != 0 || got2[1] != 3 {
 		t.Fatalf("Second search failed: %v", got2)
 	}
 

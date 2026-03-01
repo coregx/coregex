@@ -152,7 +152,8 @@ func TestTeddyLiteralLenNonUniform(t *testing.T) {
 
 // --- FatTeddy tests ---
 
-func makeFatTeddyPatterns(n int) [][]byte {
+func makeFatTeddyPatterns() [][]byte {
+	const n = 40
 	patterns := make([][]byte, n)
 	for i := 0; i < n; i++ {
 		patterns[i] = []byte(fmt.Sprintf("pat%03d", i))
@@ -161,7 +162,7 @@ func makeFatTeddyPatterns(n int) [][]byte {
 }
 
 func TestFatTeddyFindMatchCoverage(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40) // >32 triggers Fat Teddy
+	patterns := makeFatTeddyPatterns() // >32 triggers Fat Teddy
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")
@@ -194,7 +195,7 @@ func TestFatTeddyFindMatchCoverage(t *testing.T) {
 
 // TestFatTeddyFindMatchScalar tests FatTeddy FindMatch with short (<16 bytes) haystacks.
 func TestFatTeddyFindMatchScalar(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40)
+	patterns := makeFatTeddyPatterns()
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")
@@ -214,7 +215,7 @@ func TestFatTeddyFindMatchScalar(t *testing.T) {
 
 // TestFatTeddyFindScalarCandidate tests the scalar candidate path for Fat Teddy.
 func TestFatTeddyFindScalarCandidate(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40)
+	patterns := makeFatTeddyPatterns()
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")
@@ -236,7 +237,7 @@ func TestFatTeddyFindScalarCandidate(t *testing.T) {
 
 // TestFatTeddyLiteralLenUniform tests LiteralLen for uniform-length FatTeddy.
 func TestFatTeddyLiteralLenUniform(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40) // all "pat000"-"pat039" = length 6
+	patterns := makeFatTeddyPatterns() // all "pat000"-"pat039" = length 6
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")
@@ -250,7 +251,7 @@ func TestFatTeddyLiteralLenUniform(t *testing.T) {
 
 // TestFatTeddyIsFast tests IsFast for FatTeddy.
 func TestFatTeddyIsFast(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40)
+	patterns := makeFatTeddyPatterns()
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")
@@ -263,7 +264,7 @@ func TestFatTeddyIsFast(t *testing.T) {
 
 // TestFatTeddyHeapBytes tests HeapBytes for FatTeddy.
 func TestFatTeddyHeapBytes(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40)
+	patterns := makeFatTeddyPatterns()
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")
@@ -277,7 +278,7 @@ func TestFatTeddyHeapBytes(t *testing.T) {
 
 // TestFatTeddyMinimumLen tests MinimumLen method.
 func TestFatTeddyMinimumLen(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40)
+	patterns := makeFatTeddyPatterns()
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")
@@ -291,7 +292,7 @@ func TestFatTeddyMinimumLen(t *testing.T) {
 
 // TestFatTeddyPatternCount tests PatternCount method.
 func TestFatTeddyPatternCount(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40)
+	patterns := makeFatTeddyPatterns()
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")
@@ -304,7 +305,7 @@ func TestFatTeddyPatternCount(t *testing.T) {
 
 // TestFatTeddyPatterns tests Patterns method.
 func TestFatTeddyPatterns(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40)
+	patterns := makeFatTeddyPatterns()
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")
@@ -453,7 +454,7 @@ func TestWouldBeFastShortPatterns(t *testing.T) {
 // --- FatTeddy scalar search ---
 
 func TestFatTeddyFindScalar(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40)
+	patterns := makeFatTeddyPatterns()
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")
@@ -474,7 +475,7 @@ func TestFatTeddyFindScalar(t *testing.T) {
 // --- FatTeddy Find with longer haystack to exercise SIMD path ---
 
 func TestFatTeddyFindSIMD(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40)
+	patterns := makeFatTeddyPatterns()
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")
@@ -506,7 +507,7 @@ func TestTeddyFindStartAtEnd(t *testing.T) {
 // --- FatTeddy FindMatch with longer haystack ---
 
 func TestFatTeddyFindMatchSIMD(t *testing.T) {
-	patterns := makeFatTeddyPatterns(40)
+	patterns := makeFatTeddyPatterns()
 	ft := NewFatTeddy(patterns, nil)
 	if ft == nil {
 		t.Fatal("expected FatTeddy to be created")

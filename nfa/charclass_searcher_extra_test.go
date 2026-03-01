@@ -295,7 +295,7 @@ func TestCharClassSearcher_VsStdlib_WordClass(t *testing.T) {
 		{'_', '_'},
 	}
 	s := NewCharClassSearcher(ranges, 1)
-	re := regexp.MustCompile(`[\w]+`)
+	re := regexp.MustCompile(`\w+`)
 
 	inputs := []string{
 		"hello world",

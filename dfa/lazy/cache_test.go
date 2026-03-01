@@ -1,6 +1,7 @@
 package lazy
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/coregx/coregex/nfa"
@@ -125,7 +126,7 @@ func TestCacheIsFull(t *testing.T) {
 	key := ComputeStateKey(nfaStates)
 	state := NewState(InvalidState, nfaStates, false)
 	_, err := c.Insert(key, state)
-	if err != ErrCacheFull {
+	if !errors.Is(err, ErrCacheFull) {
 		t.Errorf("Insert on full cache: got %v, want ErrCacheFull", err)
 	}
 }
@@ -362,7 +363,7 @@ func TestCacheCapacityBoundary(t *testing.T) {
 	key2 := ComputeStateKey(nfaStates2)
 	state2 := NewState(InvalidState, nfaStates2, false)
 	_, err = c.Insert(key2, state2)
-	if err != ErrCacheFull {
+	if !errors.Is(err, ErrCacheFull) {
 		t.Errorf("Second insert on capacity-1 cache: got %v, want ErrCacheFull", err)
 	}
 }

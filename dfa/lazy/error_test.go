@@ -265,7 +265,7 @@ func TestDFAErrorWithCauseChain(t *testing.T) {
 
 	// Unwrap should return inner
 	unwrapped := outer.Unwrap()
-	if unwrapped != inner {
+	if !errors.Is(unwrapped, inner) {
 		t.Errorf("Unwrap() should return inner error")
 	}
 

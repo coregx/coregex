@@ -74,7 +74,7 @@ func TestCompileError_Unwrap(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.err.Unwrap()
-			if got != tt.wantErr {
+			if !errors.Is(got, tt.wantErr) {
 				t.Errorf("Unwrap() = %v, want %v", got, tt.wantErr)
 			}
 		})
@@ -134,7 +134,7 @@ func TestCompileError_ErrorsAs(t *testing.T) {
 	if ce.Pattern != `\d+` {
 		t.Errorf("Pattern = %q, want %q", ce.Pattern, `\d+`)
 	}
-	if ce.Err != ErrTooComplex {
+	if !errors.Is(ce.Err, ErrTooComplex) {
 		t.Errorf("Err = %v, want %v", ce.Err, ErrTooComplex)
 	}
 }

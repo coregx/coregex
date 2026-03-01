@@ -264,10 +264,8 @@ func TestCompilePatternEdgeCases(t *testing.T) {
 				if dfa == nil {
 					t.Error("CompilePattern returned nil DFA without error")
 				}
-			} else {
-				if err == nil {
-					t.Errorf("CompilePattern(%q) expected error, got nil", tt.pattern)
-				}
+			} else if err == nil {
+				t.Errorf("CompilePattern(%q) expected error, got nil", tt.pattern)
 			}
 		})
 	}
@@ -329,15 +327,13 @@ func TestCompileWithConfigCombinations(t *testing.T) {
 				// Verify DFA works
 				input := []byte("abc123")
 				got := dfa.IsMatch(input)
-				re := regexp.MustCompile("[a-z]+[0-9]+")
+				re := regexp.MustCompile(`[a-z]+\d+`)
 				want := re.Match(input)
 				if got != want {
 					t.Errorf("IsMatch(%q) = %v, stdlib says %v", input, got, want)
 				}
-			} else {
-				if err == nil {
-					t.Error("Expected error for invalid config")
-				}
+			} else if err == nil {
+				t.Error("Expected error for invalid config")
 			}
 		})
 	}
