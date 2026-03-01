@@ -1406,7 +1406,6 @@ func (c *Compiler) compileNoMatch() (start, end StateID, err error) {
 
 // encodeRune encodes a rune as UTF-8 into buf and returns the number of bytes written.
 // buf must have capacity >= 4.
-//
 func encodeRune(buf []byte, r rune) int {
 	if r < 0x80 {
 		buf[0] = byte(r)
