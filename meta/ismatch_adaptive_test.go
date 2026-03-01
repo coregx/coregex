@@ -229,7 +229,7 @@ func TestFindIndicesEmptyInputAllStrategies(t *testing.T) {
 
 			// Verify against stdlib
 			re := regexp.MustCompile(pat)
-			stdLoc := re.FindIndex([]byte(""))
+			stdLoc := re.FindStringIndex("")
 			stdFound := stdLoc != nil
 
 			if found != stdFound {

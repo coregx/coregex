@@ -554,7 +554,7 @@ func TestFindIndicesBoundedBacktrackerAt_ASCIIPaths(t *testing.T) {
 	s, e, found := engine.FindIndicesAt([]byte(input), 3)
 	if !found {
 		t.Error("expected match")
-	} else if string(input[s:e]) != "hello" {
+	} else if input[s:e] != "hello" {
 		t.Errorf("got %q, want 'hello'", input[s:e])
 	}
 

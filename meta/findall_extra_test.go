@@ -472,10 +472,8 @@ func TestFindSubmatchBasic(t *testing.T) {
 						t.Errorf("group %d = %q, want %q", i, got, want)
 					}
 				}
-			} else {
-				if match != nil {
-					t.Errorf("expected no match, got %q", match.String())
-				}
+			} else if match != nil {
+				t.Errorf("expected no match, got %q", match.String())
 			}
 		})
 	}
@@ -610,7 +608,7 @@ func TestCountEmptyPatternMatchesEverywhere(t *testing.T) {
 
 	for _, h := range haystacks {
 		coregexCount := engine.Count([]byte(h), -1)
-		stdlibCount := len(re.FindAllIndex([]byte(h), -1))
+		stdlibCount := len(re.FindAllStringIndex(h, -1))
 
 		if coregexCount != stdlibCount {
 			t.Errorf("empty pattern on %q: coregex=%d, stdlib=%d", h, coregexCount, stdlibCount)

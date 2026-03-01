@@ -214,19 +214,20 @@ func TestSearchWithCaptureAlternation(t *testing.T) {
 			cache := NewCache(dfa.NumCaptures())
 			got := dfa.Search([]byte(tt.input), cache)
 
-			if tt.wantMatch {
-				if got == nil {
-					t.Fatal("expected match, got nil")
+			if !tt.wantMatch {
+				if got != nil {
+					t.Errorf("expected no match, got slots %v", got)
 				}
-				// Verify group 1 captures the alternation
-				if len(got) >= 4 {
-					g1 := string([]byte(tt.input)[got[2]:got[3]])
-					if g1 != tt.wantGroup {
-						t.Errorf("group 1 = %q, want %q", g1, tt.wantGroup)
-					}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected match, got nil")
+			}
+			if len(got) >= 4 {
+				g1 := string([]byte(tt.input)[got[2]:got[3]])
+				if g1 != tt.wantGroup {
+					t.Errorf("group 1 = %q, want %q", g1, tt.wantGroup)
 				}
-			} else if got != nil {
-				t.Errorf("expected no match, got slots %v", got)
 			}
 		})
 	}

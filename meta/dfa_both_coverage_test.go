@@ -10,7 +10,7 @@ import (
 )
 
 // helper: compileForReason compiles a pattern and returns the NFA, parsed AST, and literals.
-func compileForReason(t *testing.T, pattern string, config Config) (*nfa.NFA, *syntax.Regexp, *literal.Seq) {
+func compileForReason(t *testing.T, pattern string) (*nfa.NFA, *literal.Seq) {
 	t.Helper()
 	compiler := nfa.NewDefaultCompiler()
 	compiledNFA, err := compiler.Compile(pattern)
@@ -26,7 +26,7 @@ func compileForReason(t *testing.T, pattern string, config Config) (*nfa.NFA, *s
 	extractor := literal.New(literal.DefaultConfig())
 	literals := extractor.ExtractPrefixes(re)
 
-	return compiledNFA, re, literals
+	return compiledNFA, literals
 }
 
 // TestUseDFAStrategyFind tests Find through the UseDFA dispatch path.
@@ -196,9 +196,8 @@ func TestStrategyReasonFunc(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			compiledNFA, re, literals := compileForReason(t, tt.pattern, config)
+			compiledNFA, literals := compileForReason(t, tt.pattern)
 			reason := StrategyReason(tt.strategy, compiledNFA, literals, config)
-			_ = re // re is used by compileForReason
 			if reason == "" {
 				t.Error("StrategyReason returned empty string")
 			}
@@ -216,7 +215,7 @@ func TestStrategyReasonComplexPaths(t *testing.T) {
 		disabledConfig := config
 		disabledConfig.EnableDFA = false
 
-		compiledNFA, _, literals := compileForReason(t, `a`, config)
+		compiledNFA, literals := compileForReason(t, `a`)
 		reason := StrategyReason(UseNFA, compiledNFA, literals, disabledConfig)
 		if !strings.Contains(reason, "DFA disabled") {
 			t.Errorf("expected 'DFA disabled' in reason, got %q", reason)
@@ -225,7 +224,7 @@ func TestStrategyReasonComplexPaths(t *testing.T) {
 
 	// UseNFA with tiny NFA
 	t.Run("nfa_tiny", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, `a`, config)
+		compiledNFA, literals := compileForReason(t, `a`)
 		reason := StrategyReason(UseNFA, compiledNFA, literals, config)
 		if !strings.Contains(reason, "tiny NFA") && !strings.Contains(reason, "no good literals") {
 			t.Errorf("expected explanation for NFA choice, got %q", reason)
@@ -234,7 +233,7 @@ func TestStrategyReasonComplexPaths(t *testing.T) {
 
 	// UseBoundedBacktracker with anchored pattern
 	t.Run("bt_anchored", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, `^(\d+)`, config)
+		compiledNFA, literals := compileForReason(t, `^(\d+)`)
 		reason := StrategyReason(UseBoundedBacktracker, compiledNFA, literals, config)
 		if !strings.Contains(reason, "anchored") {
 			t.Errorf("expected 'anchored' in reason, got %q", reason)
@@ -243,7 +242,7 @@ func TestStrategyReasonComplexPaths(t *testing.T) {
 
 	// UseBoundedBacktracker with non-anchored pattern
 	t.Run("bt_nonanchored", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, `(\w)+`, config)
+		compiledNFA, literals := compileForReason(t, `(\w)+`)
 		reason := StrategyReason(UseBoundedBacktracker, compiledNFA, literals, config)
 		if !strings.Contains(reason, "character class") {
 			t.Errorf("expected 'character class' in reason, got %q", reason)
@@ -252,7 +251,7 @@ func TestStrategyReasonComplexPaths(t *testing.T) {
 
 	// Unknown strategy
 	t.Run("unknown", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, `a`, config)
+		compiledNFA, literals := compileForReason(t, `a`)
 		reason := StrategyReason(Strategy(999), compiledNFA, literals, config)
 		if reason != "unknown strategy" {
 			t.Errorf("expected 'unknown strategy', got %q", reason)

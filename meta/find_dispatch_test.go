@@ -53,10 +53,8 @@ func TestFindAdaptiveAt_UseBoth(t *testing.T) {
 					t.Logf("FindAt(%q, %d) = %q, stdlib = %q (note: different semantics for absolute positions)",
 						tt.haystack, tt.at, match.String(), stdMatch)
 				}
-			} else {
-				if match != nil {
-					t.Errorf("FindAt(%q, %d) = %q, want nil", tt.haystack, tt.at, match.String())
-				}
+			} else if match != nil {
+				t.Errorf("FindAt(%q, %d) = %q, want nil", tt.haystack, tt.at, match.String())
 			}
 		})
 	}

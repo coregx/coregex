@@ -108,7 +108,7 @@ func TestStrategyReasonComplex_MorePaths(t *testing.T) {
 
 	// UseDFA reason - large NFA
 	t.Run("dfa_large_nfa", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, `LONGPREFIX[a-z]{5,20}[0-9]{3,10}`, config)
+		compiledNFA, literals := compileForReason(t, `LONGPREFIX[a-z]{5,20}[0-9]{3,10}`)
 		reason := StrategyReason(UseDFA, compiledNFA, literals, config)
 		if reason == "" {
 			t.Error("StrategyReason returned empty")
@@ -118,7 +118,7 @@ func TestStrategyReasonComplex_MorePaths(t *testing.T) {
 
 	// UseBoth reason
 	t.Run("both_medium_nfa", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, useBothPattern(), config)
+		compiledNFA, literals := compileForReason(t, useBothPattern())
 		reason := StrategyReason(UseBoth, compiledNFA, literals, config)
 		if reason == "" {
 			t.Error("StrategyReason returned empty")
@@ -128,7 +128,7 @@ func TestStrategyReasonComplex_MorePaths(t *testing.T) {
 
 	// UseAnchoredLiteral reason
 	t.Run("anchored_literal", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, `^hello.*world$`, config)
+		compiledNFA, literals := compileForReason(t, `^hello.*world$`)
 		reason := StrategyReason(UseAnchoredLiteral, compiledNFA, literals, config)
 		if reason == "" {
 			t.Error("StrategyReason returned empty")
@@ -138,7 +138,7 @@ func TestStrategyReasonComplex_MorePaths(t *testing.T) {
 
 	// UseMultilineReverseSuffix reason
 	t.Run("multiline_reverse_suffix", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, `(?m)^/.*\.php`, config)
+		compiledNFA, literals := compileForReason(t, `(?m)^/.*\.php`)
 		reason := StrategyReason(UseMultilineReverseSuffix, compiledNFA, literals, config)
 		if reason == "" {
 			t.Error("StrategyReason returned empty")
@@ -148,7 +148,7 @@ func TestStrategyReasonComplex_MorePaths(t *testing.T) {
 
 	// UseBranchDispatch reason
 	t.Run("branch_dispatch", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, `^(foo|bar|baz|qux)`, config)
+		compiledNFA, literals := compileForReason(t, `^(foo|bar|baz|qux)`)
 		reason := StrategyReason(UseBranchDispatch, compiledNFA, literals, config)
 		if reason == "" {
 			t.Error("StrategyReason returned empty")
@@ -158,7 +158,7 @@ func TestStrategyReasonComplex_MorePaths(t *testing.T) {
 
 	// UseReverseSuffixSet reason
 	t.Run("reverse_suffix_set", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, `.*\.(txt|log|md)`, config)
+		compiledNFA, literals := compileForReason(t, `.*\.(txt|log|md)`)
 		reason := StrategyReason(UseReverseSuffixSet, compiledNFA, literals, config)
 		if reason == "" {
 			t.Error("StrategyReason returned empty")
@@ -168,7 +168,7 @@ func TestStrategyReasonComplex_MorePaths(t *testing.T) {
 
 	// UseOnePass reason
 	t.Run("onepass", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, `^[a-z]+$`, config)
+		compiledNFA, literals := compileForReason(t, `^[a-z]+$`)
 		reason := StrategyReason(UseOnePass, compiledNFA, literals, config)
 		if reason == "" {
 			t.Error("StrategyReason returned empty")
@@ -178,7 +178,7 @@ func TestStrategyReasonComplex_MorePaths(t *testing.T) {
 
 	// UseAhoCorasick reason
 	t.Run("aho_corasick", func(t *testing.T) {
-		compiledNFA, _, literals := compileForReason(t, `alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota`, config)
+		compiledNFA, literals := compileForReason(t, `alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota`)
 		reason := StrategyReason(UseAhoCorasick, compiledNFA, literals, config)
 		if reason == "" {
 			t.Error("StrategyReason returned empty")
@@ -708,7 +708,7 @@ func TestFindIndicesNFAAt_PikeVMFallback(t *testing.T) {
 
 	// At position within haystack
 	s, e, found := engine.FindIndicesAt([]byte("xxab"), 2)
-	if !found || string("xxab"[s:e]) != "ab" {
+	if !found || "xxab"[s:e] != "ab" {
 		t.Errorf("expected match 'ab', got found=%v [%d,%d]", found, s, e)
 	}
 }

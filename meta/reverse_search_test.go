@@ -258,10 +258,8 @@ func TestReverseSuffix_Find_Various(t *testing.T) {
 				if m.String() != stdMatch {
 					t.Errorf("Find = %q, stdlib = %q", m.String(), stdMatch)
 				}
-			} else {
-				if m != nil {
-					t.Errorf("Find = %q, want nil", m.String())
-				}
+			} else if m != nil {
+				t.Errorf("Find = %q, want nil", m.String())
 			}
 		})
 	}
@@ -299,10 +297,8 @@ func TestReverseSuffixSet_Find_Various(t *testing.T) {
 				if m.String() != stdMatch {
 					t.Errorf("Find = %q, stdlib = %q", m.String(), stdMatch)
 				}
-			} else {
-				if m != nil {
-					t.Errorf("Find = %q, want nil", m.String())
-				}
+			} else if m != nil {
+				t.Errorf("Find = %q, want nil", m.String())
 			}
 		})
 	}

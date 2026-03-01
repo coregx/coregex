@@ -160,5 +160,4 @@ func TestSearchStatePoolFindAll(t *testing.T) {
 			t.Errorf("match[%d] = %q, want %q", i, got, want)
 		}
 	}
-
 }

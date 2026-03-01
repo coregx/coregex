@@ -106,18 +106,18 @@ func TestSearchAtBasic(t *testing.T) {
 			cache := NewCache(dfa.NumCaptures())
 			got := dfa.SearchAt([]byte(tt.input), tt.start, cache)
 
-			if tt.wantMatch {
-				if got == nil {
-					t.Fatalf("SearchAt(%q, %d) = nil, want match", tt.input, tt.start)
+			if !tt.wantMatch {
+				if got != nil {
+					t.Errorf("SearchAt(%q, %d) = %v, want nil", tt.input, tt.start, got)
 				}
-				if len(got) >= 2 {
-					if got[0] != tt.wantSlots[0] || got[1] != tt.wantSlots[1] {
-						t.Errorf("SearchAt group 0 = [%d, %d], want [%d, %d]",
-							got[0], got[1], tt.wantSlots[0], tt.wantSlots[1])
-					}
-				}
-			} else if got != nil {
-				t.Errorf("SearchAt(%q, %d) = %v, want nil", tt.input, tt.start, got)
+				return
+			}
+			if got == nil {
+				t.Fatalf("SearchAt(%q, %d) = nil, want match", tt.input, tt.start)
+			}
+			if len(got) >= 2 && (got[0] != tt.wantSlots[0] || got[1] != tt.wantSlots[1]) {
+				t.Errorf("SearchAt group 0 = [%d, %d], want [%d, %d]",
+					got[0], got[1], tt.wantSlots[0], tt.wantSlots[1])
 			}
 		})
 	}

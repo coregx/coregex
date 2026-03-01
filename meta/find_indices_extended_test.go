@@ -262,15 +262,14 @@ func TestFindIndicesVsStdlib(t *testing.T) {
 				start, end, found := engine.FindIndices(h)
 				loc := re.FindIndex(h)
 
-				if found && loc == nil {
+				switch {
+				case found && loc == nil:
 					t.Errorf("coregex found match at (%d,%d) but stdlib found none", start, end)
-				} else if !found && loc != nil {
+				case !found && loc != nil:
 					t.Errorf("coregex found no match but stdlib found at (%d,%d)", loc[0], loc[1])
-				} else if found && loc != nil {
-					if start != loc[0] || end != loc[1] {
-						t.Errorf("coregex (%d,%d) != stdlib (%d,%d)",
-							start, end, loc[0], loc[1])
-					}
+				case found && loc != nil && (start != loc[0] || end != loc[1]):
+					t.Errorf("coregex (%d,%d) != stdlib (%d,%d)",
+						start, end, loc[0], loc[1])
 				}
 			})
 		}

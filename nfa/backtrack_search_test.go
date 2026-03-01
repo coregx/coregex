@@ -313,17 +313,14 @@ func TestBacktracker_Unicode(t *testing.T) {
 			}
 
 			start, end, found := bt.Search([]byte(tt.input))
-			if tt.wantPos == nil {
-				if found {
-					t.Errorf("Search: expected no match, got (%d, %d)", start, end)
-				}
-			} else {
-				if !found {
-					t.Errorf("Search: expected match at %v, got no match", tt.wantPos)
-				} else if start != tt.wantPos[0] || end != tt.wantPos[1] {
-					t.Errorf("Search: got (%d, %d), want (%d, %d)",
-						start, end, tt.wantPos[0], tt.wantPos[1])
-				}
+			switch {
+			case tt.wantPos == nil && found:
+				t.Errorf("Search: expected no match, got (%d, %d)", start, end)
+			case tt.wantPos != nil && !found:
+				t.Errorf("Search: expected match at %v, got no match", tt.wantPos)
+			case tt.wantPos != nil && found && (start != tt.wantPos[0] || end != tt.wantPos[1]):
+				t.Errorf("Search: got (%d, %d), want (%d, %d)",
+					start, end, tt.wantPos[0], tt.wantPos[1])
 			}
 		})
 	}
