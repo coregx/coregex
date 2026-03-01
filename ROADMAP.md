@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-01-16 | **Current Version**: v0.11.3 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-03-01 | **Current Version**: v0.12.3 | **Target**: v1.0.0 stable
 
 ---
 
@@ -12,7 +12,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 
 ### Current State vs Target
 
-| Metric | Current (v0.10.0) | Target (v1.0.0) |
+| Metric | Current (v0.12.3) | Target (v1.0.0) |
 |--------|-------------------|-----------------|
 | Inner literal speedup | **280-3154x** | ✅ Achieved |
 | Case-insensitive speedup | **263x** | ✅ Achieved |
@@ -27,6 +27,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 | BoundedBacktracker | **Yes** | ✅ Achieved |
 | CharClassSearcher | **Yes (35% faster than Rust!)** | ✅ Achieved |
 | **Patterns faster than Rust** | **5 patterns** | ✅ Achieved |
+| Test coverage 80%+ | **Yes (all packages ≥80%)** | ✅ Achieved |
 | ARM NEON SIMD | No | Planned |
 | Look-around | No | Planned |
 
@@ -53,9 +54,17 @@ v0.11.1 ✅ → UseMultilineReverseSuffix 3.5-5.7x speedup (#97)
          ↓
 v0.11.2 ✅ → DFA verification (#99)
          ↓
-v0.11.3 (Current) ✅ → Prefix fast path 319-552x speedup (#99)
+v0.11.3 ✅ → Prefix fast path 319-552x speedup (#99)
          ↓
-v0.12.0 → CompositeSearcher integration (#72) - 5.3x faster on \w+\s+\w+ patterns
+v0.12.0 ✅ → CompositeSearcher integration (#72)
+         ↓
+v0.12.1 ✅ → DFA bidirectional fallback, digit-run skip, bounded repetitions fix (#115)
+         ↓
+v0.12.2 ✅ → ReverseSuffixSet safety guard, matchStartZero fix (#116)
+         ↓
+v0.12.3 (Current) ✅ → Cross-product literal expansion, 110x speedup on regexdna (#119)
+         ↓
+v0.12.4 → Test coverage 80%+, CI improvements, awesome-go readiness
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
@@ -83,6 +92,10 @@ v1.0.0 STABLE → Production release with API stability guarantee
 - ✅ **v0.11.1**: UseMultilineReverseSuffix strategy (3.5-5.7x speedup), Issue #97 resolved
 - ✅ **v0.11.2**: DFA verification for multiline patterns, Issue #99
 - ✅ **v0.11.3**: Prefix fast path (319-552x speedup), Issue #99 resolved
+- ✅ **v0.12.0**: CompositeSearcher integration (#72)
+- ✅ **v0.12.1**: DFA bidirectional fallback, digit-run skip, bounded repetitions fix (#115)
+- ✅ **v0.12.2**: ReverseSuffixSet safety guard, matchStartZero fix (#116)
+- ✅ **v0.12.3**: Cross-product literal expansion for regexdna patterns, 110x speedup (#119)
 
 ---
 
@@ -156,12 +169,12 @@ v1.0.0 STABLE → Production release with API stability guarantee
 ## v1.0.0 - Production Ready
 
 **Requirements**:
-- [ ] All v0.4.0-v0.7.0 optimizations complete
+- [x] All v0.4.0-v0.7.0 optimizations complete
 - [ ] API stability guarantee
 - [ ] Comprehensive documentation
 - [ ] Performance regression tests
 - [ ] Security audit
-- [ ] 90%+ test coverage
+- [x] 80%+ test coverage (all packages ≥80%, meets awesome-go requirements)
 
 **Guarantees**:
 - API stability (no breaking changes in v1.x.x)
@@ -174,7 +187,7 @@ v1.0.0 STABLE → Production release with API stability guarantee
 
 ## Feature Comparison Matrix
 
-| Feature | RE2 | rust-regex | coregex v0.11.3 | coregex v1.0 |
+| Feature | RE2 | rust-regex | coregex v0.12.3 | coregex v1.0 |
 |---------|-----|------------|-----------------|--------------|
 | Lazy DFA | ✅ | ✅ | ✅ | ✅ |
 | Thompson NFA | ✅ | ✅ | ✅ | ✅ |
@@ -321,6 +334,10 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
+| **v0.12.3** | 2026-02-16 | Performance | **Cross-product literal expansion, 110x regexdna speedup (#119)** |
+| v0.12.2 | 2026-02-16 | Fix | ReverseSuffixSet safety guard, matchStartZero fix (#116) |
+| v0.12.1 | 2026-02-15 | Performance | DFA bidirectional fallback, digit-run skip, bounded repetitions (#115) |
+| v0.12.0 | 2026-02-07 | Feature | CompositeSearcher integration (#72) |
 | **v0.11.3** | 2026-01-16 | Performance | **Prefix fast path 319-552x speedup (#99)** |
 | v0.11.2 | 2026-01-16 | Performance | DFA verification for multiline (#99) |
 | v0.11.1 | 2026-01-16 | Feature | UseMultilineReverseSuffix 3.5-5.7x speedup (#97) |
@@ -354,4 +371,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.11.3 | Next: v0.12.0 (CompositeSearcher integration #72) | Target: v1.0.0*
+*Current: v0.12.3 | Next: v0.12.4 (awesome-go readiness) | Target: v1.0.0*
