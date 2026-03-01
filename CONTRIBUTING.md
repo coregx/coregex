@@ -192,7 +192,7 @@ perf: optimize Teddy SIMD prefilter for AVX2
 - [ ] Linter passes (`golangci-lint run` - 0 issues)
 - [ ] All tests pass (`go test ./...`)
 - [ ] Race detector passes (`go test -race ./...`)
-- [ ] New code has tests (minimum 70% coverage)
+- [ ] New code has tests (minimum 80% coverage)
 - [ ] Documentation updated (if applicable)
 - [ ] Commit messages follow conventions
 - [ ] No sensitive data (credentials, tokens, etc.)
