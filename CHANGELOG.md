@@ -7,9 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Test coverage 58% → 80%+** — Enterprise-level test suite across all packages:
+  meta (80.3%), nfa (82.7%), dfa/lazy (81.2%), dfa/onepass (87.6%),
+  literal (85.0%), prefilter (88.8%), simd (90.7%), root (90.7%).
+  Meets [awesome-go](https://github.com/avelino/awesome-go) listing requirements.
+- **CI: fix double trigger on feature branches** — Feature branches now tested
+  via pull_request event only, eliminating duplicate CI runs.
+- **CI: Codecov integration** — Updated to codecov-action v5 with token auth.
+
 ### Planned
 - Look-around assertions
-- ARM NEON SIMD support (waiting for Go 1.26 native SIMD)
+- ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
 ## [0.12.3] - 2026-02-16
