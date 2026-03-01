@@ -113,7 +113,7 @@ func SelectRareBytes(needle []byte) RareByteInfo {
 
 	// Scan remaining bytes for even rarer candidates
 	for i := 2; i < n; i++ {
-		b := needle[i] //nolint:gosec // bounds checked: n >= 2 and i < n
+		b := needle[i]
 		rank := ByteFrequencies[b]
 
 		if rank < ByteFrequencies[byte1] {

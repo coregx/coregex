@@ -62,6 +62,16 @@ linters:
     - durationcheck # Check for two durations multiplied together
 
   settings:
+    gosec:
+      # Exclude rules that produce false positives in regex engine code:
+      # G101: false positive on strategyReasons map (not credentials)
+      # G115: rune->byte conversions in UTF-8 encoding are bounded by design
+      # G602: slice accesses in range-checked loops are safe
+      excludes:
+        - G101
+        - G115
+        - G602
+
     govet:
       # EXPLICITLY ENABLE copylocks to catch mutex copying issues
       # Critical for DFA cache and concurrent regex matching

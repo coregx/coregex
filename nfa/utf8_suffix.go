@@ -73,7 +73,6 @@ func (c *utf8SuffixCache) hash(key utf8SuffixKey) int {
 	h = (h ^ uint64(key.from)) * 1099511628211
 	h = (h ^ uint64(key.start)) * 1099511628211
 	h = (h ^ uint64(key.end)) * 1099511628211
-	//nolint:gosec // capacity is always small (64), no overflow risk
 	return int(h % uint64(c.capacity))
 }
 

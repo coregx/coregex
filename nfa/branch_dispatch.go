@@ -91,7 +91,7 @@ func NewBranchDispatcher(re *syntax.Regexp) *BranchDispatcher {
 					// Overlap detected - branches not mutually exclusive
 					return nil
 				}
-				dispatch[b] = int8(i) //nolint:gosec // i < 127 checked above
+				dispatch[b] = int8(i)
 			}
 		}
 

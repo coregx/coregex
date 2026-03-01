@@ -365,7 +365,6 @@ func (ss *StateSet) Add(state nfa.StateID) {
 	}
 	// Direct assignment (O(1))
 	ss.dense[ss.size] = state
-	//nolint:gosec // G115: ss.size is bounded by slice length, always non-negative
 	ss.sparse[state] = uint32(ss.size)
 	ss.size++
 }
