@@ -293,7 +293,7 @@ func TestBoundedBacktracker_SearchAtWithState_SpanBased(t *testing.T) {
 		haystack[i] = 'x' // Fill with non-matching bytes
 	}
 	// Place digits near the end (within the span that fits)
-	copy(haystack[haystackLen-10:], []byte("abc123def!"))
+	copy(haystack[haystackLen-10:], "abc123def!")
 
 	// Full haystack should NOT be handleable
 	if bt.CanHandle(haystackLen) {
