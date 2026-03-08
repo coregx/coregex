@@ -698,6 +698,7 @@ func (p *PikeVM) SearchAt(haystack []byte, at int) (int, int, bool) {
 // Match state encountered in DFS order. This prevents non-greedy extension threads
 // from being stepped, while allowing greedy extension threads (which appear before
 // Match in DFS order) to continue.
+//
 //nolint:gocognit // Merged match-check + step loop (Rust's nexts pattern) is inherently complex
 func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, bool) {
 	// Reset state
@@ -817,6 +818,7 @@ func (p *PikeVM) SearchBetween(haystack []byte, startAt, maxEnd int) (int, int, 
 
 // searchUnanchoredBetween implements Thompson's parallel NFA simulation for bounded search.
 // It's identical to searchUnanchoredAt but stops at maxEnd instead of len(haystack).
+//
 //nolint:gocognit // Merged match-check + step loop (Rust's nexts pattern) is inherently complex
 func (p *PikeVM) searchUnanchoredBetween(haystack []byte, startAt, maxEnd int) (int, int, bool) {
 	// Reset state
@@ -939,6 +941,7 @@ func (p *PikeVM) SearchWithCapturesAt(haystack []byte, at int) *MatchWithCapture
 }
 
 // searchUnanchoredWithCapturesAt implements Thompson's parallel NFA simulation with capture groups.
+//
 //nolint:gocognit // Merged match-check + step loop (Rust's nexts pattern) is inherently complex
 func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *MatchWithCaptures {
 	// Reset state
@@ -1542,6 +1545,7 @@ func (p *PikeVM) SearchWithSlotTableAt(haystack []byte, at int, mode SearchMode)
 
 // searchWithSlotTableUnanchored implements unanchored search using lightweight threads.
 // Captures are stored in SlotTable per-state, not per-thread.
+//
 //nolint:gocognit // Merged match-check + step loop (Rust's nexts pattern) is inherently complex
 func (p *PikeVM) searchWithSlotTableUnanchored(haystack []byte, startAt int) (int, int, bool) {
 	p.internalState.SearchQueue = p.internalState.SearchQueue[:0]
