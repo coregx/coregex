@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
-## [0.12.5] - 2026-03-07
+## [0.12.5] - 2026-03-08
 
 ### Fixed
 - **Non-greedy quantifiers behaved greedily** (Issue [#124](https://github.com/coregx/coregex/issues/124)) —
