@@ -48,6 +48,7 @@ package coregex
 import (
 	"io"
 	"regexp/syntax"
+	"strings"
 	"unsafe"
 
 	"github.com/coregx/coregex/meta"
@@ -1150,21 +1151,18 @@ func (r *Regex) ReplaceAllStringFunc(src string, repl func(string) string) strin
 		return src
 	}
 
-	var result string
+	var buf strings.Builder
+	buf.Grow(len(src))
 	lastEnd := 0
 
 	for _, idx := range indices {
-		// Append text before match
-		result += src[lastEnd:idx[0]]
-		// Apply replacement function
-		replacement := repl(src[idx[0]:idx[1]])
-		result += replacement
+		buf.WriteString(src[lastEnd:idx[0]])
+		buf.WriteString(repl(src[idx[0]:idx[1]]))
 		lastEnd = idx[1]
 	}
 
-	// Append remaining text
-	result += src[lastEnd:]
-	return result
+	buf.WriteString(src[lastEnd:])
+	return buf.String()
 }
 
 // Split slices s into substrings separated by the expression and returns a slice

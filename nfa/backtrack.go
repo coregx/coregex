@@ -52,6 +52,14 @@ type BacktrackerState struct {
 	// InputLen is cached for bounds checking
 	InputLen int
 
+	// SpanStart is the starting offset within the haystack for this search.
+	// The visited table is sized for the span [SpanStart, SpanStart+InputLen],
+	// and positions are stored relative to SpanStart.
+	// This follows Rust regex's Input span model: the visited table covers
+	// only the search span, while the full haystack remains available for
+	// zero-width assertions like \b that need backward context.
+	SpanStart int
+
 	// Longest enables leftmost-longest match semantics (POSIX/AWK compatibility).
 	// When true, explores all branches to find the longest match instead of
 	// returning on the first match found.
@@ -116,6 +124,7 @@ func (b *BoundedBacktracker) CanHandle(haystackLen int) bool {
 func (b *BoundedBacktracker) reset(state *BacktrackerState, haystackLen int) {
 	state.InputLen = haystackLen
 	state.NumStates = b.numStates
+	state.SpanStart = 0 // Default: span starts at beginning of haystack
 
 	// Calculate required size in entries
 	entriesNeeded := b.numStates * (haystackLen + 1)
@@ -147,8 +156,10 @@ func (b *BoundedBacktracker) reset(state *BacktrackerState, haystackLen int) {
 // Layout: Visited[pos * numStates + state] provides cache locality when
 // checking multiple states at the same position (common in epsilon traversal).
 func (b *BoundedBacktracker) shouldVisit(s *BacktrackerState, state StateID, pos int) bool {
-	// Calculate index: pos * numStates + state (cache-friendly layout)
-	idx := pos*s.NumStates + int(state)
+	// Calculate index using position relative to span start.
+	// This matches Rust regex's visited.insert(sid, at - input.start()).
+	relPos := pos - s.SpanStart
+	idx := relPos*s.NumStates + int(state)
 
 	// Check if visited in current generation
 	if s.Visited[idx] == s.Generation {
@@ -228,11 +239,18 @@ func (b *BoundedBacktracker) SearchAt(haystack []byte, at int) (int, int, bool) 
 // Returns (start, end, true) if found, (-1, -1, false) otherwise.
 // This method uses external state and IS thread-safe when each goroutine uses its own state.
 func (b *BoundedBacktracker) SearchAtWithState(haystack []byte, at int, state *BacktrackerState) (int, int, bool) {
-	if !b.CanHandle(len(haystack)) {
+	// Use span-based sizing: only the remaining portion [at, len(haystack)]
+	// needs visited table entries. This matches Rust regex's Input span model
+	// (backtrack.rs line 1848: haylen = input.get_span().len()).
+	// The full haystack is kept for byte matching so zero-width assertions
+	// like \b can see context before 'at'.
+	spanLen := len(haystack) - at
+	if !b.CanHandle(spanLen) {
 		return -1, -1, false
 	}
 
-	b.reset(state, len(haystack))
+	b.reset(state, spanLen)
+	state.SpanStart = at // Visited table positions are relative to this offset
 
 	// Try to match starting at each position from 'at'
 	for startPos := at; startPos <= len(haystack); startPos++ {
