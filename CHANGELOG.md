@@ -12,6 +12,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.5] - 2026-03-07
+
+### Fixed
+- **Non-greedy quantifiers behaved greedily** (Issue [#124](https://github.com/coregx/coregex/issues/124)) —
+  Patterns like `\{\{.*?\s*\}\}` on `{{ a }} {{ b }}` returned the entire
+  string instead of `{{ a }}`. Root cause: PikeVM's `tookLeft` priority flag
+  leaked from internal UTF-8 alternation chains into quantifier resets,
+  causing all match candidates to receive identical priority.
+  Fix: removed `tookLeft`/`priority` system entirely, replaced with Rust's
+  DFS-ordering approach — greedy/non-greedy semantics now determined solely
+  by branch order in split states + break-on-first-match in the combined
+  match-check/step loop. Added `(x+)?` transformation for `x*` when body
+  can match empty (Rust regex issue #779). Thread struct reduced from 40 to
+  24 bytes.
+- **ReverseSuffix missed matches for multi-group patterns** (Issue [#124](https://github.com/coregx/coregex/issues/124)) —
+  Patterns like `\d+\.\d+\.\d+\.35` failed to match `192.168.1.35` when
+  routed to UseReverseSuffix strategy. Root cause: `nfa.Reverse()` dropped
+  epsilon edges when mixed with byte-range transitions, breaking `\d+` loops
+  in the reverse NFA. Fix: added guard in `isSafeForReverseSuffix()` to
+  reject patterns with 2+ variable-length groups (routes them to NFA/DFA
+  instead). Also added forward DFA verification after reverse match to
+  ensure correct greedy boundaries (e.g., `[a-z]+ing` on "tingling").
+  Reported by [@kostya](https://github.com/kostya).
+
 ## [0.12.4] - 2026-03-01
 
 ### Changed

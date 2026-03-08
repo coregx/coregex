@@ -1208,22 +1208,28 @@ func (c *Compiler) buildSplitChain(targets []StateID) StateID {
 
 // compileStar compiles a* (greedy) or a*? (non-greedy)
 func (c *Compiler) compileStar(sub *syntax.Regexp, nonGreedy bool) (start, end StateID, err error) {
+	// When the sub-expression can match empty, compile as (sub+)? instead of
+	// the normal sub* loop. This avoids incorrect preference order when computing
+	// the DFS epsilon closure: the empty-match path loops back to the already-visited
+	// split state and dies, losing the "empty match preferred" information.
+	// The (x+)? transformation preserves correct DFS ordering.
+	// Reference: https://github.com/rust-lang/regex/issues/779
+	if canMatchEmpty(sub) {
+		return c.compileStarViaPlus(sub, nonGreedy)
+	}
+
 	subStart, subEnd, err := c.compileRegexp(sub)
 	if err != nil {
 		return InvalidState, InvalidState, err
 	}
 
-	// Create split: either enter sub or skip
-	// split -> [sub, end]
-	// sub -> split (loop back)
 	end = c.builder.AddEpsilon(InvalidState)
-	// For greedy: prefer continue (left=subStart) over exit (right=end)
-	//   Use AddQuantifierSplit - no priority change, longer match wins
-	// For non-greedy: prefer exit (left=end) over continue (right=subStart)
-	//   Use AddSplit so priority favors exit path (shorter match wins)
+	// DFS explores left branch first:
+	// - Greedy: left=continue (subStart), right=exit (end)
+	// - Non-greedy: left=exit (end), right=continue (subStart)
 	var split StateID
 	if nonGreedy {
-		split = c.builder.AddSplit(end, subStart)
+		split = c.builder.AddQuantifierSplit(end, subStart)
 	} else {
 		split = c.builder.AddQuantifierSplit(subStart, end)
 	}
@@ -1239,6 +1245,87 @@ func (c *Compiler) compileStar(sub *syntax.Regexp, nonGreedy bool) (start, end S
 	return split, end, nil
 }
 
+// compileStarViaPlus compiles x* as (x+)? for sub-expressions that can match empty.
+// This preserves correct leftmost-first preference ordering in DFS epsilon closures.
+func (c *Compiler) compileStarViaPlus(sub *syntax.Regexp, nonGreedy bool) (start, end StateID, err error) {
+	subStart, subEnd, err := c.compileRegexp(sub)
+	if err != nil {
+		return InvalidState, InvalidState, err
+	}
+
+	// End state (shared by both + exit and ? skip)
+	end = c.builder.AddEpsilon(InvalidState)
+
+	// Plus split: loop back to body or exit
+	var plus StateID
+	if nonGreedy {
+		plus = c.builder.AddQuantifierSplit(end, subStart)
+	} else {
+		plus = c.builder.AddQuantifierSplit(subStart, end)
+	}
+
+	// Connect body end → plus
+	if err := c.builder.Patch(subEnd, plus); err != nil {
+		epsilon := c.builder.AddEpsilon(plus)
+		if err := c.builder.Patch(subEnd, epsilon); err != nil {
+			return InvalidState, InvalidState, err
+		}
+	}
+
+	// Question split: try body or skip entirely
+	var question StateID
+	if nonGreedy {
+		question = c.builder.AddQuantifierSplit(end, subStart)
+	} else {
+		question = c.builder.AddQuantifierSplit(subStart, end)
+	}
+
+	return question, end, nil
+}
+
+// canMatchEmpty returns true if the given regexp can match the empty string.
+func canMatchEmpty(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpEmptyMatch:
+		return true
+	case syntax.OpLiteral:
+		return len(re.Rune) == 0
+	case syntax.OpCharClass, syntax.OpAnyCharNotNL, syntax.OpAnyChar:
+		return false
+	case syntax.OpCapture:
+		if len(re.Sub) == 0 {
+			return true
+		}
+		return canMatchEmpty(re.Sub[0])
+	case syntax.OpStar, syntax.OpQuest:
+		return true
+	case syntax.OpPlus:
+		return len(re.Sub) > 0 && canMatchEmpty(re.Sub[0])
+	case syntax.OpRepeat:
+		return re.Min == 0 || (len(re.Sub) > 0 && canMatchEmpty(re.Sub[0]))
+	case syntax.OpConcat:
+		for _, s := range re.Sub {
+			if !canMatchEmpty(s) {
+				return false
+			}
+		}
+		return true
+	case syntax.OpAlternate:
+		for _, s := range re.Sub {
+			if canMatchEmpty(s) {
+				return true
+			}
+		}
+		return false
+	case syntax.OpNoMatch:
+		return false
+	case syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText,
+		syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		return true
+	}
+	return false
+}
+
 // compilePlus compiles a+ (greedy) or a+? (non-greedy)
 func (c *Compiler) compilePlus(sub *syntax.Regexp, nonGreedy bool) (start, end StateID, err error) {
 	subStart, subEnd, err := c.compileRegexp(sub)
@@ -1246,16 +1333,10 @@ func (c *Compiler) compilePlus(sub *syntax.Regexp, nonGreedy bool) (start, end S
 		return InvalidState, InvalidState, err
 	}
 
-	// Must match at least once
-	// sub -> split -> [sub, end]
 	end = c.builder.AddEpsilon(InvalidState)
-	// For greedy: prefer continue (left=subStart) over exit (right=end)
-	//   Use AddQuantifierSplit - no priority change, longer match wins
-	// For non-greedy: prefer exit (left=end) over continue (right=subStart)
-	//   Use AddSplit so priority favors exit path (shorter match wins)
 	var split StateID
 	if nonGreedy {
-		split = c.builder.AddSplit(end, subStart)
+		split = c.builder.AddQuantifierSplit(end, subStart)
 	} else {
 		split = c.builder.AddQuantifierSplit(subStart, end)
 	}
@@ -1278,15 +1359,10 @@ func (c *Compiler) compileQuest(sub *syntax.Regexp, nonGreedy bool) (start, end 
 		return InvalidState, InvalidState, err
 	}
 
-	// Either match sub or skip
 	end = c.builder.AddEpsilon(InvalidState)
-	// For greedy: prefer match (left=subStart) over skip (right=end)
-	//   Use AddQuantifierSplit - no priority change, longer match wins
-	// For non-greedy: prefer skip (left=end) over match (right=subStart)
-	//   Use AddSplit so priority favors skip path (shorter match wins)
 	var split StateID
 	if nonGreedy {
-		split = c.builder.AddSplit(end, subStart)
+		split = c.builder.AddQuantifierSplit(end, subStart)
 	} else {
 		split = c.builder.AddQuantifierSplit(subStart, end)
 	}

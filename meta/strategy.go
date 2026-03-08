@@ -631,15 +631,20 @@ func isSafeForReverseSuffix(re *syntax.Regexp) bool {
 			return false
 		}
 		// Check for wildcard patterns anywhere in concat (excluding last element = suffix)
-		hasWildcard := false
+		wildcardCount := 0
 		for i := 0; i < len(re.Sub)-1; i++ {
 			if isWildcardSubexpression(re.Sub[i]) {
-				hasWildcard = true
-				break
+				wildcardCount++
 			}
 		}
-		if !hasWildcard {
+		if wildcardCount == 0 {
 			return false // No wildcard pattern - not safe
+		}
+		// Multiple variable-length groups break the reverse NFA builder:
+		// fillReverseState() drops epsilon edges when mixed with byte-ranges,
+		// which breaks \d+ loops in patterns like \d+\.\d+\.35 (Issue #124).
+		if wildcardCount >= 2 {
+			return false
 		}
 		// Check for internal anchors (^ or $ not at expected positions)
 		for i := 1; i < len(re.Sub)-1; i++ {

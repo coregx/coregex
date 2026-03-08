@@ -109,7 +109,7 @@ func TestFindIndicesAtStrategyDispatch(t *testing.T) {
 		{"nfa_at_4", "x", "axbxc", 4, 0, 0, false},
 
 		// Reverse suffix At
-		{"rsuffix_at_0", `.*\.txt`, "a.txt b.txt", 0, 0, 5, true},
+		{"rsuffix_at_0", `.*\.txt`, "a.txt b.txt", 0, 0, 11, true},
 
 		// Composite At
 		{"composite_at_0", `[a-z]+[0-9]+`, "ab1 cd2", 0, 0, 3, true},

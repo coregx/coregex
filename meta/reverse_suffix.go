@@ -185,8 +185,18 @@ func (s *ReverseSuffixSearcher) Find(haystack []byte) *Match {
 	// Use reverse DFA to find match START position (for anchored patterns)
 	matchStart := s.reverseDFA.SearchReverse(haystack, 0, revEnd)
 	if matchStart >= 0 {
-		// Found valid match - return immediately
-		return NewMatch(matchStart, revEnd, haystack)
+		// Forward verification: get correct greedy match end.
+		// Without this, patterns like [a-z]+ing on "tingling" would return
+		// "ting" instead of "tingling" (Issue #124).
+		matchEnd := s.forwardDFA.SearchAt(haystack, matchStart)
+		if matchEnd >= 0 {
+			return NewMatch(matchStart, matchEnd, haystack)
+		}
+		// DFA failed (cache full, etc) — fallback to PikeVM
+		start, end, found := s.pikevm.SearchAt(haystack, matchStart)
+		if found {
+			return NewMatch(start, end, haystack)
+		}
 	}
 
 	// No valid match found
@@ -228,16 +238,53 @@ func (s *ReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match {
 			suffixEnd = len(haystack)
 		}
 
-		// For unanchored patterns (like .*@suffix), match can start from 'at'
-		// because .* matches any prefix from the starting position
+		// For unanchored patterns (like .*@suffix), match starts at 'at'.
+		// Prefilter found suffix at 'pos'. For correct greedy semantics,
+		// find the LAST suffix before the next newline (`.` doesn't match `\n`).
 		if s.matchStartZero {
-			return NewMatch(at, suffixEnd, haystack)
+			// Find the line containing this match (from 'at' to next '\n')
+			matchLineStart := at
+			// Skip leading newlines to find actual content start
+			for matchLineStart < len(haystack) && haystack[matchLineStart] == '\n' {
+				matchLineStart++
+			}
+			if matchLineStart >= len(haystack) {
+				return nil
+			}
+			// pos is within this line — find line end
+			lineEnd := bytes.IndexByte(haystack[pos:], '\n')
+			var lineEndAbs int
+			if lineEnd == -1 {
+				lineEndAbs = len(haystack)
+			} else {
+				lineEndAbs = pos + lineEnd
+			}
+			// Find LAST suffix in this line for greedy match
+			lastPos := bytes.LastIndex(haystack[matchLineStart:lineEndAbs], s.suffixBytes)
+			if lastPos >= 0 {
+				matchEnd := matchLineStart + lastPos + s.suffixLen
+				if matchEnd > len(haystack) {
+					matchEnd = len(haystack)
+				}
+				return NewMatch(matchLineStart, matchEnd, haystack)
+			}
+			return nil
 		}
 
 		// Use reverse DFA with anti-quadratic guard to find match START position
 		matchStart := s.reverseDFA.SearchReverseLimited(haystack, at, suffixEnd, minStart)
 		if matchStart >= 0 {
-			return NewMatch(matchStart, suffixEnd, haystack)
+			// Forward verification: get correct greedy match end (Issue #124)
+			matchEnd := s.forwardDFA.SearchAt(haystack, matchStart)
+			if matchEnd >= 0 {
+				return NewMatch(matchStart, matchEnd, haystack)
+			}
+			// DFA failed — fallback to PikeVM
+			fwdStart, fwdEnd, found := s.pikevm.SearchAt(haystack, matchStart)
+			if found {
+				return NewMatch(fwdStart, fwdEnd, haystack)
+			}
+			return nil
 		}
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
 			// Quadratic behavior detected - fall back to PikeVM
@@ -281,15 +328,45 @@ func (s *ReverseSuffixSearcher) FindIndicesAt(haystack []byte, at int) (start, e
 			suffixEnd = len(haystack)
 		}
 
-		// For unanchored patterns (like .*@suffix), match starts at 'at'
+		// For unanchored patterns (like .*@suffix), match starts at 'at'.
+		// Prefilter found suffix at 'pos'. For correct greedy semantics,
+		// find the LAST suffix before the next newline.
 		if s.matchStartZero {
-			return at, suffixEnd, true
+			matchLineStart := at
+			for matchLineStart < len(haystack) && haystack[matchLineStart] == '\n' {
+				matchLineStart++
+			}
+			if matchLineStart >= len(haystack) {
+				return -1, -1, false
+			}
+			lineEnd := bytes.IndexByte(haystack[pos:], '\n')
+			var lineEndAbs int
+			if lineEnd == -1 {
+				lineEndAbs = len(haystack)
+			} else {
+				lineEndAbs = pos + lineEnd
+			}
+			lastPos := bytes.LastIndex(haystack[matchLineStart:lineEndAbs], s.suffixBytes)
+			if lastPos >= 0 {
+				matchEnd := matchLineStart + lastPos + s.suffixLen
+				if matchEnd > len(haystack) {
+					matchEnd = len(haystack)
+				}
+				return matchLineStart, matchEnd, true
+			}
+			return -1, -1, false
 		}
 
 		// Use reverse DFA with anti-quadratic guard to find match START position
 		matchStart := s.reverseDFA.SearchReverseLimited(haystack, at, suffixEnd, minStart)
 		if matchStart >= 0 {
-			return matchStart, suffixEnd, true
+			// Forward verification: get correct greedy match end (Issue #124)
+			matchEnd := s.forwardDFA.SearchAt(haystack, matchStart)
+			if matchEnd >= 0 {
+				return matchStart, matchEnd, true
+			}
+			// DFA failed — fallback to PikeVM
+			return s.pikevm.SearchAt(haystack, matchStart)
 		}
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
 			// Quadratic behavior detected - fall back to PikeVM
