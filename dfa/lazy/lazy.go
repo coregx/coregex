@@ -321,6 +321,21 @@ func (d *DFA) IsMatch(haystack []byte) bool {
 	return d.searchEarliestMatch(haystack, 0)
 }
 
+// IsMatchAt returns true if the pattern matches anywhere in haystack[at:].
+// Uses early termination: returns as soon as any match state is reached.
+// This is O(k) where k is the distance to the first match, vs FindAt's O(n)
+// which always scans for the longest match.
+func (d *DFA) IsMatchAt(haystack []byte, at int) bool {
+	if at >= len(haystack) {
+		if at == len(haystack) {
+			return d.matchesEmpty()
+		}
+		return false
+	}
+
+	return d.searchEarliestMatch(haystack, at)
+}
+
 // isMatchWithPrefilter uses prefilter for fast boolean match.
 // Returns as soon as any match is found.
 func (d *DFA) isMatchWithPrefilter(haystack []byte) bool {
