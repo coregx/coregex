@@ -274,6 +274,74 @@ func TestBoundedBacktracker_SearchAtWithState(t *testing.T) {
 	}
 }
 
+// TestBoundedBacktracker_SearchAtWithState_SpanBased tests the span-based
+// CanHandle fix. When the full haystack exceeds CanHandle but the span
+// [at, len(haystack)] fits, SearchAtWithState should still find matches.
+// This is the bug that caused LogParser to miss matches on 7MB inputs.
+func TestBoundedBacktracker_SearchAtWithState_SpanBased(t *testing.T) {
+	nfa := compileNFAForTest(`\d+`)
+	bt := NewBoundedBacktracker(nfa)
+	state := NewBacktrackerState()
+
+	// Create a haystack where full length exceeds CanHandle
+	// but the remaining span from 'at' fits.
+	maxInput := bt.MaxInputSize()
+	haystackLen := maxInput + 1000 // Exceeds CanHandle for full haystack
+
+	haystack := make([]byte, haystackLen)
+	for i := range haystack {
+		haystack[i] = 'x' // Fill with non-matching bytes
+	}
+	// Place digits near the end (within the span that fits)
+	copy(haystack[haystackLen-10:], []byte("abc123def!"))
+
+	// Full haystack should NOT be handleable
+	if bt.CanHandle(haystackLen) {
+		t.Skip("haystack fits entirely, can't test span-based behavior")
+	}
+
+	// But searching from a position near the end should work
+	at := haystackLen - 500 // Remaining span is 500 bytes — easily fits
+	if !bt.CanHandle(haystackLen - at) {
+		t.Fatal("span should be handleable")
+	}
+
+	start, end, found := bt.SearchAtWithState(haystack, at, state)
+	if !found {
+		t.Fatal("SearchAtWithState should find digits near end of large haystack")
+	}
+	if start != haystackLen-7 || end != haystackLen-4 {
+		t.Errorf("SearchAtWithState = (%d, %d), want (%d, %d)", start, end, haystackLen-7, haystackLen-4)
+	}
+}
+
+// TestBoundedBacktracker_SearchAtWithState_WordBoundary verifies that
+// span-based visited sizing preserves full haystack context for \b.
+func TestBoundedBacktracker_SearchAtWithState_WordBoundary(t *testing.T) {
+	nfa := compileNFAForTest(`\bfoo\b`)
+	bt := NewBoundedBacktracker(nfa)
+	state := NewBacktrackerState()
+
+	haystack := []byte("hello foo bar")
+
+	// Search from position 5 (the space before "foo")
+	start, end, found := bt.SearchAtWithState(haystack, 5, state)
+	if !found {
+		t.Fatal("SearchAtWithState should find \\bfoo\\b when starting from position 5")
+	}
+	if start != 6 || end != 9 {
+		t.Errorf("SearchAtWithState = (%d, %d), want (6, 9)", start, end)
+	}
+
+	// Search from position 7 (inside "foo") — \b at position 6 needs to see
+	// the space at position 5, which is before 'at'. The full haystack
+	// must be preserved for this to work.
+	start2, end2, found2 := bt.SearchAtWithState(haystack, 7, state)
+	if found2 {
+		t.Errorf("SearchAtWithState from inside 'foo' should not find \\bfoo\\b, got (%d, %d)", start2, end2)
+	}
+}
+
 func TestBoundedBacktracker_LargeInputNotHandled(t *testing.T) {
 	nfa := compileNFAForTest(`\w+`)
 	bt := NewBoundedBacktracker(nfa)

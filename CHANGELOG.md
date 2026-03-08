@@ -12,6 +12,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.6] - 2026-03-08
+
+### Fixed
+- **BoundedBacktracker rejected valid searches on large inputs** (Issue [#127](https://github.com/coregx/coregex/issues/127)) —
+  `SearchAtWithState(haystack, at, state)` checked `CanHandle(len(haystack))`
+  against the full haystack length, rejecting inputs >2.4MB even when the
+  remaining search span `[at, len(haystack)]` easily fit within the visited
+  table budget. This caused `FindAllStringIndex` with UseNFA strategy to miss
+  matches in the second half of large inputs (e.g., LogParser on 7MB log files
+  returned 22004 matches instead of 33089). Fix: span-based visited table
+  sizing — `CanHandle` now checks `len(haystack) - at`, and visited positions
+  are stored relative to `SpanStart`. This matches Rust regex's `Input` span
+  model (`backtrack.rs` line 1848). Full haystack is preserved for zero-width
+  assertions like `\b` that need backward context.
+  Reported by [@kostya](https://github.com/kostya).
+- **`ReplaceAllStringFunc` O(n²) performance on large inputs** —
+  Used `result += string` concatenation in a loop, causing quadratic memory
+  allocation for inputs with many matches (e.g., 150K replacements on 6MB
+  string took 2m19s). Fix: replaced with `strings.Builder` for O(n) performance
+  (now completes in ~1.3s).
+
 ## [0.12.5] - 2026-03-08
 
 ### Fixed
