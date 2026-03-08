@@ -73,9 +73,6 @@ func TestSearchWithSlotTable_Basic(t *testing.T) {
 
 // TestSearchWithSlotTable_VsStdlib compares results with Go's stdlib regexp
 func TestSearchWithSlotTable_VsStdlib(t *testing.T) {
-	// NOTE: Patterns with alternations inside quantifiers like "(foo|bar)+"
-	// require tookLeft tracking which the lightweight searchThread doesn't have.
-	// Those patterns should use the legacy Search methods or be extended to support.
 	patterns := []string{
 		"foo",
 		"[a-z]+",
@@ -85,7 +82,7 @@ func TestSearchWithSlotTable_VsStdlib(t *testing.T) {
 		"a?",
 		"foo|bar",
 		"a{2,4}",
-		// "(foo|bar)+" - requires tookLeft tracking, not supported in lightweight threads
+		"(foo|bar)+",
 	}
 
 	haystacks := []string{
@@ -414,7 +411,6 @@ func BenchmarkSearchThread_MemoryFootprint(b *testing.B) {
 			threads[i] = searchThread{
 				state:    StateID(i),
 				startPos: i,
-				priority: uint32(i),
 			}
 		}
 	})
@@ -425,7 +421,6 @@ func BenchmarkSearchThread_MemoryFootprint(b *testing.B) {
 			threads[i] = thread{
 				state:    StateID(i),
 				startPos: i,
-				priority: uint32(i),
 			}
 		}
 	})

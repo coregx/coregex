@@ -48,18 +48,13 @@ func (m SearchMode) SlotsNeeded(totalSlots int) int {
 
 // searchThread is a lightweight thread for non-capture searches.
 // It uses SlotTable for per-state capture storage instead of per-thread COW captures.
-// This reduces thread size from ~40 bytes to 16 bytes for significant memory savings.
 //
-// Memory layout (16 bytes on 64-bit):
+// Memory layout (12 bytes on 64-bit):
 //   - state: 4 bytes (StateID)
 //   - startPos: 8 bytes (int)
-//   - priority: 4 bytes (uint32)
-//
-// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:1811-1825
 type searchThread struct {
 	state    StateID // Current NFA state
 	startPos int     // Position where this thread's match attempt started
-	priority uint32  // Thread priority for alternation (lower = higher priority)
 }
 
 // PikeVM implements the Pike VM algorithm for NFA execution.
@@ -116,17 +111,19 @@ type PikeVMState struct {
 }
 
 // isBetterMatch returns true if the candidate match is better than the current best.
-// This implements both leftmost-first and leftmost-longest match semantics.
-// Uses internal state for the longest flag.
-func (p *PikeVM) isBetterMatch(bestStart, bestEnd int, bestPriority uint32,
-	candStart, candEnd int, candPriority uint32) bool {
-	return isBetterMatchWithLongest(p.internalState.Longest, bestStart, bestEnd, bestPriority,
-		candStart, candEnd, candPriority)
+// Implements leftmost-first semantics: leftmost start wins, then longest end wins.
+// Greedy/non-greedy is controlled by DFS thread ordering + break-on-first-match
+// in the search loop, not by priority comparison here.
+func (p *PikeVM) isBetterMatch(bestStart, bestEnd int,
+	candStart, candEnd int) bool {
+	return isBetterMatchWithLongest(bestStart, bestEnd, candStart, candEnd)
 }
 
 // isBetterMatchWithLongest is the stateless version of isBetterMatch.
-func isBetterMatchWithLongest(longest bool, bestStart, bestEnd int, bestPriority uint32,
-	candStart, candEnd int, candPriority uint32) bool {
+// Leftmost start wins, then longest end wins. Greedy/non-greedy semantics
+// are handled by DFS ordering in the search loop (Rust's approach).
+func isBetterMatchWithLongest(bestStart, bestEnd int,
+	candStart, candEnd int) bool {
 	// No current best - candidate always wins
 	if bestStart == -1 {
 		return true
@@ -138,27 +135,21 @@ func isBetterMatchWithLongest(longest bool, bestStart, bestEnd int, bestPriority
 	if candStart > bestStart {
 		return false
 	}
-	// Same start position - apply semantics
-	if longest {
-		// Leftmost-longest (POSIX): longer match wins (ignore priority)
-		return candEnd > bestEnd
-	}
-	// Leftmost-first (Perl): higher priority (lower number) wins first,
-	// then longer match for same priority (greedy extension)
-	if candPriority < bestPriority {
-		return true
-	}
-	return candPriority == bestPriority && candEnd > bestEnd
+	// Same start position: longer match wins (greedy extension).
+	// Non-greedy patterns don't reach here because the search loop
+	// breaks after the first Match state in DFS order, preventing
+	// extension threads from being stepped.
+	return candEnd > bestEnd
 }
 
 // thread represents an execution thread in the PikeVM.
 // Each thread tracks a position in the NFA state graph and capture positions.
+// Greedy/non-greedy semantics are controlled by DFS exploration order
+// (left branch explored first) + break-on-first-match in the search loop.
 type thread struct {
 	state    StateID
 	startPos int         // Position where this thread's match attempt started
 	captures cowCaptures // COW capture positions: [start0, end0, start1, end1, ...] (-1 = not set)
-	priority uint32      // Thread priority for alternation (lower = higher priority)
-	tookLeft bool        // True if any alternation left branch was taken (used for greedy reset)
 }
 
 // cowCaptures implements copy-on-write semantics for capture slots.
@@ -701,16 +692,21 @@ func (p *PikeVM) SearchAt(haystack []byte, at int) (int, int, bool) {
 
 // searchUnanchoredAt implements Thompson's parallel NFA simulation for unanchored search.
 // This is used by SearchAt to correctly handle anchors when searching from non-zero positions.
+//
+// Greedy/non-greedy semantics follow Rust's approach: DFS ordering determines thread
+// priority (left branch explored first), and the search loop breaks after the first
+// Match state encountered in DFS order. This prevents non-greedy extension threads
+// from being stepped, while allowing greedy extension threads (which appear before
+// Match in DFS order) to continue.
+//nolint:gocognit // Merged match-check + step loop (Rust's nexts pattern) is inherently complex
 func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, bool) {
 	// Reset state
 	p.internalState.Queue = p.internalState.Queue[:0]
 	p.internalState.NextQueue = p.internalState.NextQueue[:0]
 	p.internalState.Visited.Clear()
 
-	// Track leftmost-first match (with priority for alternation)
 	bestStart := -1
 	bestEnd := -1
-	var bestPriority uint32
 
 	// Check if NFA is anchored at start (e.g., reverse NFA for $ patterns)
 	isAnchored := p.nfa.IsAnchored()
@@ -718,36 +714,55 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 	// Process each byte position once, starting from startAt
 	for pos := startAt; pos <= len(haystack); pos++ {
 		// Add new start thread at current position (simulates .*? prefix)
-		// We use StartAnchored() here (not StartUnanchored()) because the prefix
-		// is simulated by restarting at each position, not embedded in the NFA.
-		// This ensures correct startPos tracking (set to current pos).
-		// Stop adding new starts once we've found a match (non-greedy behavior)
-		// For anchored NFA, only try at position 0 (like ^ anchor behavior)
-		if bestStart == -1 && (!isAnchored || pos == 0) {
+		// Stop adding new starts once we've found a match.
+		if bestStart == -1 && (!isAnchored || pos == startAt) {
 			p.internalState.Visited.Clear()
-			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, priority: 0}, haystack, pos)
+			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos}, haystack, pos)
 		}
 
-		// Check for matches in current generation
-		// We check AFTER adding threads to ensure we capture all potential matches
-		for _, t := range p.internalState.Queue {
-			if p.nfa.IsMatch(t.state) && p.isBetterMatch(bestStart, bestEnd, bestPriority, t.startPos, pos, t.priority) {
-				bestStart = t.startPos
-				bestEnd = pos
-				bestPriority = t.priority
+		// Combined match-check + step loop (Rust's nexts pattern).
+		// Threads are in DFS insertion order. For LeftmostFirst semantics,
+		// we break after the first Match state, preventing lower-priority
+		// threads from being stepped. This is the sole mechanism for
+		// greedy/non-greedy: greedy puts ByteRange before Match (gets stepped),
+		// non-greedy puts Match before ByteRange (break prevents stepping).
+		if pos < len(haystack) {
+			b := haystack[pos]
+			p.internalState.Visited.Clear() // Fresh visited for next-gen epsilon closures
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if p.isBetterMatch(bestStart, bestEnd, t.startPos, pos) {
+						bestStart = t.startPos
+						bestEnd = pos
+					}
+					if !p.internalState.Longest {
+						break // LeftmostFirst: stop after first match in DFS order
+					}
+					continue // Match state has no byte transitions
+				}
+				p.step(t, b, haystack, pos+1)
+			}
+		} else {
+			// End of input: check matches only (no stepping)
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if p.isBetterMatch(bestStart, bestEnd, t.startPos, pos) {
+						bestStart = t.startPos
+						bestEnd = pos
+					}
+					break // First match in DFS order wins
+				}
 			}
 		}
 
-		// If at end of input, stop (but still process remaining threads above)
 		if pos >= len(haystack) {
 			break
 		}
 
-		// If we have a match and no threads could produce a leftmost match, stop early
-		// A thread can only produce a leftmost match if its startPos <= current best
+		// Early termination: if we have a match and no threads could produce a leftmost one
 		if bestStart != -1 {
 			hasLeftmostCandidate := false
-			for _, t := range p.internalState.Queue {
+			for _, t := range p.internalState.NextQueue {
 				if t.startPos <= bestStart {
 					hasLeftmostCandidate = true
 					break
@@ -755,17 +770,6 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 			}
 			if !hasLeftmostCandidate {
 				break
-			}
-		}
-
-		// Process current byte for all active threads
-		// Note: We continue even if queue is empty because we might add
-		// new start threads at the next position (unanchored search)
-		if len(p.internalState.Queue) > 0 {
-			b := haystack[pos]
-			p.internalState.Visited.Clear() // Clear before processing to track visited states for epsilon closures
-			for _, t := range p.internalState.Queue {
-				p.step(t, b, haystack, pos+1)
 			}
 		}
 
@@ -813,46 +817,60 @@ func (p *PikeVM) SearchBetween(haystack []byte, startAt, maxEnd int) (int, int, 
 
 // searchUnanchoredBetween implements Thompson's parallel NFA simulation for bounded search.
 // It's identical to searchUnanchoredAt but stops at maxEnd instead of len(haystack).
+//nolint:gocognit // Merged match-check + step loop (Rust's nexts pattern) is inherently complex
 func (p *PikeVM) searchUnanchoredBetween(haystack []byte, startAt, maxEnd int) (int, int, bool) {
 	// Reset state
 	p.internalState.Queue = p.internalState.Queue[:0]
 	p.internalState.NextQueue = p.internalState.NextQueue[:0]
 	p.internalState.Visited.Clear()
 
-	// Track leftmost-first match (with priority for alternation)
 	bestStart := -1
 	bestEnd := -1
-	var bestPriority uint32
 
-	// Check if NFA is anchored at start (e.g., reverse NFA for $ patterns)
 	isAnchored := p.nfa.IsAnchored()
 
-	// Process each byte position, stopping at maxEnd instead of len(haystack)
 	for pos := startAt; pos <= maxEnd; pos++ {
-		// Add new start thread at current position (simulates .*? prefix)
 		if bestStart == -1 && (!isAnchored || pos == 0) {
 			p.internalState.Visited.Clear()
-			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, priority: 0}, haystack, pos)
+			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos}, haystack, pos)
 		}
 
-		// Check for matches in current generation
-		for _, t := range p.internalState.Queue {
-			if p.nfa.IsMatch(t.state) && p.isBetterMatch(bestStart, bestEnd, bestPriority, t.startPos, pos, t.priority) {
-				bestStart = t.startPos
-				bestEnd = pos
-				bestPriority = t.priority
+		// Combined match-check + step with break-on-first-match
+		if pos < maxEnd && pos < len(haystack) {
+			b := haystack[pos]
+			p.internalState.Visited.Clear()
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if p.isBetterMatch(bestStart, bestEnd, t.startPos, pos) {
+						bestStart = t.startPos
+						bestEnd = pos
+					}
+					if !p.internalState.Longest {
+						break
+					}
+					continue
+				}
+				p.step(t, b, haystack, pos+1)
+			}
+		} else {
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if p.isBetterMatch(bestStart, bestEnd, t.startPos, pos) {
+						bestStart = t.startPos
+						bestEnd = pos
+					}
+					break
+				}
 			}
 		}
 
-		// If at boundary, stop
 		if pos >= maxEnd || pos >= len(haystack) {
 			break
 		}
 
-		// If we have a match and no threads could produce a leftmost match, stop early
 		if bestStart != -1 {
 			hasLeftmostCandidate := false
-			for _, t := range p.internalState.Queue {
+			for _, t := range p.internalState.NextQueue {
 				if t.startPos <= bestStart {
 					hasLeftmostCandidate = true
 					break
@@ -863,16 +881,6 @@ func (p *PikeVM) searchUnanchoredBetween(haystack []byte, startAt, maxEnd int) (
 			}
 		}
 
-		// Process current byte for all active threads
-		if len(p.internalState.Queue) > 0 {
-			b := haystack[pos]
-			p.internalState.Visited.Clear()
-			for _, t := range p.internalState.Queue {
-				p.step(t, b, haystack, pos+1)
-			}
-		}
-
-		// Swap queues for next iteration
 		p.internalState.Queue, p.internalState.NextQueue = p.internalState.NextQueue, p.internalState.Queue[:0]
 	}
 
@@ -931,35 +939,52 @@ func (p *PikeVM) SearchWithCapturesAt(haystack []byte, at int) *MatchWithCapture
 }
 
 // searchUnanchoredWithCapturesAt implements Thompson's parallel NFA simulation with capture groups.
+//nolint:gocognit // Merged match-check + step loop (Rust's nexts pattern) is inherently complex
 func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *MatchWithCaptures {
 	// Reset state
 	p.internalState.Queue = p.internalState.Queue[:0]
 	p.internalState.NextQueue = p.internalState.NextQueue[:0]
 	p.internalState.Visited.Clear()
 
-	// Track leftmost-first match (with priority for alternation)
 	bestStart := -1
 	bestEnd := -1
-	var bestPriority uint32
 	var bestCaptures []int
 
-	// Process each byte position once, starting from startAt
 	for pos := startAt; pos <= len(haystack); pos++ {
-		// Add new start thread at current position (simulates .*? prefix)
-		// Use StartAnchored() to ensure correct startPos tracking
 		if bestStart == -1 {
 			p.internalState.Visited.Clear()
 			caps := p.newCaptures()
-			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, captures: caps, priority: 0}, haystack, pos)
+			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos, captures: caps}, haystack, pos)
 		}
 
-		// Check for matches in current generation
-		for _, t := range p.internalState.Queue {
-			if p.nfa.IsMatch(t.state) && p.isBetterMatch(bestStart, bestEnd, bestPriority, t.startPos, pos, t.priority) {
-				bestStart = t.startPos
-				bestEnd = pos
-				bestPriority = t.priority
-				bestCaptures = t.captures.copyData()
+		// Combined match-check + step with break-on-first-match
+		if pos < len(haystack) {
+			b := haystack[pos]
+			p.internalState.Visited.Clear()
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if p.isBetterMatch(bestStart, bestEnd, t.startPos, pos) {
+						bestStart = t.startPos
+						bestEnd = pos
+						bestCaptures = t.captures.copyData()
+					}
+					if !p.internalState.Longest {
+						break
+					}
+					continue
+				}
+				p.step(t, b, haystack, pos+1)
+			}
+		} else {
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if p.isBetterMatch(bestStart, bestEnd, t.startPos, pos) {
+						bestStart = t.startPos
+						bestEnd = pos
+						bestCaptures = t.captures.copyData()
+					}
+					break
+				}
 			}
 		}
 
@@ -967,10 +992,9 @@ func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *M
 			break
 		}
 
-		// Early termination check
 		if bestStart != -1 {
 			hasLeftmostCandidate := false
-			for _, t := range p.internalState.Queue {
+			for _, t := range p.internalState.NextQueue {
 				if t.startPos <= bestStart {
 					hasLeftmostCandidate = true
 					break
@@ -978,16 +1002,6 @@ func (p *PikeVM) searchUnanchoredWithCapturesAt(haystack []byte, startAt int) *M
 			}
 			if !hasLeftmostCandidate {
 				break
-			}
-		}
-
-		// Process current byte for all active threads
-		// Continue even if queue is empty (unanchored search may add new starts)
-		if len(p.internalState.Queue) > 0 {
-			b := haystack[pos]
-			p.internalState.Visited.Clear()
-			for _, t := range p.internalState.Queue {
-				p.step(t, b, haystack, pos+1)
 			}
 		}
 
@@ -1012,52 +1026,47 @@ func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithC
 	p.internalState.Visited.Clear()
 
 	caps := p.newCaptures()
-	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos, captures: caps, priority: 0}, haystack, startPos)
+	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos, captures: caps}, haystack, startPos)
 
-	// Track the best match
 	lastMatchPos := -1
-	var lastMatchPriority uint32
 	var lastMatchCaptures []int
 
 	for pos := startPos; pos <= len(haystack); pos++ {
-		for _, t := range p.internalState.Queue {
-			if !p.nfa.IsMatch(t.state) {
-				continue
+		// Combined match-check + step with break-on-first-match
+		if pos < len(haystack) {
+			b := haystack[pos]
+			p.internalState.Visited.Clear()
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if pos > lastMatchPos || lastMatchPos == -1 {
+						lastMatchPos = pos
+						lastMatchCaptures = t.captures.copyData()
+					}
+					if !p.internalState.Longest {
+						break
+					}
+					continue
+				}
+				p.step(t, b, haystack, pos+1)
 			}
-			// Determine if this match is better than current best
-			shouldUpdate := false
-			if p.internalState.Longest {
-				// Leftmost-longest: always prefer longer match
-				shouldUpdate = pos > lastMatchPos
-			} else {
-				// Leftmost-first: prefer first branch, then greedy extension
-				shouldUpdate = lastMatchPos == -1 || t.priority <= lastMatchPriority
-			}
-			if shouldUpdate {
-				lastMatchPos = pos
-				lastMatchPriority = t.priority
-				lastMatchCaptures = t.captures.copyData()
-			}
-			if !p.internalState.Longest {
-				break // Found a match at this position (leftmost-first)
+		} else {
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if pos > lastMatchPos || lastMatchPos == -1 {
+						lastMatchPos = pos
+						lastMatchCaptures = t.captures.copyData()
+					}
+					break
+				}
 			}
 		}
 
-		if len(p.internalState.Queue) == 0 {
+		if len(p.internalState.NextQueue) == 0 && (pos >= len(haystack) || lastMatchPos != -1) {
 			break
 		}
 
 		if pos >= len(haystack) {
 			break
-		}
-
-		b := haystack[pos]
-
-		// Clear visited BEFORE step loop for next-gen state tracking
-		p.internalState.Visited.Clear()
-
-		for _, t := range p.internalState.Queue {
-			p.step(t, b, haystack, pos+1)
 		}
 
 		p.internalState.Queue, p.internalState.NextQueue = p.internalState.NextQueue, p.internalState.Queue[:0]
@@ -1138,66 +1147,49 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 	p.internalState.NextQueue = p.internalState.NextQueue[:0]
 	p.internalState.Visited.Clear()
 
-	// Initialize with start state
-	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos, priority: 0}, haystack, startPos)
+	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: startPos}, haystack, startPos)
 
-	// Track the best match
 	lastMatchPos := -1
-	var lastMatchPriority uint32
 
-	// Process each byte position
 	for pos := startPos; pos <= len(haystack); pos++ {
-		// Check if any current threads are in a match state
-		for _, t := range p.internalState.Queue {
-			if !p.nfa.IsMatch(t.state) {
-				continue
+		// Combined match-check + step with break-on-first-match
+		if pos < len(haystack) {
+			b := haystack[pos]
+			p.internalState.Visited.Clear()
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if pos > lastMatchPos || lastMatchPos == -1 {
+						lastMatchPos = pos
+					}
+					if !p.internalState.Longest {
+						break
+					}
+					continue
+				}
+				p.step(t, b, haystack, pos+1)
 			}
-			// Determine if this match is better than current best
-			shouldUpdate := false
-			if p.internalState.Longest {
-				// Leftmost-longest: always prefer longer match
-				shouldUpdate = pos > lastMatchPos
-			} else {
-				// Leftmost-first: prefer first branch, then greedy extension
-				shouldUpdate = lastMatchPos == -1 || t.priority <= lastMatchPriority
-			}
-			if shouldUpdate {
-				lastMatchPos = pos
-				lastMatchPriority = t.priority
-			}
-			if !p.internalState.Longest {
-				break // Found a match at this position (leftmost-first)
+		} else {
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if pos > lastMatchPos || lastMatchPos == -1 {
+						lastMatchPos = pos
+					}
+					break
+				}
 			}
 		}
 
-		if len(p.internalState.Queue) == 0 {
-			// No active threads - search complete
+		if len(p.internalState.NextQueue) == 0 && (pos >= len(haystack) || lastMatchPos != -1) {
 			break
 		}
 
 		if pos >= len(haystack) {
-			// At end of input - no more bytes to process
 			break
 		}
 
-		// Get current byte
-		b := haystack[pos]
-
-		// Clear visited BEFORE step loop so addThreadToNext can track next-gen states
-		// This is critical: visited was used by addThread for current gen,
-		// we need fresh tracking for next gen to allow +/* quantifiers to work
-		p.internalState.Visited.Clear()
-
-		// Process all active threads
-		for _, t := range p.internalState.Queue {
-			p.step(t, b, haystack, pos+1)
-		}
-
-		// Swap queues for next iteration
 		p.internalState.Queue, p.internalState.NextQueue = p.internalState.NextQueue, p.internalState.Queue[:0]
 	}
 
-	// Return the match found
 	if lastMatchPos != -1 {
 		return startPos, lastMatchPos, true
 	}
@@ -1205,10 +1197,10 @@ func (p *PikeVM) searchAt(haystack []byte, startPos int) (int, int, bool) {
 	return -1, -1, false
 }
 
-// addThread adds a new thread to the current queue, following epsilon transitions
+// addThread adds a new thread to the current queue, following epsilon transitions.
+// DFS ordering: left branch is explored first, which determines greedy/non-greedy behavior.
+// The sparse set (Visited) ensures first-arrival-wins deduplication.
 func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
-	// Check if we've already visited this state in this generation
-	// Optimization: Insert returns false if already present, avoiding double Contains call
 	if !p.internalState.Visited.Insert(uint32(t.state)) {
 		return
 	}
@@ -1220,61 +1212,43 @@ func (p *PikeVM) addThread(t thread, haystack []byte, pos int) {
 
 	switch state.Kind() {
 	case StateMatch:
-		// Match state - add to queue
 		p.internalState.Queue = append(p.internalState.Queue, t)
 
 	case StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
-		// Input-consuming states - add to queue
 		p.internalState.Queue = append(p.internalState.Queue, t)
 
 	case StateEpsilon:
-		// Follow epsilon transition immediately, preserving startPos, captures, priority, and tookLeft
 		next := state.Epsilon()
 		if next != InvalidState {
-			p.addThread(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
+			p.addThread(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
 		}
 
 	case StateSplit:
-		// Follow both branches, preserving startPos and captures
-		// For alternation splits: left branch keeps same priority and marks tookLeft, right branch increments priority
-		// For quantifier splits: left branch (continue) keeps priority, right branch (exit) resets IF tookLeft is true
-		// The conditional reset handles the distinction between "free" and "forced" alternation choices:
-		// - In (?:|a)*, all 'a' choices are "free" (empty was available), so don't reset → empty wins
-		// - In (foo|bar)+, after matching 'foo', 'bar' is "forced" (foo didn't match), so reset → longer wins
+		// DFS: explore left branch first, then right.
+		// For greedy quantifiers: left=continue, right=exit → continue explored first
+		// For non-greedy quantifiers: left=exit, right=continue → exit explored first
+		// For alternation: left=first alt, right=second alt → first alt explored first
 		left, right := state.Split()
-		isQuantifier := state.IsQuantifierSplit()
-
-		// For Look-left alternations: check if Look would succeed at current position
-		leftLookSucceeds := !isQuantifier && p.checkLeftLookSucceeds(left, haystack, pos)
 
 		if left != InvalidState {
-			leftTookLeft := t.tookLeft
-			if !isQuantifier {
-				leftTookLeft = true // Mark that we took left at an alternation
-			}
-			p.addThread(thread{state: left, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: leftTookLeft}, haystack, pos)
+			p.addThread(thread{state: left, startPos: t.startPos, captures: t.captures}, haystack, pos)
 		}
 		if right != InvalidState {
-			rightPriority, rightTookLeft := p.calcRightBranchPriority(t, left, isQuantifier, leftLookSucceeds)
 			// Clone captures for right branch to ensure COW works properly.
-			// Without clone, both branches share captures with refs=1, so updates
-			// modify in-place and corrupt the other branch's captures.
-			p.addThread(thread{state: right, startPos: t.startPos, captures: t.captures.clone(), priority: rightPriority, tookLeft: rightTookLeft}, haystack, pos)
+			p.addThread(thread{state: right, startPos: t.startPos, captures: t.captures.clone()}, haystack, pos)
 		}
 
 	case StateCapture:
-		// Record capture position and follow epsilon transition, preserving priority and tookLeft
 		groupIndex, isStart, next := state.Capture()
 		if next != InvalidState {
 			newCaps := updateCapture(t.captures, groupIndex, isStart, pos)
-			p.addThread(thread{state: next, startPos: t.startPos, captures: newCaps, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
+			p.addThread(thread{state: next, startPos: t.startPos, captures: newCaps}, haystack, pos)
 		}
 
 	case StateLook:
-		// Check zero-width assertion at current position, preserving priority and tookLeft
 		look, next := state.Look()
 		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			p.addThread(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
+			p.addThread(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
 		}
 
 	case StateFail:
@@ -1293,68 +1267,52 @@ func (p *PikeVM) step(t thread, b byte, haystack []byte, nextPos int) {
 	case StateByteRange:
 		lo, hi, next := state.ByteRange()
 		if b >= lo && b <= hi {
-			// Byte matches - add thread for next state, preserving startPos, captures, priority, and tookLeft
-			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, nextPos)
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, nextPos)
 		}
 
 	case StateSparse:
-		// Check all transitions
 		for _, tr := range state.Transitions() {
 			if b >= tr.Lo && b <= tr.Hi {
-				// Byte matches this transition, preserving startPos, captures, priority, and tookLeft
-				p.addThreadToNext(thread{state: tr.Next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, nextPos)
+				p.addThreadToNext(thread{state: tr.Next, startPos: t.startPos, captures: t.captures}, haystack, nextPos)
 			}
 		}
 
 	case StateRuneAny:
-		// Match any Unicode codepoint - decode UTF-8 rune at current position
-		// Only process at the START of a UTF-8 sequence (keep alive at continuation bytes)
 		if b >= 0x80 && b <= 0xBF {
-			// This is a UTF-8 continuation byte - keep thread alive for next position
-			// The thread will be re-processed until we reach a lead byte or ASCII
 			p.addThreadToNext(t, haystack, nextPos)
 			return
 		}
-		runePos := nextPos - 1 // Position of the byte we're processing
+		runePos := nextPos - 1
 		if runePos < len(haystack) {
 			r, width := utf8.DecodeRune(haystack[runePos:])
 			if r != utf8.RuneError || width == 1 {
 				// Valid rune (or single byte for ASCII/invalid UTF-8) - advance by full rune width
 				next := state.RuneAny()
 				newPos := runePos + width
-				p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, newPos)
+				p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, newPos)
 			}
 		}
 
 	case StateRuneAnyNotNL:
-		// Match any Unicode codepoint except newline - decode UTF-8 rune at current position
-		// Only process at the START of a UTF-8 sequence (keep alive at continuation bytes)
 		if b >= 0x80 && b <= 0xBF {
-			// This is a UTF-8 continuation byte - keep thread alive for next position
-			// The thread will be re-processed until we reach a lead byte or ASCII
 			p.addThreadToNext(t, haystack, nextPos)
 			return
 		}
-		runePos := nextPos - 1 // Position of the byte we're processing
+		runePos := nextPos - 1
 		if runePos < len(haystack) {
 			r, width := utf8.DecodeRune(haystack[runePos:])
 			if (r != utf8.RuneError || width == 1) && r != '\n' {
-				// Valid rune (or single byte for ASCII/invalid UTF-8) and not newline - advance by full rune width
 				next := state.RuneAnyNotNL()
 				newPos := runePos + width
-				p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, newPos)
+				p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, newPos)
 			}
 		}
 	}
 }
 
-// addThreadToNext adds a thread to the next generation queue
+// addThreadToNext adds a thread to the next generation queue.
+// DFS ordering: left branch explored first (same as addThread).
 func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
-	// CRITICAL: Check if we've already visited this state in this generation
-	// Without this check, patterns with multiple character classes like
-	// A[AB]B[BC]C[CD]... can cause exponential thread explosion (2^N duplicates)
-	// Reference: rust-regex pikevm.rs line 1683: "if !next.set.insert(sid) { return; }"
-	// Optimization: Insert returns false if already present, avoiding double Contains call
 	if !p.internalState.Visited.Insert(uint32(t.state)) {
 		return
 	}
@@ -1364,54 +1322,37 @@ func (p *PikeVM) addThreadToNext(t thread, haystack []byte, pos int) {
 		return
 	}
 
-	// Follow epsilon transitions immediately, preserving startPos, captures, priority, and tookLeft
 	switch state.Kind() {
 	case StateEpsilon:
 		next := state.Epsilon()
 		if next != InvalidState {
-			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
 		}
 		return
 
 	case StateSplit:
-		// For alternation splits: left branch keeps same priority and marks tookLeft, right branch increments priority
-		// For quantifier splits: left branch (continue) keeps priority, right branch (exit) resets IF tookLeft is true
 		left, right := state.Split()
-		isQuantifier := state.IsQuantifierSplit()
-
-		// For Look-left alternations: check if Look would succeed at current position
-		leftLookSucceeds := !isQuantifier && p.checkLeftLookSucceeds(left, haystack, pos)
 
 		if left != InvalidState {
-			leftTookLeft := t.tookLeft
-			if !isQuantifier {
-				leftTookLeft = true // Mark that we took left at an alternation
-			}
-			p.addThreadToNext(thread{state: left, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: leftTookLeft}, haystack, pos)
+			p.addThreadToNext(thread{state: left, startPos: t.startPos, captures: t.captures}, haystack, pos)
 		}
 		if right != InvalidState {
-			rightPriority, rightTookLeft := p.calcRightBranchPriority(t, left, isQuantifier, leftLookSucceeds)
-			// Clone captures for right branch to ensure COW works properly.
-			// Without clone, both branches share captures with refs=1, so updates
-			// modify in-place and corrupt the other branch's captures.
-			p.addThreadToNext(thread{state: right, startPos: t.startPos, captures: t.captures.clone(), priority: rightPriority, tookLeft: rightTookLeft}, haystack, pos)
+			p.addThreadToNext(thread{state: right, startPos: t.startPos, captures: t.captures.clone()}, haystack, pos)
 		}
 		return
 
 	case StateCapture:
-		// Record capture position and follow epsilon transition, preserving priority and tookLeft
 		groupIndex, isStart, next := state.Capture()
 		if next != InvalidState {
 			newCaps := updateCapture(t.captures, groupIndex, isStart, pos)
-			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: newCaps, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: newCaps}, haystack, pos)
 		}
 		return
 
 	case StateLook:
-		// Check zero-width assertion at current position, preserving priority and tookLeft
 		look, next := state.Look()
 		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures, priority: t.priority, tookLeft: t.tookLeft}, haystack, pos)
+			p.addThreadToNext(thread{state: next, startPos: t.startPos, captures: t.captures}, haystack, pos)
 		}
 		return
 	}
@@ -1500,47 +1441,8 @@ func isWordByte(b byte) bool {
 		b == '_'
 }
 
-// checkLeftLookSucceeds checks if the left branch of a split is a Look state
-// that would succeed at the current position. This is used to determine
-// whether to increment priority for the right branch in alternations.
-//
-// For patterns like (?:^|a)+ where left branch is a Look assertion:
-// - If Look succeeds at current position, return true (prefer left)
-// - If Look fails at current position, return false (right is the only viable option)
-func (p *PikeVM) checkLeftLookSucceeds(left StateID, haystack []byte, pos int) bool {
-	if left == InvalidState {
-		return false
-	}
-	leftState := p.nfa.State(left)
-	if leftState == nil || leftState.Kind() != StateLook {
-		return false
-	}
-	look, _ := leftState.Look()
-	return checkLookAssertion(look, haystack, pos)
-}
-
-// calcRightBranchPriority calculates the priority for the right branch of a split.
-// For quantifiers: resets priority if left branch was taken (forced alternation choice).
-// For alternations: increments priority unless left is a failing Look assertion.
-func (p *PikeVM) calcRightBranchPriority(t thread, left StateID, isQuantifier, leftLookSucceeds bool) (priority uint32, tookLeft bool) {
-	priority = t.priority
-	tookLeft = t.tookLeft
-
-	if isQuantifier {
-		// At quantifier exit: reset priority only if we took left branch in some alternation
-		if t.tookLeft {
-			return 0, false
-		}
-		return priority, tookLeft
-	}
-
-	// For alternation splits: increment priority unless left is a failing Look
-	leftState := p.nfa.State(left)
-	if left == InvalidState || leftLookSucceeds || leftState == nil || leftState.Kind() != StateLook {
-		priority++
-	}
-	return priority, tookLeft
-}
+// (checkLeftLookSucceeds and calcRightBranchPriority removed —
+// greedy/non-greedy is now handled by DFS ordering + break-on-first-match)
 
 // checkLookAssertion checks if a zero-width assertion holds at the given position
 func checkLookAssertion(look Look, haystack []byte, pos int) bool {
@@ -1640,45 +1542,53 @@ func (p *PikeVM) SearchWithSlotTableAt(haystack []byte, at int, mode SearchMode)
 
 // searchWithSlotTableUnanchored implements unanchored search using lightweight threads.
 // Captures are stored in SlotTable per-state, not per-thread.
+//nolint:gocognit // Merged match-check + step loop (Rust's nexts pattern) is inherently complex
 func (p *PikeVM) searchWithSlotTableUnanchored(haystack []byte, startAt int) (int, int, bool) {
-	// Reset state
 	p.internalState.SearchQueue = p.internalState.SearchQueue[:0]
 	p.internalState.SearchNextQueue = p.internalState.SearchNextQueue[:0]
 	p.internalState.Visited.Clear()
 
-	// Reset SlotTable for states we'll use (only for Captures mode)
-	// Note: Full reset is O(n), but we only need it at search start
-	// For IsMatch (0 slots) and Find (2 slots), SlotTable is not used
 	if p.internalState.SlotTable.ActiveSlots() > 2 {
 		p.internalState.SlotTable.Reset()
 	}
 
-	// Track leftmost-first match
 	bestStart := -1
 	bestEnd := -1
-	var bestPriority uint32
 
 	isAnchored := p.nfa.IsAnchored()
 
-	// Process each byte position
 	for pos := startAt; pos <= len(haystack); pos++ {
-		// Add new start thread at current position
 		if bestStart == -1 && (!isAnchored || pos == 0) {
 			p.internalState.Visited.Clear()
-			startThread := searchThread{
-				state:    p.nfa.StartAnchored(),
-				startPos: pos,
-				priority: 0,
-			}
-			p.addSearchThread(startThread, haystack, pos)
+			p.addSearchThread(searchThread{state: p.nfa.StartAnchored(), startPos: pos}, haystack, pos)
 		}
 
-		// Check for matches in current generation
-		for _, t := range p.internalState.SearchQueue {
-			if p.nfa.IsMatch(t.state) && p.isBetterMatch(bestStart, bestEnd, bestPriority, t.startPos, pos, t.priority) {
-				bestStart = t.startPos
-				bestEnd = pos
-				bestPriority = t.priority
+		// Combined match-check + step with break-on-first-match
+		if pos < len(haystack) {
+			b := haystack[pos]
+			p.internalState.Visited.Clear()
+			for _, t := range p.internalState.SearchQueue {
+				if p.nfa.IsMatch(t.state) {
+					if p.isBetterMatch(bestStart, bestEnd, t.startPos, pos) {
+						bestStart = t.startPos
+						bestEnd = pos
+					}
+					if !p.internalState.Longest {
+						break
+					}
+					continue
+				}
+				p.stepSearchThread(t, b, haystack, pos+1)
+			}
+		} else {
+			for _, t := range p.internalState.SearchQueue {
+				if p.nfa.IsMatch(t.state) {
+					if p.isBetterMatch(bestStart, bestEnd, t.startPos, pos) {
+						bestStart = t.startPos
+						bestEnd = pos
+					}
+					break
+				}
 			}
 		}
 
@@ -1686,10 +1596,9 @@ func (p *PikeVM) searchWithSlotTableUnanchored(haystack []byte, startAt int) (in
 			break
 		}
 
-		// Early termination check
 		if bestStart != -1 {
 			hasLeftmostCandidate := false
-			for _, t := range p.internalState.SearchQueue {
+			for _, t := range p.internalState.SearchNextQueue {
 				if t.startPos <= bestStart {
 					hasLeftmostCandidate = true
 					break
@@ -1700,16 +1609,6 @@ func (p *PikeVM) searchWithSlotTableUnanchored(haystack []byte, startAt int) (in
 			}
 		}
 
-		// Process current byte for all active threads
-		if len(p.internalState.SearchQueue) > 0 {
-			b := haystack[pos]
-			p.internalState.Visited.Clear()
-			for _, t := range p.internalState.SearchQueue {
-				p.stepSearchThread(t, b, haystack, pos+1)
-			}
-		}
-
-		// Swap queues
 		p.internalState.SearchQueue, p.internalState.SearchNextQueue =
 			p.internalState.SearchNextQueue, p.internalState.SearchQueue[:0]
 	}
@@ -1722,58 +1621,52 @@ func (p *PikeVM) searchWithSlotTableUnanchored(haystack []byte, startAt int) (in
 
 // searchWithSlotTableAnchored implements anchored search using lightweight threads.
 func (p *PikeVM) searchWithSlotTableAnchored(haystack []byte, startPos int) (int, int, bool) {
-	// Reset state
 	p.internalState.SearchQueue = p.internalState.SearchQueue[:0]
 	p.internalState.SearchNextQueue = p.internalState.SearchNextQueue[:0]
 	p.internalState.Visited.Clear()
 
-	// Only reset SlotTable for Captures mode (activeSlots > 2)
 	if p.internalState.SlotTable.ActiveSlots() > 2 {
 		p.internalState.SlotTable.Reset()
 	}
 
-	// Initialize with start state
-	startThread := searchThread{
-		state:    p.nfa.StartAnchored(),
-		startPos: startPos,
-		priority: 0,
-	}
-	p.addSearchThread(startThread, haystack, startPos)
+	p.addSearchThread(searchThread{state: p.nfa.StartAnchored(), startPos: startPos}, haystack, startPos)
 
-	// Track best match
 	lastMatchPos := -1
-	var lastMatchPriority uint32
 
 	for pos := startPos; pos <= len(haystack); pos++ {
-		// Check for matches
-		for _, t := range p.internalState.SearchQueue {
-			if !p.nfa.IsMatch(t.state) {
-				continue
+		// Combined match-check + step with break-on-first-match
+		if pos < len(haystack) {
+			b := haystack[pos]
+			p.internalState.Visited.Clear()
+			for _, t := range p.internalState.SearchQueue {
+				if p.nfa.IsMatch(t.state) {
+					if pos > lastMatchPos || lastMatchPos == -1 {
+						lastMatchPos = pos
+					}
+					if !p.internalState.Longest {
+						break
+					}
+					continue
+				}
+				p.stepSearchThread(t, b, haystack, pos+1)
 			}
-			shouldUpdate := false
-			if p.internalState.Longest {
-				shouldUpdate = pos > lastMatchPos
-			} else {
-				shouldUpdate = lastMatchPos == -1 || t.priority <= lastMatchPriority
-			}
-			if shouldUpdate {
-				lastMatchPos = pos
-				lastMatchPriority = t.priority
-			}
-			if !p.internalState.Longest {
-				break
+		} else {
+			for _, t := range p.internalState.SearchQueue {
+				if p.nfa.IsMatch(t.state) {
+					if pos > lastMatchPos || lastMatchPos == -1 {
+						lastMatchPos = pos
+					}
+					break
+				}
 			}
 		}
 
-		if len(p.internalState.SearchQueue) == 0 || pos >= len(haystack) {
+		if len(p.internalState.SearchNextQueue) == 0 && (pos >= len(haystack) || lastMatchPos != -1) {
 			break
 		}
 
-		b := haystack[pos]
-		p.internalState.Visited.Clear()
-
-		for _, t := range p.internalState.SearchQueue {
-			p.stepSearchThread(t, b, haystack, pos+1)
+		if pos >= len(haystack) {
+			break
 		}
 
 		p.internalState.SearchQueue, p.internalState.SearchNextQueue =
@@ -1801,42 +1694,33 @@ func (p *PikeVM) addSearchThread(t searchThread, haystack []byte, pos int) {
 
 	switch state.Kind() {
 	case StateMatch, StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
-		// Terminal states - add to queue
 		p.internalState.SearchQueue = append(p.internalState.SearchQueue, t)
 
 	case StateEpsilon:
 		next := state.Epsilon()
 		if next != InvalidState {
-			p.addSearchThread(searchThread{state: next, startPos: t.startPos, priority: t.priority}, haystack, pos)
+			p.addSearchThread(searchThread{state: next, startPos: t.startPos}, haystack, pos)
 		}
 
 	case StateSplit:
 		left, right := state.Split()
-		isQuantifier := state.IsQuantifierSplit()
-
-		// Check left Look success for priority calculation
-		leftLookSucceeds := !isQuantifier && p.checkLeftLookSucceedsForSearch(left, haystack, pos)
 
 		if left != InvalidState {
-			// Copy slots from current state to left target (only for Captures mode)
 			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(left, t.state)
 			}
-			p.addSearchThread(searchThread{state: left, startPos: t.startPos, priority: t.priority}, haystack, pos)
+			p.addSearchThread(searchThread{state: left, startPos: t.startPos}, haystack, pos)
 		}
 		if right != InvalidState {
-			rightPriority := p.calcRightPriorityForSearch(t.priority, isQuantifier, left, leftLookSucceeds)
-			// Copy slots from current state to right target (only for Captures mode)
 			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(right, t.state)
 			}
-			p.addSearchThread(searchThread{state: right, startPos: t.startPos, priority: rightPriority}, haystack, pos)
+			p.addSearchThread(searchThread{state: right, startPos: t.startPos}, haystack, pos)
 		}
 
 	case StateCapture:
 		groupIndex, isStart, next := state.Capture()
 		if next != InvalidState {
-			// Store capture position in SlotTable (only for Captures mode, not Find)
 			// For Find mode (activeSlots=2), group 0 is tracked via thread.startPos/pos
 			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				slotIndex := int(groupIndex) * 2
@@ -1850,17 +1734,16 @@ func (p *PikeVM) addSearchThread(t searchThread, haystack []byte, pos int) {
 					p.internalState.SlotTable.SetSlot(next, slotIndex, pos)
 				}
 			}
-			p.addSearchThread(searchThread{state: next, startPos: t.startPos, priority: t.priority}, haystack, pos)
+			p.addSearchThread(searchThread{state: next, startPos: t.startPos}, haystack, pos)
 		}
 
 	case StateLook:
 		look, next := state.Look()
 		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			// Copy slots only for Captures mode
 			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(next, t.state)
 			}
-			p.addSearchThread(searchThread{state: next, startPos: t.startPos, priority: t.priority}, haystack, pos)
+			p.addSearchThread(searchThread{state: next, startPos: t.startPos}, haystack, pos)
 		}
 
 	case StateFail:
@@ -1879,19 +1762,18 @@ func (p *PikeVM) stepSearchThread(t searchThread, b byte, haystack []byte, nextP
 	case StateByteRange:
 		lo, hi, next := state.ByteRange()
 		if b >= lo && b <= hi {
-			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, t.state, haystack, nextPos)
+			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos}, t.state, haystack, nextPos)
 		}
 
 	case StateSparse:
 		for _, tr := range state.Transitions() {
 			if b >= tr.Lo && b <= tr.Hi {
-				p.addSearchThreadToNext(searchThread{state: tr.Next, startPos: t.startPos, priority: t.priority}, t.state, haystack, nextPos)
+				p.addSearchThreadToNext(searchThread{state: tr.Next, startPos: t.startPos}, t.state, haystack, nextPos)
 			}
 		}
 
 	case StateRuneAny:
 		if b >= 0x80 && b <= 0xBF {
-			// UTF-8 continuation byte - keep alive
 			p.internalState.SearchNextQueue = append(p.internalState.SearchNextQueue, t)
 			return
 		}
@@ -1901,7 +1783,7 @@ func (p *PikeVM) stepSearchThread(t searchThread, b byte, haystack []byte, nextP
 			if r != utf8.RuneError || width == 1 {
 				next := state.RuneAny()
 				newPos := runePos + width
-				p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, t.state, haystack, newPos)
+				p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos}, t.state, haystack, newPos)
 			}
 		}
 
@@ -1916,7 +1798,7 @@ func (p *PikeVM) stepSearchThread(t searchThread, b byte, haystack []byte, nextP
 			if (r != utf8.RuneError || width == 1) && r != '\n' {
 				next := state.RuneAnyNotNL()
 				newPos := runePos + width
-				p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, t.state, haystack, newPos)
+				p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos}, t.state, haystack, newPos)
 			}
 		}
 	}
@@ -1943,34 +1825,30 @@ func (p *PikeVM) addSearchThreadToNext(t searchThread, srcState StateID, haystac
 	case StateEpsilon:
 		next := state.Epsilon()
 		if next != InvalidState {
-			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, t.state, haystack, pos)
+			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos}, t.state, haystack, pos)
 		}
 		return
 
 	case StateSplit:
 		left, right := state.Split()
-		isQuantifier := state.IsQuantifierSplit()
-		leftLookSucceeds := !isQuantifier && p.checkLeftLookSucceedsForSearch(left, haystack, pos)
 
 		if left != InvalidState {
 			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(left, t.state)
 			}
-			p.addSearchThreadToNext(searchThread{state: left, startPos: t.startPos, priority: t.priority}, left, haystack, pos)
+			p.addSearchThreadToNext(searchThread{state: left, startPos: t.startPos}, left, haystack, pos)
 		}
 		if right != InvalidState {
-			rightPriority := p.calcRightPriorityForSearch(t.priority, isQuantifier, left, leftLookSucceeds)
 			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(right, t.state)
 			}
-			p.addSearchThreadToNext(searchThread{state: right, startPos: t.startPos, priority: rightPriority}, right, haystack, pos)
+			p.addSearchThreadToNext(searchThread{state: right, startPos: t.startPos}, right, haystack, pos)
 		}
 		return
 
 	case StateCapture:
 		groupIndex, isStart, next := state.Capture()
 		if next != InvalidState {
-			// Store capture position only for Captures mode (not Find)
 			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				slotIndex := int(groupIndex) * 2
 				if !isStart {
@@ -1981,7 +1859,7 @@ func (p *PikeVM) addSearchThreadToNext(t searchThread, srcState StateID, haystac
 					p.internalState.SlotTable.SetSlot(next, slotIndex, pos)
 				}
 			}
-			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, next, haystack, pos)
+			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos}, next, haystack, pos)
 		}
 		return
 
@@ -1991,42 +1869,13 @@ func (p *PikeVM) addSearchThreadToNext(t searchThread, srcState StateID, haystac
 			if p.internalState.SlotTable.ActiveSlots() > 2 {
 				p.internalState.SlotTable.CopySlots(next, t.state)
 			}
-			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos, priority: t.priority}, next, haystack, pos)
+			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos}, next, haystack, pos)
 		}
 		return
 	}
 
 	// Add to next queue
 	p.internalState.SearchNextQueue = append(p.internalState.SearchNextQueue, t)
-}
-
-// checkLeftLookSucceedsForSearch is a simplified version for lightweight threads.
-func (p *PikeVM) checkLeftLookSucceedsForSearch(left StateID, haystack []byte, pos int) bool {
-	if left == InvalidState {
-		return false
-	}
-	leftState := p.nfa.State(left)
-	if leftState == nil || leftState.Kind() != StateLook {
-		return false
-	}
-	look, _ := leftState.Look()
-	return checkLookAssertion(look, haystack, pos)
-}
-
-// calcRightPriorityForSearch calculates priority for right branch in lightweight threads.
-// Simplified version without tookLeft tracking.
-func (p *PikeVM) calcRightPriorityForSearch(priority uint32, isQuantifier bool, left StateID, leftLookSucceeds bool) uint32 {
-	if isQuantifier {
-		// For quantifiers, don't modify priority
-		return priority
-	}
-
-	// For alternation splits: increment priority unless left is a failing Look
-	leftState := p.nfa.State(left)
-	if left == InvalidState || leftLookSucceeds || leftState == nil || leftState.Kind() != StateLook {
-		return priority + 1
-	}
-	return priority
 }
 
 // SearchWithSlotTableCaptures finds the first match and returns captures.
