@@ -239,16 +239,34 @@ func (s *ReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match {
 		}
 
 		// For unanchored patterns (like .*@suffix), match starts at 'at'.
-		// Forward verification gets the correct greedy end.
+		// Prefilter found suffix at 'pos'. For correct greedy semantics,
+		// find the LAST suffix before the next newline (`.` doesn't match `\n`).
 		if s.matchStartZero {
-			matchEnd := s.forwardDFA.SearchAt(haystack, at)
-			if matchEnd >= 0 {
-				return NewMatch(at, matchEnd, haystack)
+			// Find the line containing this match (from 'at' to next '\n')
+			matchLineStart := at
+			// Skip leading newlines to find actual content start
+			for matchLineStart < len(haystack) && haystack[matchLineStart] == '\n' {
+				matchLineStart++
 			}
-			// DFA failed — fallback to PikeVM
-			fwdStart, fwdEnd, found := s.pikevm.SearchAt(haystack, at)
-			if found {
-				return NewMatch(fwdStart, fwdEnd, haystack)
+			if matchLineStart >= len(haystack) {
+				return nil
+			}
+			// pos is within this line — find line end
+			lineEnd := bytes.IndexByte(haystack[pos:], '\n')
+			var lineEndAbs int
+			if lineEnd == -1 {
+				lineEndAbs = len(haystack)
+			} else {
+				lineEndAbs = pos + lineEnd
+			}
+			// Find LAST suffix in this line for greedy match
+			lastPos := bytes.LastIndex(haystack[matchLineStart:lineEndAbs], s.suffixBytes)
+			if lastPos >= 0 {
+				matchEnd := matchLineStart + lastPos + s.suffixLen
+				if matchEnd > len(haystack) {
+					matchEnd = len(haystack)
+				}
+				return NewMatch(matchLineStart, matchEnd, haystack)
 			}
 			return nil
 		}
@@ -311,14 +329,32 @@ func (s *ReverseSuffixSearcher) FindIndicesAt(haystack []byte, at int) (start, e
 		}
 
 		// For unanchored patterns (like .*@suffix), match starts at 'at'.
-		// Forward verification gets the correct greedy end.
+		// Prefilter found suffix at 'pos'. For correct greedy semantics,
+		// find the LAST suffix before the next newline.
 		if s.matchStartZero {
-			matchEnd := s.forwardDFA.SearchAt(haystack, at)
-			if matchEnd >= 0 {
-				return at, matchEnd, true
+			matchLineStart := at
+			for matchLineStart < len(haystack) && haystack[matchLineStart] == '\n' {
+				matchLineStart++
 			}
-			// DFA failed — fallback to PikeVM
-			return s.pikevm.SearchAt(haystack, at)
+			if matchLineStart >= len(haystack) {
+				return -1, -1, false
+			}
+			lineEnd := bytes.IndexByte(haystack[pos:], '\n')
+			var lineEndAbs int
+			if lineEnd == -1 {
+				lineEndAbs = len(haystack)
+			} else {
+				lineEndAbs = pos + lineEnd
+			}
+			lastPos := bytes.LastIndex(haystack[matchLineStart:lineEndAbs], s.suffixBytes)
+			if lastPos >= 0 {
+				matchEnd := matchLineStart + lastPos + s.suffixLen
+				if matchEnd > len(haystack) {
+					matchEnd = len(haystack)
+				}
+				return matchLineStart, matchEnd, true
+			}
+			return -1, -1, false
 		}
 
 		// Use reverse DFA with anti-quadratic guard to find match START position
