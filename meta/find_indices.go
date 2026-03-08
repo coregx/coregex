@@ -228,16 +228,22 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
 		return e.pikevm.Search(haystack)
 	}
 
-	// Use DFA search to check if there's a match
-	pos := e.dfa.Find(haystack)
-	if pos == -1 {
+	// Prefilter skip: jump to candidate position, then PikeVM from there.
+	if e.prefilter != nil {
+		pos := e.prefilter.Find(haystack, 0)
+		if pos == -1 {
+			return -1, -1, false
+		}
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		return e.pikevm.SearchAt(haystack, pos)
+	}
+
+	// No prefilter: DFA with early termination + PikeVM.
+	if !e.dfa.IsMatch(haystack) {
 		return -1, -1, false
 	}
 
-	// DFA found a match - use PikeVM for exact bounds (leftmost-first semantics)
-	// NOTE: Bidirectional search (reverse DFA) doesn't work correctly here because
-	// DFA.Find returns the END of LONGEST match, not FIRST match. For patterns like
-	// (?m)abc$ on "abc\nabc", DFA returns 7 but correct first match ends at 3.
+	// DFA confirmed a match exists - use PikeVM for exact bounds
 	return e.pikevm.Search(haystack)
 }
 
@@ -259,13 +265,27 @@ func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
 		return e.pikevm.SearchAt(haystack, at)
 	}
 
-	// Use DFA search to check if there's a match
-	pos := e.dfa.FindAt(haystack, at)
-	if pos == -1 {
+	// Prefilter skip: use prefix prefilter to jump to candidate position,
+	// then PikeVM from there. This avoids PikeVM scanning non-matching regions.
+	// For patterns like \{\{(.*?)\}\} with prefix prefilter for "{{",
+	// PikeVM only processes ~8 bytes per match instead of ~25.
+	if e.prefilter != nil {
+		pos := e.prefilter.Find(haystack, at)
+		if pos == -1 {
+			return -1, -1, false
+		}
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		return e.pikevm.SearchAt(haystack, pos)
+	}
+
+	// No prefilter: DFA with early termination + PikeVM.
+	// IsMatchAt is O(k) where k = distance to first match, vs FindAt's O(n)
+	// which scans for the longest match. Avoids O(n²) in FindAll.
+	if !e.dfa.IsMatchAt(haystack, at) {
 		return -1, -1, false
 	}
 
-	// DFA found a match - use PikeVM for exact bounds (leftmost-first semantics)
+	// DFA confirmed a match exists - use PikeVM for exact bounds
 	return e.pikevm.SearchAt(haystack, at)
 }
 

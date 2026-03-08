@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allocation for inputs with many matches (e.g., 150K replacements on 6MB
   string took 2m19s). Fix: replaced with `strings.Builder` for O(n) performance
   (now completes in ~1.3s).
+- **DFA FindAll O(n²) scanning for dense-match inputs** —
+  `findIndicesDFAAt` used `DFA.FindAt` (longest-match scan, O(n)) as prefilter,
+  then PikeVM re-scanned for exact bounds. For 2000 matches over 50KB, total DFA
+  work was ~50MB. Fix: added `DFA.IsMatchAt` with early termination (O(k) where
+  k = distance to first match), and prefilter skip that jumps PikeVM directly to
+  the candidate position. Template pattern `\{\{(.*?)\}\}` FindAll improved ~37%.
 
 ## [0.12.5] - 2026-03-08
 
