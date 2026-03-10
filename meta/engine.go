@@ -50,6 +50,17 @@ type Engine struct {
 
 	nfa *nfa.NFA
 
+	// runeNFA is an NFA compiled with UseRuneStates=true (sparse dispatch).
+	// Instead of ~9 split states chaining UTF-8 byte-range alternation branches
+	// for each '.', it uses a single sparse state that maps each leading byte
+	// range directly to its continuation chain. This gives PikeVM O(1) dispatch
+	// instead of O(branches) split-chain DFS per byte position.
+	// Measured 2.8-4.8x PikeVM speedup on dot-heavy patterns.
+	//
+	// This field is nil if the pattern doesn't contain '.' (no benefit).
+	// The byte-level NFA (nfa field) remains unchanged for DFA/strategy use.
+	runeNFA *nfa.NFA
+
 	// asciiNFA is an NFA compiled in ASCII-only mode (V11-002 optimization).
 	// When the pattern contains '.' and input is ASCII-only (all bytes < 0x80),
 	// this NFA is used instead of the main NFA. ASCII mode compiles '.' to

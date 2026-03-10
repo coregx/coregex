@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.7] - 2026-03-10
+
+### Performance
+- **PikeVM sparse-dispatch for `.` patterns** (Issue [#132](https://github.com/coregx/coregex/issues/132)) —
+  The NFA compiler generated ~9 split states chaining UTF-8 byte-range alternation
+  branches for each `.` (AnyCharNotNL). PikeVM had to DFS-traverse the entire split
+  chain at every byte position, resulting in O(branches) work per byte. For `.*?`
+  patterns on large inputs (e.g., `\{\{(.*?)\}\}` on 10MB template), this caused
+  ~5 billion branch evaluations.
+  Fix: new `compileUTF8AnySparse()` compiles `.` as a single sparse state that maps
+  each leading byte range directly to its continuation chain — O(1) dispatch instead
+  of O(branches) split-chain traversal. Same approach as Rust regex's `State::Sparse`.
+  PikeVM speedup: **2.8-4.8x** on dot-heavy patterns. DFA unaffected (uses byte-level NFA).
+  Reported by [@kostya](https://github.com/kostya) via LangArena benchmarks.
+
 ## [0.12.6] - 2026-03-08
 
 ### Fixed
