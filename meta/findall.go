@@ -38,12 +38,25 @@ func (e *Engine) FindSubmatch(haystack []byte) *MatchWithCaptures {
 // This method is used by ReplaceAll* operations to correctly handle anchors like ^.
 // Unlike FindSubmatch, it takes the FULL haystack and a starting position.
 // Thread-safe: uses pooled state for both OnePass cache and PikeVM.
+//
+// Two-phase search (Rust-style optimization):
+//
+//	Phase 1: DFA/strategy finds match boundaries [start, end] — O(n) fast scan
+//	Phase 2: PikeVM extracts captures within [start, end] — O(match_len)
+//
+// This reduces PikeVM work from O(remaining_haystack) to O(match_len) per match.
+// For 50K matches on 10MB input: ~400x less PikeVM work.
 func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
+	if at > len(haystack) {
+		return nil
+	}
+
 	// Get pooled state first for thread-safe access
 	state := e.getSearchState()
 	defer e.putSearchState(state)
 
-	// For position 0, try OnePass DFA if available (10-20x faster for anchored patterns)
+	// For position 0, try OnePass DFA if available (10-20x faster for anchored patterns).
+	// OnePass handles captures natively — no need for two-phase search.
 	if at == 0 && e.onepass != nil && state.onepassCache != nil {
 		atomic.AddUint64(&e.stats.OnePassSearches, 1)
 		slots := e.onepass.Search(haystack, state.onepassCache)
@@ -53,14 +66,36 @@ func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
 			return NewMatchWithCaptures(haystack, captures)
 		}
 		// OnePass failed (input doesn't match from position 0)
-		// Fall through to PikeVM which can find match anywhere
+		// Fall through to two-phase search
 	}
 
-	atomic.AddUint64(&e.stats.NFASearches, 1)
-
-	nfaMatch := state.pikevm.SearchWithCapturesAt(haystack, at)
-	if nfaMatch == nil {
+	// Phase 1: Use DFA/strategy to find match boundaries.
+	// This is the fast O(n) scan that locates [start, end] without captures.
+	start, end, found := e.findIndicesAtWithState(haystack, at, state)
+	if !found {
 		return nil
+	}
+
+	// Optimization: if only group 0 is needed (no sub-captures), skip PikeVM.
+	// The DFA result already provides exact [start, end] boundaries.
+	if e.nfa.CaptureCount() <= 1 {
+		captures := [][]int{{start, end}}
+		return NewMatchWithCaptures(haystack, captures)
+	}
+
+	// Phase 2: PikeVM extracts captures within the narrow [start, end] span.
+	// The full haystack is passed for lookbehind context (\b at span boundary),
+	// but PikeVM only processes bytes within [start, end].
+	atomic.AddUint64(&e.stats.NFASearches, 1)
+	nfaMatch := state.pikevm.SearchWithCapturesInSpan(haystack, start, end)
+	if nfaMatch == nil {
+		// Defensive fallback: DFA found a match but PikeVM disagrees.
+		// This should not happen with correct DFA boundaries, but fall back
+		// to full PikeVM search for safety.
+		nfaMatch = state.pikevm.SearchWithCapturesAt(haystack, at)
+		if nfaMatch == nil {
+			return nil
+		}
 	}
 
 	return NewMatchWithCaptures(haystack, nfaMatch.Captures)
@@ -253,6 +288,10 @@ func (e *Engine) Count(haystack []byte, n int) int {
 // FindAllSubmatch returns all successive matches with capture group information.
 // If n > 0, returns at most n matches. If n <= 0, returns all matches.
 //
+// Uses DFA-first two-phase search: DFA finds match boundaries, then PikeVM
+// extracts captures within the narrow match span. This reduces PikeVM work
+// from O(remaining_haystack) to O(match_len) per match.
+//
 // Example:
 //
 //	engine, _ := meta.Compile(`(\w+)@(\w+)\.(\w+)`)
@@ -265,35 +304,41 @@ func (e *Engine) FindAllSubmatch(haystack []byte, n int) []*MatchWithCaptures {
 
 	var matches []*MatchWithCaptures
 	pos := 0
+	lastMatchEnd := -1
 
 	for pos <= len(haystack) {
-		// Use PikeVM for capture extraction
-		atomic.AddUint64(&e.stats.NFASearches, 1)
-		nfaMatch := e.pikevm.SearchWithCaptures(haystack[pos:])
-		if nfaMatch == nil {
+		match := e.FindSubmatchAt(haystack, pos)
+		if match == nil {
 			break
 		}
 
-		// Adjust captures to absolute positions
-		// Captures is [][]int where each element is [start, end] for a group
-		adjustedCaptures := make([][]int, len(nfaMatch.Captures))
-		for i, cap := range nfaMatch.Captures {
-			if len(cap) >= 2 && cap[0] >= 0 {
-				adjustedCaptures[i] = []int{pos + cap[0], pos + cap[1]}
-			} else {
-				adjustedCaptures[i] = nil // Unmatched group
+		matchStart := match.Start()
+		matchEnd := match.End()
+
+		// Skip empty matches at the end of previous non-empty match (stdlib behavior)
+		//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
+		if matchStart == matchEnd && matchStart == lastMatchEnd {
+			pos++
+			if pos > len(haystack) {
+				break
 			}
+			continue
 		}
 
-		match := NewMatchWithCaptures(haystack, adjustedCaptures)
 		matches = append(matches, match)
 
+		// Track non-empty match ends for the skip rule
+		if matchStart != matchEnd {
+			lastMatchEnd = matchEnd
+		}
+
 		// Move position past this match
-		end := nfaMatch.End
-		if end > 0 {
-			pos += end
-		} else {
-			// Empty match: advance by 1 to avoid infinite loop
+		switch {
+		case matchStart == matchEnd:
+			pos = matchEnd + 1
+		case matchEnd > pos:
+			pos = matchEnd
+		default:
 			pos++
 		}
 
