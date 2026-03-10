@@ -12,6 +12,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.8] - 2026-03-10
+
+### Performance
+- **Streaming ReplaceAll — single-pass without `[][]int` allocation** (Issue [#135](https://github.com/coregx/coregex/issues/135)) —
+  `ReplaceAllStringFunc`, `ReplaceAllFunc`, `ReplaceAllLiteral`, and `ReplaceAllLiteralString`
+  converted from two-pass (collect all match indices → iterate) to single-pass streaming.
+  Eliminates `[][]int` allocation for high-match-count inputs (e.g., 800KB for 50K matches).
+  Returns original string when no matches (Cow-like optimization, avoids copy).
+
+- **DFA-first FindSubmatchAt — PikeVM on match span only** (Issue [#135](https://github.com/coregx/coregex/issues/135)) —
+  Implements Rust-style two-phase search for capture extraction:
+  Phase 1: DFA/strategy finds match boundaries `[start, end]` — O(n) fast scan.
+  Phase 2: PikeVM runs anchored within `[start..end]` for captures — O(match_len).
+  Reduces PikeVM work from O(remaining_haystack) to O(match_len) per match.
+  For 50K matches on 10MB: ~400x less PikeVM work. Also adds `is_capture_search_needed`
+  optimization: when only group 0 is needed, PikeVM is skipped entirely.
+
+### Fixed
+- **FindAllSubmatch context loss** — `FindAllSubmatch` previously sliced the haystack
+  (`haystack[pos:]`), losing lookbehind context for `\b` word boundary assertions at
+  match boundaries. Now uses `FindSubmatchAt` with full haystack preservation.
+
+## [0.12.8] - 2026-03-10
+
+### Performance
+- **Streaming ReplaceAll — single-pass without `[][]int` allocation** (Issue [#135](https://github.com/coregx/coregex/issues/135)) —
+  `ReplaceAllStringFunc`, `ReplaceAllFunc`, `ReplaceAllLiteral`, and `ReplaceAllLiteralString`
+  converted from two-pass (collect all match indices → iterate) to single-pass streaming.
+  Eliminates `[][]int` allocation for high-match-count inputs (e.g., 800KB for 50K matches).
+  Returns original string when no matches (Cow-like optimization, avoids copy).
+
+- **DFA-first FindSubmatchAt — PikeVM on match span only** (Issue [#135](https://github.com/coregx/coregex/issues/135)) —
+  Implements Rust-style two-phase search for capture extraction:
+  Phase 1: DFA/strategy finds match boundaries `[start, end]` — O(n) fast scan.
+  Phase 2: PikeVM runs anchored within `[start..end]` for captures — O(match_len).
+  Reduces PikeVM work from O(remaining_haystack) to O(match_len) per match.
+  For 50K matches on 10MB: ~400x less PikeVM work. Also adds `is_capture_search_needed`
+  optimization: when only group 0 is needed, PikeVM is skipped entirely.
+
+### Fixed
+- **FindAllSubmatch context loss** — `FindAllSubmatch` previously sliced the haystack
+  (`haystack[pos:]`), losing lookbehind context for `\b` word boundary assertions at
+  match boundaries. Now uses `FindSubmatchAt` with full haystack preservation.
+
 ## [0.12.7] - 2026-03-10
 
 ### Performance
