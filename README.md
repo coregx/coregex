@@ -60,18 +60,20 @@ func main() {
 
 ## Performance
 
-Cross-language benchmarks on 6MB input ([source](https://github.com/kolkov/regex-bench)):
+Cross-language benchmarks on 6MB input, AMD EPYC ([source](https://github.com/kolkov/regex-bench)):
 
-| Pattern | Go stdlib | coregex | vs stdlib |
-|---------|-----------|---------|-----------|
-| Literal alternation | 600 ms | 5 ms | **113x** |
-| Inner `.*keyword.*` | 453 ms | 2 ms | **285x** |
-| Suffix `.*\.txt` | 350 ms | <1 ms | **350x+** |
-| Multiline `(?m)^/.*\.php` | 103 ms | <1 ms | **100x+** |
-| Email validation | 389 ms | <1 ms | **389x+** |
-| URL extraction | 350 ms | <1 ms | **350x+** |
-| IP address | 825 ms | 10 ms | **82x** |
-| Char class `[\w]+` | 670 ms | 112 ms | **6x** |
+| Pattern | Go stdlib | coregex | Rust regex | vs stdlib | vs Rust |
+|---------|-----------|---------|------------|-----------|---------|
+| Literal alternation | 483 ms | 4.6 ms | 0.6 ms | **104x** | 7.8x slower |
+| Multi-literal | 1401 ms | 12.7 ms | 4.6 ms | **110x** | 2.7x slower |
+| Inner `.*keyword.*` | 232 ms | 0.25 ms | 0.28 ms | **926x** | **1.1x faster** |
+| Suffix `.*\.txt` | 234 ms | 0.88 ms | 1.07 ms | **266x** | **1.2x faster** |
+| Multiline `(?m)^/.*\.php` | 103 ms | 0.65 ms | 0.66 ms | **159x** | **~parity** |
+| Email validation | 261 ms | 0.58 ms | 0.21 ms | **449x** | 2.7x slower |
+| URL extraction | 258 ms | 0.63 ms | 0.34 ms | **409x** | 1.8x slower |
+| IP address | 495 ms | 2.2 ms | 12.0 ms | **230x** | **5.5x faster** |
+| Char class `[\w]+` | 525 ms | 40.7 ms | 50.3 ms | **12x** | **1.2x faster** |
+| Word repeat `(\w{2,8})+` | 659 ms | 187 ms | 48.3 ms | **3.5x** | 3.8x slower |
 
 **Where coregex excels:**
 - Multiline patterns (`(?m)^/.*\.php`) — near Rust parity, 100x+ vs stdlib

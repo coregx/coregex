@@ -216,24 +216,35 @@ v1.0.0 STABLE → Production release with API stability guarantee
 
 ## Performance Targets
 
-### Current (v0.8.20) ✅ ACHIEVED
+### Current (v0.12.6) — AMD EPYC, 6MB input ✅ ACHIEVED
 
-| Pattern Type | stdlib | coregex | Speedup | Status |
-|--------------|--------|---------|---------|--------|
-| Inner literal `.*keyword.*` | 12.6ms | 4µs | **3154x** | ✅ |
-| Suffix `.*\.txt` | 1.3ms | 855ns | **1549x** | ✅ |
-| Suffix alternation `.*\.(txt\|log\|md)` 1KB | 15.5µs | 454ns | **34x** | ✅ |
-| Suffix alternation `.*\.(txt\|log\|md)` 1MB | 57ms | 147µs | **385x** | ✅ |
-| FindAll `.*@suffix` | 316ms | 3.6ms | **87x** | ✅ |
-| Alternation `(foo\|bar\|...)` | 9.7µs | 40ns | **242x** | ✅ |
-| Case-insensitive 32KB | 1.2ms | 4.6µs | **263x** | ✅ |
-| Character class `\d+` | 6.7µs | 1.5µs | **4.5x** | ✅ |
-| Email patterns | 22µs | 2µs | **11x** | ✅ |
+Cross-language benchmarks via [regex-bench](https://github.com/kolkov/regex-bench):
+
+| Pattern | Go stdlib | coregex | Rust regex | vs stdlib | vs Rust |
+|---------|-----------|---------|------------|-----------|---------|
+| Literal alternation | 483 ms | 4.6 ms | 0.6 ms | **104x** | 7.8x slower |
+| Multi-literal | 1401 ms | 12.7 ms | 4.6 ms | **110x** | 2.7x slower |
+| Inner `.*keyword.*` | 232 ms | 0.25 ms | 0.28 ms | **926x** | **1.1x faster** |
+| Suffix `.*\.txt` | 234 ms | 0.88 ms | 1.07 ms | **266x** | **1.2x faster** |
+| Multiline `(?m)^/.*\.php` | 103 ms | 0.65 ms | 0.66 ms | **159x** | **~parity** |
+| Email validation | 261 ms | 0.58 ms | 0.21 ms | **449x** | 2.7x slower |
+| URL extraction | 258 ms | 0.63 ms | 0.34 ms | **409x** | 1.8x slower |
+| IP address | 495 ms | 2.2 ms | 12.0 ms | **230x** | **5.5x faster** |
+| Char class `[\w]+` | 525 ms | 40.7 ms | 50.3 ms | **12x** | **1.2x faster** |
+| Alpha+digit | 261 ms | 25.7 ms | 11.9 ms | **10x** | 2.1x slower |
+| Word+digit | 271 ms | 26.2 ms | 12.0 ms | **10x** | 2.1x slower |
+| Word repeat `(\w{2,8})+` | 659 ms | 187 ms | 48.3 ms | **3.5x** | 3.8x slower |
+| HTTP methods | 106 ms | 0.90 ms | 0.70 ms | **117x** | 1.2x slower |
+| Anchored PHP | 0.00 ms | 0.01 ms | 0.01 ms | ~1x | ~parity |
+| Multiline PHP | 103 ms | 0.65 ms | 0.66 ms | **159x** | **~parity** |
+
+**5 patterns faster than Rust**: inner_literal, suffix, IP, char_class, multiline_php.
 
 ### Remaining for v1.0.0
 
 | Feature | Status | Priority |
 |---------|--------|----------|
+| Close Teddy gap vs Rust (7.8x) | Blocked on Go 1.26 archsimd | High |
 | ARM NEON SIMD | Planned | Medium |
 | Look-around assertions | Planned | Medium |
 | API stability guarantee | Required | High |
