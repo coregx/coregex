@@ -51,22 +51,26 @@ func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
 		return nil
 	}
 
-	// Get pooled state first for thread-safe access
+	// Get pooled state for thread-safe access
 	state := e.getSearchState()
 	defer e.putSearchState(state)
 
+	return e.findSubmatchAtWithState(haystack, at, state)
+}
+
+// findSubmatchAtWithState is the state-reusing internal version of FindSubmatchAt.
+// Used by FindAllSubmatch to avoid per-match sync.Pool get/put overhead.
+func (e *Engine) findSubmatchAtWithState(haystack []byte, at int, state *SearchState) *MatchWithCaptures {
 	// For position 0, try OnePass DFA if available (10-20x faster for anchored patterns).
 	// OnePass handles captures natively — no need for two-phase search.
 	if at == 0 && e.onepass != nil && state.onepassCache != nil {
 		atomic.AddUint64(&e.stats.OnePassSearches, 1)
 		slots := e.onepass.Search(haystack, state.onepassCache)
 		if slots != nil {
-			// Convert flat slots [start0, end0, start1, end1, ...] to nested captures
 			captures := slotsToCaptures(slots)
 			return NewMatchWithCaptures(haystack, captures)
 		}
-		// OnePass failed (input doesn't match from position 0)
-		// Fall through to two-phase search
+		// OnePass failed — fall through to two-phase search
 	}
 
 	// Two-phase search is only beneficial for DFA-based strategies where Phase 1
@@ -104,8 +108,6 @@ func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
 	nfaMatch := state.pikevm.SearchWithCapturesInSpan(haystack, start, end)
 	if nfaMatch == nil {
 		// Defensive fallback: DFA found a match but PikeVM disagrees.
-		// This should not happen with correct DFA boundaries, but fall back
-		// to full PikeVM search for safety.
 		nfaMatch = state.pikevm.SearchWithCapturesAt(haystack, at)
 		if nfaMatch == nil {
 			return nil
@@ -320,8 +322,13 @@ func (e *Engine) FindAllSubmatch(haystack []byte, n int) []*MatchWithCaptures {
 	pos := 0
 	lastMatchEnd := -1
 
+	// Get state ONCE for entire iteration — eliminates sync.Pool overhead per match.
+	// Critical for race detector performance (10+ minute timeout without this).
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
 	for pos <= len(haystack) {
-		match := e.FindSubmatchAt(haystack, pos)
+		match := e.findSubmatchAtWithState(haystack, pos, state)
 		if match == nil {
 			break
 		}
