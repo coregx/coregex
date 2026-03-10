@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-03-10 | **Current Version**: v0.12.7 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-03-10 | **Current Version**: v0.12.8 | **Target**: v1.0.0 stable
 
 ---
 
@@ -12,7 +12,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 
 ### Current State vs Target
 
-| Metric | Current (v0.12.7) | Target (v1.0.0) |
+| Metric | Current (v0.12.8) | Target (v1.0.0) |
 |--------|-------------------|-----------------|
 | Inner literal speedup | **280-3154x** | ✅ Achieved |
 | Case-insensitive speedup | **263x** | ✅ Achieved |
@@ -70,7 +70,9 @@ v0.12.5 ✅ → Non-greedy quantifier fix, ReverseSuffix correctness (#124)
          ↓
 v0.12.6 ✅ → BoundedBacktracker span-based CanHandle, ReplaceAllStringFunc O(n) (#127)
          ↓
-v0.12.7 (Current) ✅ → PikeVM sparse-dispatch for dot patterns, 2.8-4.8x speedup (#132)
+v0.12.7 ✅ → PikeVM sparse-dispatch for dot patterns, 2.8-4.8x speedup (#132)
+         ↓
+v0.12.8 (Current) ✅ → Streaming ReplaceAll + DFA-first FindSubmatchAt (#135)
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
@@ -106,6 +108,8 @@ v1.0.0 STABLE → Production release with API stability guarantee
 - ✅ **v0.12.5**: Non-greedy quantifier fix, ReverseSuffix forward verification (#124)
 - ✅ **v0.12.6**: BoundedBacktracker span-based CanHandle, ReplaceAllStringFunc O(n) (#127)
 - ✅ **v0.12.7**: PikeVM sparse-dispatch for `.` patterns, 2.8-4.8x speedup (#132)
+- ✅ **v0.12.8**: Streaming ReplaceAll + DFA-first FindSubmatchAt, Rust-style two-phase search (#135)
+- ✅ **v0.12.8**: Streaming ReplaceAll + DFA-first FindSubmatchAt, Rust-style two-phase search (#135)
 
 ---
 
@@ -197,7 +201,7 @@ v1.0.0 STABLE → Production release with API stability guarantee
 
 ## Feature Comparison Matrix
 
-| Feature | RE2 | rust-regex | coregex v0.12.7 | coregex v1.0 |
+| Feature | RE2 | rust-regex | coregex v0.12.8 | coregex v1.0 |
 |---------|-----|------------|-----------------|--------------|
 | Lazy DFA | ✅ | ✅ | ✅ | ✅ |
 | Thompson NFA | ✅ | ✅ | ✅ | ✅ |
@@ -355,7 +359,8 @@ Reference implementations available locally:
 
 | Version | Date | Type | Key Changes |
 |---------|------|------|-------------|
-| **v0.12.7** | 2026-03-10 | Performance | **PikeVM sparse-dispatch for `.` patterns, 2.8-4.8x speedup (#132)** |
+| **v0.12.8** | 2026-03-10 | Performance | **Streaming ReplaceAll + DFA-first FindSubmatchAt (#135)** |
+| v0.12.8 | 2026-03-10 | Performance | PikeVM sparse-dispatch for `.` patterns, 2.8-4.8x speedup (#132) |
 | v0.12.6 | 2026-03-08 | Fix | BoundedBacktracker span-based CanHandle, ReplaceAllStringFunc O(n) (#127) |
 | v0.12.5 | 2026-03-08 | Fix | Non-greedy quantifier fix, ReverseSuffix correctness (#124) |
 | v0.12.4 | 2026-03-01 | Test | Test coverage 80%+, CI improvements, awesome-go readiness |
@@ -396,4 +401,4 @@ Reference implementations available locally:
 
 ---
 
-*Current: v0.12.7 | Next: v0.13.0 | Target: v1.0.0*
+*Current: v0.12.8 | Target: v1.0.0*

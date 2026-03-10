@@ -841,38 +841,64 @@ func (r *Regex) FindAllStringIndex(s string, n int) [][]int {
 //	result := re.ReplaceAllLiteral([]byte("age: 42"), []byte("XX"))
 //	// result = []byte("age: XX")
 func (r *Regex) ReplaceAllLiteral(src, repl []byte) []byte {
-	indices := r.FindAllIndex(src, -1)
-	if len(indices) == 0 {
-		// No matches, return copy of src
-		result := make([]byte, len(src))
-		copy(result, src)
-		return result
-	}
-
-	// Pre-allocate result buffer
-	// Estimate: len(src) + (len(repl)-avgMatchLen)*numMatches
-	totalMatchLen := 0
-	for _, idx := range indices {
-		totalMatchLen += idx[1] - idx[0]
-	}
-	avgMatchLen := totalMatchLen / len(indices)
-	estimatedLen := len(src) + (len(repl)-avgMatchLen)*len(indices)
-	if estimatedLen < 0 {
-		estimatedLen = len(src)
-	}
-
-	result := make([]byte, 0, estimatedLen)
+	var result []byte
 	lastEnd := 0
+	pos := 0
+	lastMatchEnd := -1
+	matched := false
 
-	for _, idx := range indices {
-		// Append text before match
-		result = append(result, src[lastEnd:idx[0]]...)
-		// Append replacement
+	for {
+		start, end, found := r.engine.FindIndicesAt(src, pos)
+		if !found {
+			break
+		}
+
+		// Skip empty matches at the position where a non-empty match just ended.
+		// This matches Go stdlib behavior (see FindAllIndex for details).
+		//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
+		if start == end && start == lastMatchEnd {
+			pos++
+			if pos > len(src) {
+				break
+			}
+			continue
+		}
+
+		if !matched {
+			// Lazy allocation on first match
+			result = make([]byte, 0, len(src))
+			matched = true
+		}
+
+		result = append(result, src[lastEnd:start]...)
 		result = append(result, repl...)
-		lastEnd = idx[1]
+		lastEnd = end
+
+		if start != end {
+			lastMatchEnd = end
+		}
+
+		switch {
+		case start == end:
+			pos = end + 1
+		case end > pos:
+			pos = end
+		default:
+			pos++
+		}
+
+		if pos > len(src) {
+			break
+		}
 	}
 
-	// Append remaining text
+	if !matched {
+		// No matches: return a copy of src (stdlib compatibility)
+		out := make([]byte, len(src))
+		copy(out, src)
+		return out
+	}
+
 	result = append(result, src[lastEnd:]...)
 	return result
 }
@@ -887,7 +913,61 @@ func (r *Regex) ReplaceAllLiteral(src, repl []byte) []byte {
 //	result := re.ReplaceAllLiteralString("age: 42", "XX")
 //	// result = "age: XX"
 func (r *Regex) ReplaceAllLiteralString(src, repl string) string {
-	return string(r.ReplaceAllLiteral([]byte(src), []byte(repl)))
+	b := stringToBytes(src)
+	var buf strings.Builder
+	lastEnd := 0
+	pos := 0
+	lastMatchEnd := -1
+	matched := false
+
+	for {
+		start, end, found := r.engine.FindIndicesAt(b, pos)
+		if !found {
+			break
+		}
+
+		//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
+		if start == end && start == lastMatchEnd {
+			pos++
+			if pos > len(src) {
+				break
+			}
+			continue
+		}
+
+		if !matched {
+			buf.Grow(len(src))
+			matched = true
+		}
+
+		buf.WriteString(src[lastEnd:start])
+		buf.WriteString(repl)
+		lastEnd = end
+
+		if start != end {
+			lastMatchEnd = end
+		}
+
+		switch {
+		case start == end:
+			pos = end + 1
+		case end > pos:
+			pos = end
+		default:
+			pos++
+		}
+
+		if pos > len(src) {
+			break
+		}
+	}
+
+	if !matched {
+		return src
+	}
+
+	buf.WriteString(src[lastEnd:])
+	return buf.String()
 }
 
 // Expand appends template to dst and returns the result; during the
@@ -1107,27 +1187,61 @@ func (r *Regex) ReplaceAllString(src, repl string) string {
 //	})
 //	// result = []byte("2 4 6")
 func (r *Regex) ReplaceAllFunc(src []byte, repl func([]byte) []byte) []byte {
-	indices := r.FindAllIndex(src, -1)
-	if len(indices) == 0 {
-		// No matches, return copy of src
-		result := make([]byte, len(src))
-		copy(result, src)
-		return result
-	}
-
 	var result []byte
 	lastEnd := 0
+	pos := 0
+	lastMatchEnd := -1
+	matched := false
 
-	for _, idx := range indices {
-		// Append text before match
-		result = append(result, src[lastEnd:idx[0]]...)
-		// Apply replacement function
-		replacement := repl(src[idx[0]:idx[1]])
-		result = append(result, replacement...)
-		lastEnd = idx[1]
+	for {
+		start, end, found := r.engine.FindIndicesAt(src, pos)
+		if !found {
+			break
+		}
+
+		//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
+		if start == end && start == lastMatchEnd {
+			pos++
+			if pos > len(src) {
+				break
+			}
+			continue
+		}
+
+		if !matched {
+			result = make([]byte, 0, len(src))
+			matched = true
+		}
+
+		result = append(result, src[lastEnd:start]...)
+		result = append(result, repl(src[start:end])...)
+		lastEnd = end
+
+		if start != end {
+			lastMatchEnd = end
+		}
+
+		switch {
+		case start == end:
+			pos = end + 1
+		case end > pos:
+			pos = end
+		default:
+			pos++
+		}
+
+		if pos > len(src) {
+			break
+		}
 	}
 
-	// Append remaining text
+	if !matched {
+		// No matches: return a copy of src (stdlib compatibility)
+		out := make([]byte, len(src))
+		copy(out, src)
+		return out
+	}
+
 	result = append(result, src[lastEnd:]...)
 	return result
 }
@@ -1146,19 +1260,57 @@ func (r *Regex) ReplaceAllFunc(src []byte, repl func([]byte) []byte) []byte {
 //	})
 //	// result = "2 4 6"
 func (r *Regex) ReplaceAllStringFunc(src string, repl func(string) string) string {
-	indices := r.FindAllStringIndex(src, -1)
-	if len(indices) == 0 {
-		return src
+	b := stringToBytes(src)
+	var buf strings.Builder
+	lastEnd := 0
+	pos := 0
+	lastMatchEnd := -1
+	matched := false
+
+	for {
+		start, end, found := r.engine.FindIndicesAt(b, pos)
+		if !found {
+			break
+		}
+
+		//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
+		if start == end && start == lastMatchEnd {
+			pos++
+			if pos > len(src) {
+				break
+			}
+			continue
+		}
+
+		if !matched {
+			buf.Grow(len(src))
+			matched = true
+		}
+
+		buf.WriteString(src[lastEnd:start])
+		buf.WriteString(repl(src[start:end]))
+		lastEnd = end
+
+		if start != end {
+			lastMatchEnd = end
+		}
+
+		switch {
+		case start == end:
+			pos = end + 1
+		case end > pos:
+			pos = end
+		default:
+			pos++
+		}
+
+		if pos > len(src) {
+			break
+		}
 	}
 
-	var buf strings.Builder
-	buf.Grow(len(src))
-	lastEnd := 0
-
-	for _, idx := range indices {
-		buf.WriteString(src[lastEnd:idx[0]])
-		buf.WriteString(repl(src[idx[0]:idx[1]]))
-		lastEnd = idx[1]
+	if !matched {
+		return src
 	}
 
 	buf.WriteString(src[lastEnd:])

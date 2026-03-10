@@ -910,8 +910,10 @@ func (p *PikeVM) SearchWithCapturesAt(haystack []byte, at int) *MatchWithCapture
 	}
 
 	if at == len(haystack) {
-		// At end of input - check if empty string matches
-		if p.matchesEmpty() {
+		// At end of input - check if empty string matches at this position.
+		// Must use matchesEmptyAt with full haystack context for correct
+		// look assertion evaluation (e.g., \B needs previous byte context).
+		if p.matchesEmptyAt(haystack, at) {
 			return &MatchWithCaptures{
 				Start:    at,
 				End:      at,
@@ -922,8 +924,8 @@ func (p *PikeVM) SearchWithCapturesAt(haystack []byte, at int) *MatchWithCapture
 	}
 
 	if len(haystack) == 0 {
-		// Check if empty string matches
-		if p.matchesEmpty() {
+		// Check if empty string matches (haystack is empty, pos=0)
+		if p.matchesEmptyAt(haystack, 0) {
 			return &MatchWithCaptures{
 				Start:    0,
 				End:      0,
@@ -1080,6 +1082,97 @@ func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithC
 			Start:    startPos,
 			End:      lastMatchPos,
 			Captures: p.buildCapturesResult(lastMatchCaptures, startPos, lastMatchPos),
+		}
+	}
+	return nil
+}
+
+// SearchWithCapturesInSpan searches for a match anchored at spanStart,
+// not exceeding spanEnd. The full haystack is preserved for lookbehind
+// context (e.g., \b word boundary assertions at spanStart-1).
+//
+// This implements Phase 2 of the DFA-first two-phase search:
+//
+//	Phase 1: DFA/strategy finds match boundaries [spanStart, spanEnd]
+//	Phase 2: PikeVM extracts captures within [spanStart, spanEnd]
+//
+// The search is anchored: threads are seeded only at spanStart, not at
+// every position. This reduces PikeVM work from O(remaining_haystack)
+// to O(match_len) per match.
+//
+// Preconditions:
+//   - 0 <= spanStart <= spanEnd <= len(haystack)
+//   - A match is known to exist in [spanStart, spanEnd] (from Phase 1)
+//
+// Returns nil if no match is found (should not happen if Phase 1 is correct).
+//
+//nolint:gocognit // Merged match-check + step loop (Rust's nexts pattern) is inherently complex
+func (p *PikeVM) SearchWithCapturesInSpan(haystack []byte, spanStart, spanEnd int) *MatchWithCaptures {
+	if spanStart > spanEnd || spanEnd > len(haystack) {
+		return nil
+	}
+
+	// Reset state
+	p.internalState.Queue = p.internalState.Queue[:0]
+	p.internalState.NextQueue = p.internalState.NextQueue[:0]
+	p.internalState.Visited.Clear()
+
+	// Seed thread only at spanStart (anchored search within span)
+	caps := p.newCaptures()
+	p.addThread(thread{state: p.nfa.StartAnchored(), startPos: spanStart, captures: caps}, haystack, spanStart)
+
+	lastMatchPos := -1
+	var lastMatchCaptures []int
+
+	// Process bytes from spanStart to spanEnd (not len(haystack)).
+	// The full haystack slice is kept so that addThread/step can evaluate
+	// lookbehind assertions (\b) using bytes before spanStart.
+	for pos := spanStart; pos <= spanEnd; pos++ {
+		if pos < spanEnd {
+			b := haystack[pos]
+			p.internalState.Visited.Clear()
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if pos > lastMatchPos || lastMatchPos == -1 {
+						lastMatchPos = pos
+						lastMatchCaptures = t.captures.copyData()
+					}
+					if !p.internalState.Longest {
+						break
+					}
+					continue
+				}
+				p.step(t, b, haystack, pos+1)
+			}
+		} else {
+			// At spanEnd: only check for match states, don't step further
+			for _, t := range p.internalState.Queue {
+				if p.nfa.IsMatch(t.state) {
+					if pos > lastMatchPos || lastMatchPos == -1 {
+						lastMatchPos = pos
+						lastMatchCaptures = t.captures.copyData()
+					}
+					break
+				}
+			}
+		}
+
+		if len(p.internalState.NextQueue) == 0 && (pos >= spanEnd || lastMatchPos != -1) {
+			break
+		}
+
+		if pos >= spanEnd {
+			break
+		}
+
+		p.internalState.Queue, p.internalState.NextQueue = p.internalState.NextQueue, p.internalState.Queue[:0]
+	}
+
+	if lastMatchPos != -1 {
+		return &MatchWithCaptures{
+			Start:    spanStart,
+			End:      lastMatchPos,
+			Captures: p.buildCapturesResult(lastMatchCaptures, spanStart, lastMatchPos),
 		}
 	}
 	return nil
