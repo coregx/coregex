@@ -910,8 +910,10 @@ func (p *PikeVM) SearchWithCapturesAt(haystack []byte, at int) *MatchWithCapture
 	}
 
 	if at == len(haystack) {
-		// At end of input - check if empty string matches
-		if p.matchesEmpty() {
+		// At end of input - check if empty string matches at this position.
+		// Must use matchesEmptyAt with full haystack context for correct
+		// look assertion evaluation (e.g., \B needs previous byte context).
+		if p.matchesEmptyAt(haystack, at) {
 			return &MatchWithCaptures{
 				Start:    at,
 				End:      at,
@@ -922,8 +924,8 @@ func (p *PikeVM) SearchWithCapturesAt(haystack []byte, at int) *MatchWithCapture
 	}
 
 	if len(haystack) == 0 {
-		// Check if empty string matches
-		if p.matchesEmpty() {
+		// Check if empty string matches (haystack is empty, pos=0)
+		if p.matchesEmptyAt(haystack, 0) {
 			return &MatchWithCaptures{
 				Start:    0,
 				End:      0,

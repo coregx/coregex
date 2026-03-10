@@ -69,6 +69,20 @@ func (e *Engine) FindSubmatchAt(haystack []byte, at int) *MatchWithCaptures {
 		// Fall through to two-phase search
 	}
 
+	// Two-phase search is only beneficial for DFA-based strategies where Phase 1
+	// is a fast O(n) scan. For NFA/BoundedBacktracker strategies, Phase 1 uses
+	// the same engines as Phase 2, so go directly to PikeVM with captures.
+	// BoundedBacktracker is also unsafe for two-phase: its recursive implementation
+	// can overflow the stack on large inputs with deep UTF-8 NFA chains (386/macOS).
+	if e.strategy == UseBoundedBacktracker || e.strategy == UseNFA {
+		atomic.AddUint64(&e.stats.NFASearches, 1)
+		nfaMatch := state.pikevm.SearchWithCapturesAt(haystack, at)
+		if nfaMatch == nil {
+			return nil
+		}
+		return NewMatchWithCaptures(haystack, nfaMatch.Captures)
+	}
+
 	// Phase 1: Use DFA/strategy to find match boundaries.
 	// This is the fast O(n) scan that locates [start, end] without captures.
 	start, end, found := e.findIndicesAtWithState(haystack, at, state)
