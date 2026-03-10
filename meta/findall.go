@@ -73,12 +73,22 @@ func (e *Engine) findSubmatchAtWithState(haystack []byte, at int, state *SearchS
 		// OnePass failed — fall through to two-phase search
 	}
 
-	// Two-phase search is only beneficial for DFA-based strategies where Phase 1
-	// is a fast O(n) scan. For NFA/BoundedBacktracker strategies, Phase 1 uses
-	// the same engines as Phase 2, so go directly to PikeVM with captures.
-	// BoundedBacktracker is also unsafe for two-phase: its recursive implementation
-	// can overflow the stack on large inputs with deep UTF-8 NFA chains (386/macOS).
-	if e.strategy == UseBoundedBacktracker || e.strategy == UseNFA {
+	// Strategies that must bypass two-phase search and go directly to PikeVM:
+	//
+	// Thread-safety: UseDFA, UseBoth, UseDigitPrefilter access shared mutable state
+	// (e.dfa lazy DFA, e.pikevm) that is NOT safe for concurrent access.
+	// findSubmatchAtWithState is called with a pooled SearchState, but Phase 1
+	// dispatches to findIndicesDFAAt/findIndicesAdaptiveAt/findIndicesDigitPrefilterAt
+	// which use e.dfa and e.pikevm directly, causing data races.
+	//
+	// Performance: UseNFA Phase 1 uses the same PikeVM as Phase 2, so two-phase
+	// adds overhead without benefit.
+	//
+	// Safety: UseBoundedBacktracker's recursive implementation can overflow the
+	// stack on large inputs with deep UTF-8 NFA chains (386/macOS 250MB limit).
+	switch e.strategy {
+	case UseBoundedBacktracker, UseNFA,
+		UseDFA, UseBoth, UseDigitPrefilter:
 		atomic.AddUint64(&e.stats.NFASearches, 1)
 		nfaMatch := state.pikevm.SearchWithCapturesAt(haystack, at)
 		if nfaMatch == nil {
