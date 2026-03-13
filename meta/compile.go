@@ -167,6 +167,19 @@ func buildStrategyEngines(
 		}
 	}
 
+	// Build reverse DFA for bidirectional search in UseDFA strategy.
+	// Forward DFA → match end, reverse DFA → match start. O(n) total.
+	// Replaces PikeVM second pass which is O(n*states).
+	// Skip for non-greedy patterns: forward DFA always finds leftmost-longest,
+	// which is incompatible with non-greedy semantics.
+	if result.finalStrategy == UseDFA && result.dfa != nil && !hasNonGreedyQuantifier(re) {
+		reverseNFA := nfa.ReverseAnchored(nfaEngine)
+		revDFA, revErr := lazy.CompileWithConfig(reverseNFA, dfaConfig)
+		if revErr == nil {
+			result.reverseDFA = revDFA
+		}
+	}
+
 	// Build forward+reverse DFA for BoundedBacktracker bidirectional fallback.
 	// When BoundedBacktracker can't handle large inputs (CanHandle fails),
 	// bidirectional DFA (forward→end, reverse→start) is O(n) vs PikeVM's O(n*states).
