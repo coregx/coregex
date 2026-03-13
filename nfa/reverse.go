@@ -391,34 +391,8 @@ func fillReverseState(builder *Builder, revID StateID, edges []reverseEdge, revS
 	}
 
 	// Handle mixed byte ranges + epsilon edges
-	// Create: revID (Split) -> sparseState(byte ranges), epsilonChain
 	if len(epsilonEdges) > 0 {
-		// Build a new sparse state for byte range transitions
-		sparseID := builder.AddSparse([]Transition{{Lo: 0, Hi: 0, Next: InvalidState}})
-		fillSparseState(builder, sparseID, byteRangeEdges, revStateMap)
-
-		// Build epsilon chain
-		epsilonTargets := make([]StateID, 0, len(epsilonEdges))
-		for _, edge := range epsilonEdges {
-			if revTarget, ok := revStateMap[edge.from]; ok {
-				epsilonTargets = append(epsilonTargets, revTarget)
-			}
-		}
-
-		var right StateID
-		if len(epsilonTargets) == 1 {
-			right = epsilonTargets[0]
-		} else if len(epsilonTargets) > 1 {
-			right = buildSplitChain(builder, epsilonTargets)
-		} else {
-			// No valid epsilon targets, just use sparse
-			updateSparseState(builder, revID, nil) // convert to fail
-			fillSparseState(builder, revID, byteRangeEdges, revStateMap)
-			return
-		}
-
-		// Patch revID as Split -> sparse, epsilonChain
-		_ = builder.PatchSplit(revID, sparseID, right)
+		fillMixedState(builder, revID, byteRangeEdges, epsilonEdges, revStateMap)
 		return
 	}
 
@@ -534,6 +508,38 @@ func fillSparseState(builder *Builder, revID StateID, byteRangeEdges []reverseEd
 	// But sparse states can't have epsilon edges directly
 	// We would need to wrap in a split - but that changes the state ID
 	// For now, ignore epsilon edges when we have byte ranges (this is a limitation)
+}
+
+// fillMixedState handles states with both byte range and epsilon incoming edges.
+// Creates: revID (Split) -> sparseState(byte ranges), epsilonChain(epsilon targets)
+func fillMixedState(builder *Builder, revID StateID, byteRangeEdges, epsilonEdges []reverseEdge, revStateMap map[StateID]StateID) {
+	// Build a new sparse state for byte range transitions
+	sparseID := builder.AddSparse([]Transition{{Lo: 0, Hi: 0, Next: InvalidState}})
+	fillSparseState(builder, sparseID, byteRangeEdges, revStateMap)
+
+	// Collect epsilon targets
+	epsilonTargets := make([]StateID, 0, len(epsilonEdges))
+	for _, edge := range epsilonEdges {
+		if revTarget, ok := revStateMap[edge.from]; ok {
+			epsilonTargets = append(epsilonTargets, revTarget)
+		}
+	}
+
+	var right StateID
+	switch len(epsilonTargets) {
+	case 0:
+		// No valid epsilon targets, fall back to sparse only
+		updateSparseState(builder, revID, nil)
+		fillSparseState(builder, revID, byteRangeEdges, revStateMap)
+		return
+	case 1:
+		right = epsilonTargets[0]
+	default:
+		right = buildSplitChain(builder, epsilonTargets)
+	}
+
+	// Patch revID as Split -> sparse, epsilonChain
+	_ = builder.PatchSplit(revID, sparseID, right)
 }
 
 // updateByteRangeState updates a byte range state's fields
