@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.12] - 2026-03-17
+
+### Performance
+- **Prefix trimming for case-fold expanded literals** — when `(?i)` expansion produces
+  >32 incomplete prefix literals (e.g., 225 for `(?i)etc/passwd|wp-admin|\.\./`), trims
+  to 4-byte prefixes and deduplicates. Reduces to ~17 literals that fit Teddy SIMD prefilter
+  instead of slower Aho-Corasick. LangArena `suspicious`: 117ms → 10.9ms (**10.7x faster**,
+  1.8x from Rust, was 54x).
+
 ## [0.12.11] - 2026-03-17
 
 ### Performance
