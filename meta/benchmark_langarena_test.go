@@ -60,29 +60,30 @@ func generateLogData(linesCount int) string {
 
 	for i := 0; i < linesCount; i++ {
 		b.WriteString(ips[i%len(ips)])
-		b.WriteString(fmt.Sprintf(" - - [%d/Oct/2023:%d:55:36 +0000] \"", i%31, i%60))
+		fmt.Fprintf(&b, " - - [%d/Oct/2023:%d:55:36 +0000] \"", i%31, i%60)
 		b.WriteString(methods[i%len(methods)])
 		b.WriteString(" ")
 
-		if i%3 == 0 {
-			b.WriteString(fmt.Sprintf("/login?email=%s%d@%s&password=secret%d",
+		switch {
+		case i%3 == 0:
+			fmt.Fprintf(&b, "/login?email=%s%d@%s&password=secret%d",
 				users[i%len(users)], i%100,
-				domains[i%len(domains)], i%10000))
-		} else if i%5 == 0 {
+				domains[i%len(domains)], i%10000)
+		case i%5 == 0:
 			b.WriteString("/api/data?token=")
 			for j := 0; j < (i%3)+1; j++ {
 				b.WriteString("abcdef123456")
 			}
-		} else if i%7 == 0 {
-			b.WriteString(fmt.Sprintf("/user/profile?session_id=sess_%x", i*12345))
-		} else {
+		case i%7 == 0:
+			fmt.Fprintf(&b, "/user/profile?session_id=sess_%x", i*12345)
+		default:
 			b.WriteString(paths[i%len(paths)])
 		}
 
-		b.WriteString(fmt.Sprintf(" HTTP/1.1\" %d 2326 \"http://%s\" \"%s\"\n",
+		fmt.Fprintf(&b, " HTTP/1.1\" %d 2326 \"http://%s\" %q\n",
 			statuses[i%len(statuses)],
 			domains[i%len(domains)],
-			agents[i%len(agents)]))
+			agents[i%len(agents)])
 	}
 
 	return b.String()
@@ -113,15 +114,15 @@ func generateTemplateData(count int) (string, map[string]string) {
 			buf.WriteString("<!-- {comment} -->")
 		}
 		buf.WriteString("<tr>")
-		buf.WriteString(fmt.Sprintf("<td>{{ FIRST_NAME%d }}</td>", i))
-		buf.WriteString(fmt.Sprintf("<td>{{LAST_NAME%d}}</td>", i))
-		buf.WriteString(fmt.Sprintf("<td>{{  CITY%d  }}</td>", i))
+		fmt.Fprintf(&buf, "<td>{{ FIRST_NAME%d }}</td>", i)
+		fmt.Fprintf(&buf, "<td>{{LAST_NAME%d}}</td>", i)
+		fmt.Fprintf(&buf, "<td>{{  CITY%d  }}</td>", i)
 
 		vars[fmt.Sprintf("FIRST_NAME%d", i)] = firstNames[i%len(firstNames)]
 		vars[fmt.Sprintf("LAST_NAME%d", i)] = lastNames[i%len(lastNames)]
 		vars[fmt.Sprintf("CITY%d", i)] = cities[i%len(cities)]
 
-		buf.WriteString(fmt.Sprintf("<td>{balance: %d}</td>", i%100))
+		fmt.Fprintf(&buf, "<td>{balance: %d}</td>", i%100)
 		buf.WriteString("</tr>\n")
 	}
 
