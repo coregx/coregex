@@ -497,13 +497,11 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	charClassResult := buildCharClassSearchers(strategy, re, nfaEngine, pikevmNFA)
 	strategy = charClassResult.finalStrategy
 
-	// Replace FatTeddy prefilter with Aho-Corasick for non-Teddy strategies.
-	// FatTeddy's AVX2 SIMD has known boundary bugs with certain positions that
-	// cause false negatives when used as a candidate prefilter. Aho-Corasick
-	// provides correct O(n) matching without SIMD edge cases. (Issue #137)
-	// For UseTeddy strategy, FatTeddy IS the engine itself (not a prefilter),
-	// so it must be preserved — it has its own fatTeddyFallback for small inputs.
-	if strategy != UseTeddy && pf != nil {
+	// Replace FatTeddy prefilter with Aho-Corasick for ALL strategies.
+	// FatTeddy's AVX2 SIMD has known boundary bugs with FindMatch at non-zero
+	// positions that cause false negatives in FindAll iteration. Aho-Corasick
+	// provides correct O(n) multi-pattern matching. (Issue #137)
+	if pf != nil {
 		pf = buildACPrefilter(pf)
 	}
 

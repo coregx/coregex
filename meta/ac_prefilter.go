@@ -13,7 +13,8 @@ import (
 //
 // Reference: Issue #137 (case-insensitive literal extraction)
 type acPrefilter struct {
-	auto *ahocorasick.Automaton
+	auto     *ahocorasick.Automaton
+	complete bool // true if literals are exact matches (AllComplete)
 }
 
 // Find returns the position of the first matching prefix literal at or after start.
@@ -28,12 +29,24 @@ func (p *acPrefilter) Find(haystack []byte, start int) int {
 	return m.Start
 }
 
-// IsComplete returns false because prefix literals require regex verification.
-func (p *acPrefilter) IsComplete() bool {
-	return false
+// FindMatch returns start and end of the first matching literal at or after start.
+func (p *acPrefilter) FindMatch(haystack []byte, start int) (int, int) {
+	if start < 0 || start >= len(haystack) {
+		return -1, -1
+	}
+	m := p.auto.Find(haystack, start)
+	if m == nil {
+		return -1, -1
+	}
+	return m.Start, m.End
 }
 
-// LiteralLen returns 0 because the prefilter is not complete.
+// IsComplete returns true if the literals are exact matches (no verification needed).
+func (p *acPrefilter) IsComplete() bool {
+	return p.complete
+}
+
+// LiteralLen returns 0 — use FindMatch for start+end positions.
 func (p *acPrefilter) LiteralLen() int {
 	return 0
 }
@@ -73,5 +86,5 @@ func buildACPrefilter(pf prefilter.Prefilter) prefilter.Prefilter {
 		return pf // Fallback to FatTeddy on error
 	}
 
-	return &acPrefilter{auto: auto}
+	return &acPrefilter{auto: auto, complete: pf.IsComplete()}
 }
