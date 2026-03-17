@@ -613,10 +613,12 @@ func (t *Teddy) HeapBytes() int {
 	return heapBytes
 }
 
-// newTeddy creates a Teddy prefilter from extracted literal sequences.
+// newTeddyFromSeq creates a Teddy prefilter from extracted literal sequences.
 //
 // This is called by selectPrefilter when multiple literals are detected.
 // It extracts pattern bytes from the literal sequence and constructs Teddy.
+// The complete flag is derived from seq.AllComplete() — when literals are
+// prefix-only (not full patterns), Teddy must NOT be marked complete.
 //
 // Selection logic:
 //   - 2-32 patterns: Slim Teddy (8 buckets, SSSE3)
@@ -624,24 +626,33 @@ func (t *Teddy) HeapBytes() int {
 //   - >64 patterns: Returns nil (use Aho-Corasick instead)
 //
 // Returns nil if literals are not suitable for Teddy.
-func newTeddy(seq *literal.Seq) Prefilter {
+func newTeddyFromSeq(seq *literal.Seq) Prefilter {
 	// Extract pattern bytes from literal sequence
 	patterns := make([][]byte, seq.Len())
 	for i := 0; i < seq.Len(); i++ {
 		patterns[i] = seq.Get(i).Bytes
 	}
 
+	complete := seq.AllComplete()
 	n := len(patterns)
 
 	// Choose between Slim Teddy (2-32) and Fat Teddy (33-64)
 	if n <= MaxSlimTeddyPatterns {
 		// Slim Teddy: 8 buckets, SSSE3 - optimal for 2-32 patterns
-		return NewTeddy(patterns, nil)
+		t := NewTeddy(patterns, nil)
+		if t != nil {
+			t.complete = complete
+		}
+		return t
 	}
 
 	if n <= MaxFatTeddyPatterns {
 		// Fat Teddy: 16 buckets, AVX2 - handles 33-64 patterns
-		return NewFatTeddy(patterns, nil)
+		ft := NewFatTeddy(patterns, nil)
+		if ft != nil {
+			ft.complete = complete
+		}
+		return ft
 	}
 
 	// >64 patterns: Teddy not suitable, caller should use Aho-Corasick

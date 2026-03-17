@@ -687,6 +687,36 @@ func containsAnchor(re *syntax.Regexp) bool {
 // isMultilineLineAnchored checks if a pattern has multiline line-start anchor (^).
 // Returns true for patterns like `(?m)^.*suffix` where ^ matches at line starts.
 //
+// hasNonGreedyQuantifier checks if AST contains any non-greedy quantifier (*?, +?, ??, {n,m}?).
+// Forward DFA always finds leftmost-longest match, which is incompatible with non-greedy semantics.
+// Bidirectional DFA cannot be used for patterns with non-greedy quantifiers.
+func hasNonGreedyQuantifier(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		if re.Flags&syntax.NonGreedy != 0 {
+			return true
+		}
+		for _, sub := range re.Sub {
+			if hasNonGreedyQuantifier(sub) {
+				return true
+			}
+		}
+	case syntax.OpConcat, syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if hasNonGreedyQuantifier(sub) {
+				return true
+			}
+		}
+	case syntax.OpCapture:
+		for _, sub := range re.Sub {
+			if hasNonGreedyQuantifier(sub) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Detection criteria:
 //   - Pattern contains OpBeginLine (^) - multiline start anchor
 //   - Pattern is NOT truly start-anchored (IsAlwaysAnchored returns false)

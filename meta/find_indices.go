@@ -228,17 +228,24 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
 		return e.pikevm.Search(haystack)
 	}
 
-	// Prefilter skip: jump to candidate position, then PikeVM from there.
+	// Prefilter skip: jump to candidate position.
 	if e.prefilter != nil {
 		pos := e.prefilter.Find(haystack, 0)
 		if pos == -1 {
 			return -1, -1, false
 		}
 		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		// Bidirectional DFA: forward DFA → end, reverse DFA → start. O(n) total.
+		if e.reverseDFA != nil {
+			return e.findIndicesBidirectionalDFA(haystack, pos)
+		}
 		return e.pikevm.SearchAt(haystack, pos)
 	}
 
-	// No prefilter: DFA with early termination + PikeVM.
+	// No prefilter: bidirectional DFA or DFA + PikeVM fallback.
+	if e.reverseDFA != nil {
+		return e.findIndicesBidirectionalDFA(haystack, 0)
+	}
 	if !e.dfa.IsMatch(haystack) {
 		return -1, -1, false
 	}
@@ -265,22 +272,24 @@ func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
 		return e.pikevm.SearchAt(haystack, at)
 	}
 
-	// Prefilter skip: use prefix prefilter to jump to candidate position,
-	// then PikeVM from there. This avoids PikeVM scanning non-matching regions.
-	// For patterns like \{\{(.*?)\}\} with prefix prefilter for "{{",
-	// PikeVM only processes ~8 bytes per match instead of ~25.
+	// Prefilter skip: use prefix prefilter to jump to candidate position.
 	if e.prefilter != nil {
 		pos := e.prefilter.Find(haystack, at)
 		if pos == -1 {
 			return -1, -1, false
 		}
 		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		// Bidirectional DFA: forward DFA → end, reverse DFA → start. O(n) total.
+		if e.reverseDFA != nil {
+			return e.findIndicesBidirectionalDFA(haystack, pos)
+		}
 		return e.pikevm.SearchAt(haystack, pos)
 	}
 
-	// No prefilter: DFA with early termination + PikeVM.
-	// IsMatchAt is O(k) where k = distance to first match, vs FindAt's O(n)
-	// which scans for the longest match. Avoids O(n²) in FindAll.
+	// No prefilter: bidirectional DFA or DFA + PikeVM fallback.
+	if e.reverseDFA != nil {
+		return e.findIndicesBidirectionalDFA(haystack, at)
+	}
 	if !e.dfa.IsMatchAt(haystack, at) {
 		return -1, -1, false
 	}
@@ -504,11 +513,43 @@ func (e *Engine) findIndicesMultilineReverseSuffixAt(haystack []byte, at int) (i
 }
 
 // findIndicesBidirectionalDFA uses forward DFA + reverse DFA for exact match bounds.
-// Forward DFA finds match end, reverse DFA finds match start. O(n) total.
-// Used as fallback when BoundedBacktracker can't handle large inputs.
+// Three-phase: forward DFA → first match end, reverse DFA → match start,
+// anchored forward DFA → correct greedy end from that start. O(n) total.
+//
+// Phase 1 uses SearchFirstAt (stops at first match end) to avoid DFA over-extension
+// with unanchored prefix. Phase 3 then runs anchored greedy DFA from the discovered
+// start to get the correct (potentially longer) end for patterns like ".*".
 func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int, bool) {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
-	end := e.dfa.FindAt(haystack, at)
+	// Phase 1: find first match end (leftmost-first, not leftmost-longest)
+	end := e.dfa.SearchFirstAt(haystack, at)
+	if end == -1 {
+		return -1, -1, false
+	}
+	if end == at {
+		return at, at, true // Empty match
+	}
+	// Phase 2: reverse DFA to find match start
+	start := e.reverseDFA.SearchReverse(haystack, at, end)
+	if start < 0 {
+		return -1, -1, false // Reverse DFA failed (cache full)
+	}
+	// Phase 3: anchored greedy forward DFA from start → correct end.
+	// SearchFirstAt may undercount for greedy patterns (e.g., ".*" stops at first ").
+	// Anchored DFA from start gives the correct greedy end for this specific match.
+	exactEnd := e.dfa.SearchAtAnchored(haystack, start)
+	if exactEnd > start {
+		end = exactEnd
+	}
+	return start, end, true
+}
+
+// findIndicesBidirectionalDFALongest uses forward DFA (leftmost-longest) + reverse DFA.
+// Unlike findIndicesBidirectionalDFA, this preserves greedy/longest match semantics.
+// Used by BoundedBacktracker fallback where greedy semantics are required.
+func (e *Engine) findIndicesBidirectionalDFALongest(haystack []byte, at int) (int, int, bool) {
+	atomic.AddUint64(&e.stats.DFASearches, 1)
+	end := e.dfa.SearchAt(haystack, at)
 	if end == -1 {
 		return -1, -1, false
 	}
@@ -539,8 +580,9 @@ func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool)
 	atomic.AddUint64(&e.stats.NFASearches, 1)
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		// Bidirectional DFA: O(n) vs PikeVM's O(n*states) for large inputs
+		// Use longest variant to preserve greedy semantics for BoundedBacktracker patterns.
 		if e.dfa != nil && e.reverseDFA != nil {
-			return e.findIndicesBidirectionalDFA(haystack, 0)
+			return e.findIndicesBidirectionalDFALongest(haystack, 0)
 		}
 		return e.pikevm.SearchWithSlotTable(haystack, nfa.SearchModeFind)
 	}
@@ -582,7 +624,7 @@ func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, 
 		if simd.IsASCII(asciiCheck) {
 			if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
 				if e.dfa != nil && e.reverseDFA != nil {
-					return e.findIndicesBidirectionalDFA(haystack, at)
+					return e.findIndicesBidirectionalDFALongest(haystack, at)
 				}
 				return e.pikevm.SearchWithSlotTableAt(haystack, at, nfa.SearchModeFind)
 			}
@@ -596,7 +638,7 @@ func (e *Engine) findIndicesBoundedBacktrackerAt(haystack []byte, at int) (int, 
 
 	if !e.boundedBacktracker.CanHandle(len(remaining)) {
 		if e.dfa != nil && e.reverseDFA != nil {
-			return e.findIndicesBidirectionalDFA(haystack, at)
+			return e.findIndicesBidirectionalDFALongest(haystack, at)
 		}
 		return e.findIndicesNFAAt(haystack, at)
 	}
@@ -1010,7 +1052,7 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 			if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
 				// Bidirectional DFA: O(n) vs PikeVM's O(n*states)
 				if e.dfa != nil && e.reverseDFA != nil {
-					return e.findIndicesBidirectionalDFA(haystack, at)
+					return e.findIndicesBidirectionalDFALongest(haystack, at)
 				}
 				// V12 Windowed BoundedBacktracker for ASCII path
 				maxInput := e.asciiBoundedBacktracker.MaxInputSize()
@@ -1034,7 +1076,7 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 	if !e.boundedBacktracker.CanHandle(len(remaining)) {
 		// Bidirectional DFA: O(n) vs PikeVM's O(n*states) for large inputs
 		if e.dfa != nil && e.reverseDFA != nil {
-			return e.findIndicesBidirectionalDFA(haystack, at)
+			return e.findIndicesBidirectionalDFALongest(haystack, at)
 		}
 		// V12 Windowed BoundedBacktracker fallback
 		maxInput := e.boundedBacktracker.MaxInputSize()

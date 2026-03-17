@@ -11,6 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Look-around assertions
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
+- Case-insensitive literal extraction for Teddy/Aho-Corasick prefilter ([#137](https://github.com/coregx/coregex/issues/137))
+
+## [0.12.9] - 2026-03-17
+
+### Performance
+- **Bidirectional DFA for UseDFA strategy** — eliminates PikeVM second pass.
+  Previously UseDFA used forward DFA for match detection + PikeVM for exact
+  boundaries (O(n×states)). Now uses three-phase bidirectional DFA: forward DFA
+  (SearchFirstAt) → match end, reverse DFA → match start, anchored forward DFA →
+  correct greedy end. All three phases are O(n). Affects patterns routed to UseDFA
+  (literal alternations, char classes with literals, etc.).
+
+### Fixed
+- **Teddy prefilter `IsComplete` flag** — `newTeddyFromSeq()` hardcoded `complete=true`,
+  causing false positives in `IsMatch` when Teddy matched prefix-only literals that
+  didn't constitute a full pattern match. Fix: passes `seq.AllComplete()` to correctly
+  reflect whether Teddy matches are sufficient without verification.
+
+- **Reverse NFA drops epsilon edges on mixed states** — `fillReverseState()` silently
+  dropped epsilon edges when byte range edges were also present on the same NFA state.
+  This broke `SearchReverse` for any pattern with quantifiers (`[a-z]+`, `\w+`, etc.)
+  where the NFA has states with both byte transitions and epsilon transitions.
+  Fix: creates `Split → Sparse, EpsilonChain` structure for mixed-edge states.
 
 ## [0.12.8] - 2026-03-10
 

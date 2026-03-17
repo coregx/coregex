@@ -296,6 +296,103 @@ func (d *DFA) SearchAtAnchored(haystack []byte, at int) int {
 	return lastMatch
 }
 
+// SearchFirstAt finds the end of the FIRST match (leftmost-first semantics).
+// Unlike SearchAt which returns the end of the leftmost-LONGEST match,
+// this returns the end of the first match and does NOT extend further.
+//
+// This is used by bidirectional DFA search: forward DFA finds first match end,
+// then reverse DFA finds the exact start. Leftmost-longest would over-extend
+// past the first match for patterns like "[^"]*" on input with multiple matches.
+func (d *DFA) SearchFirstAt(haystack []byte, at int) int {
+	if at > len(haystack) {
+		return -1
+	}
+
+	if at == len(haystack) {
+		if d.matchesEmpty() {
+			return at
+		}
+		return -1
+	}
+
+	if len(haystack) == 0 {
+		if d.matchesEmpty() {
+			return 0
+		}
+		return -1
+	}
+
+	return d.searchFirstAt(haystack, at)
+}
+
+// searchFirstAt is the core DFA search with early termination after first match.
+// Returns the end of the first match found, without extending for longest match.
+func (d *DFA) searchFirstAt(haystack []byte, startPos int) int {
+	if d.isAlwaysAnchored && startPos > 0 {
+		return -1
+	}
+
+	currentState := d.getStartStateForUnanchored(haystack, startPos)
+	if currentState == nil {
+		return d.nfaFallback(haystack, startPos)
+	}
+
+	if currentState.IsMatch() {
+		return startPos
+	}
+
+	end := len(haystack)
+	pos := startPos
+	committed := false
+	lastMatch := -1
+
+	for pos < end {
+		b := haystack[pos]
+
+		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
+			return pos
+		}
+
+		classIdx := d.byteToClass(b)
+		nextID, ok := currentState.Transition(classIdx)
+		switch {
+		case !ok:
+			nextState, err := d.determinize(currentState, b)
+			if err != nil {
+				return d.nfaFallback(haystack, startPos)
+			}
+			if nextState == nil {
+				return lastMatch
+			}
+			currentState = nextState
+		case nextID == DeadState:
+			return lastMatch
+		default:
+			currentState = d.getState(nextID)
+			if currentState == nil {
+				return d.nfaFallback(haystack, startPos)
+			}
+		}
+
+		pos++
+
+		if currentState.IsMatch() {
+			lastMatch = pos
+			committed = true
+		} else if committed {
+			// First match is committed and we left the match state.
+			// Return immediately — don't extend for longest match.
+			return lastMatch
+		}
+	}
+
+	if d.checkEOIMatch(currentState) {
+		return len(haystack)
+	}
+
+	return lastMatch
+}
+
 // IsMatch returns true if the pattern matches anywhere in the haystack.
 //
 // This is optimized for early termination: returns true as soon as any

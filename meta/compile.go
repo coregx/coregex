@@ -167,10 +167,40 @@ func buildStrategyEngines(
 		}
 	}
 
-	// Build forward+reverse DFA for BoundedBacktracker bidirectional fallback.
-	// When BoundedBacktracker can't handle large inputs (CanHandle fails),
-	// bidirectional DFA (forward→end, reverse→start) is O(n) vs PikeVM's O(n*states).
-	if result.finalStrategy == UseBoundedBacktracker {
+	// Build reverse DFA for bidirectional search (UseDFA and BoundedBacktracker).
+	// Forward DFA → match end, reverse DFA → match start. O(n) total.
+	result = buildReverseDFA(result, re, nfaEngine, dfaConfig, pf)
+
+	// For digit prefilter strategy, create the digit prefilter
+	if result.finalStrategy == UseDigitPrefilter {
+		result.digitPrefilter = prefilter.NewDigitPrefilter()
+		result.digitRunSkipSafe = isDigitRunSkipSafe(re)
+	}
+
+	return result
+}
+
+// buildReverseDFA builds reverse DFA for bidirectional search.
+// Used by UseDFA (replaces PikeVM second pass) and BoundedBacktracker (large input fallback).
+func buildReverseDFA(
+	result strategyEngines,
+	re *syntax.Regexp,
+	nfaEngine *nfa.NFA,
+	dfaConfig lazy.Config,
+	pf prefilter.Prefilter,
+) strategyEngines {
+	switch result.finalStrategy {
+	case UseDFA:
+		// Skip for non-greedy patterns: forward DFA always finds leftmost-longest,
+		// which is incompatible with non-greedy semantics.
+		if result.dfa != nil && !hasNonGreedyQuantifier(re) {
+			reverseNFA := nfa.ReverseAnchored(nfaEngine)
+			revDFA, err := lazy.CompileWithConfig(reverseNFA, dfaConfig)
+			if err == nil {
+				result.reverseDFA = revDFA
+			}
+		}
+	case UseBoundedBacktracker:
 		fwdDFA, err := lazy.CompileWithPrefilter(nfaEngine, dfaConfig, pf)
 		if err == nil {
 			result.dfa = fwdDFA
@@ -181,13 +211,6 @@ func buildStrategyEngines(
 			}
 		}
 	}
-
-	// For digit prefilter strategy, create the digit prefilter
-	if result.finalStrategy == UseDigitPrefilter {
-		result.digitPrefilter = prefilter.NewDigitPrefilter()
-		result.digitRunSkipSafe = isDigitRunSkipSafe(re)
-	}
-
 	return result
 }
 

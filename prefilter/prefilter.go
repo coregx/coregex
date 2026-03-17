@@ -285,7 +285,7 @@ func selectPrefilter(prefixes, suffixes *literal.Seq) Prefilter {
 	if seq.Len() >= 2 && seq.Len() <= MaxTeddyPatterns && minLen(seq) >= 3 {
 		// Teddy is effective for 2-32 literals of length >= 3
 		// Provides 20-50x speedup using SSSE3 SIMD instructions
-		return newTeddy(seq)
+		return newTeddyFromSeq(seq)
 	}
 
 	// Many literals or short literals
