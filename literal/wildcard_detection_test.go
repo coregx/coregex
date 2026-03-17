@@ -382,7 +382,7 @@ func TestExtractInnerIncompleteness(t *testing.T) {
 }
 
 // TestExtractInnerCaseInsensitive verifies that case-insensitive patterns
-// are skipped during inner literal extraction.
+// produce case-fold expanded inner literals (Issue #137).
 func TestExtractInnerCaseInsensitive(t *testing.T) {
 	extractor := New(DefaultConfig())
 
@@ -392,8 +392,18 @@ func TestExtractInnerCaseInsensitive(t *testing.T) {
 	}
 
 	seq := extractor.ExtractInner(re)
-	if !seq.IsEmpty() {
-		t.Errorf("Expected empty seq for case-insensitive inner, got %d literals", seq.Len())
+	if seq.IsEmpty() {
+		t.Fatal("Expected non-empty seq for case-insensitive inner with case-fold expansion")
+	}
+	// "error" has 5 ASCII letters, each with 2 case folds -> 2^5 = 32 variants
+	if seq.Len() != 32 {
+		t.Errorf("Expected 32 case-fold variants for (?i)error, got %d", seq.Len())
+	}
+	// Inner literals are never complete
+	for i := 0; i < seq.Len(); i++ {
+		if seq.Get(i).Complete {
+			t.Errorf("Expected inner literal %d to be incomplete", i)
+		}
 	}
 }
 
@@ -668,7 +678,7 @@ func TestBuildPrefixASTEdgeCases(t *testing.T) {
 }
 
 // TestExtractSuffixesCaseInsensitive verifies that case-insensitive suffix patterns
-// are skipped.
+// produce case-fold expanded literals (Issue #137).
 func TestExtractSuffixesCaseInsensitive(t *testing.T) {
 	extractor := New(DefaultConfig())
 
@@ -678,8 +688,12 @@ func TestExtractSuffixesCaseInsensitive(t *testing.T) {
 	}
 
 	seq := extractor.ExtractSuffixes(re)
-	if !seq.IsEmpty() {
-		t.Errorf("Expected empty seq for case-insensitive suffix, got %d", seq.Len())
+	if seq.IsEmpty() {
+		t.Fatal("Expected non-empty seq for case-insensitive suffix with case-fold expansion")
+	}
+	// "world" has 5 ASCII letters, each with 2 case folds -> 2^5 = 32 variants
+	if seq.Len() != 32 {
+		t.Errorf("Expected 32 case-fold variants for (?i)world, got %d", seq.Len())
 	}
 }
 

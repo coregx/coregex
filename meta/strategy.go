@@ -1397,13 +1397,15 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseDFA
 	}
 
-	// Large NFA without literals → still use DFA
-	// For patterns like "(a|b|c|d|e|f|g|h)*z", the DFA cache
-	// prevents re-exploration of the same NFA state sets.
-	// Even without prefilter, DFA's deterministic execution is faster
-	// than NFA's parallel state tracking.
+	// Large NFA without literals → use NFA (PikeVM) instead of DFA.
+	// Without a prefilter, DFA on large NFAs causes cache thrashing:
+	// lazy state construction generates thousands of states that don't fit
+	// in cache. PikeVM is O(n*states) but avoids DFA construction overhead.
+	// Example: (?i)\b(eval|system|exec|...)\b has 243 NFA states — DFA
+	// cache thrashing makes it 88,000x slower than stdlib. PikeVM is ~1x.
+	// Issue #137: https://github.com/coregx/coregex/issues/137
 	if nfaSize > 100 {
-		return UseDFA
+		return UseNFA
 	}
 
 	// Medium NFA without strong characteristics → adaptive
@@ -1473,7 +1475,7 @@ func strategyReasonComplex(strategy Strategy, n *nfa.NFA, literals *literal.Seq,
 			}
 		}
 		if nfaSize > 100 {
-			return "large NFA (> 100 states), DFA essential"
+			return "large NFA (> 100 states), prefilter + DFA"
 		}
 		return "DFA selected for performance"
 

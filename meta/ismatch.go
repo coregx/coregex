@@ -129,8 +129,32 @@ func (e *Engine) isMatchNFA(haystack []byte) bool {
 }
 
 // isMatchDFA checks for match using DFA with early termination.
+// Uses prefilter for fast rejection when available (Issue #137):
+// e.g., AC with 60 case-fold prefixes rejects no-match inputs in ~5us
+// vs DFA cache thrashing at 80,000ns on 181-state NFA.
 func (e *Engine) isMatchDFA(haystack []byte) bool {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
+
+	// Prefilter fast rejection: if prefilter says no candidates, no match possible.
+	// This is critical for large NFAs with extracted prefix literals (e.g., case-fold
+	// expanded alternations) where DFA cache thrashing dominates runtime.
+	if e.prefilter != nil {
+		pos := e.prefilter.Find(haystack, 0)
+		if pos == -1 {
+			return false
+		}
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		// For complete prefilters, the find is sufficient
+		if e.prefilter.IsComplete() {
+			return true
+		}
+		// Verify candidate with NFA (PikeVM) at the candidate position.
+		// We use NFA instead of DFA for verification because large NFAs
+		// (e.g., 181 states for (?i) patterns) cause DFA cache thrashing.
+		// PikeVM is O(n*states) but avoids DFA construction overhead.
+		_, _, found := e.pikevm.SearchAt(haystack, pos)
+		return found
+	}
 
 	// Use DFA.IsMatch which has early termination optimization
 	return e.dfa.IsMatch(haystack)
