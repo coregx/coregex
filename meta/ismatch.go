@@ -308,21 +308,29 @@ func (e *Engine) isMatchDigitPrefilter(haystack []byte) bool {
 			return false // No more digits
 		}
 
-		// Use DFA for fast boolean check if available
+		// Use ANCHORED DFA — pattern MUST start at digitPos.
+		// Unanchored FindAt scans to end of input per candidate = O(n²).
+		// Anchored checks only a few bytes per candidate = O(pattern_len).
 		if e.dfa != nil {
 			atomic.AddUint64(&e.stats.DFASearches, 1)
-			if e.dfa.FindAt(haystack, digitPos) != -1 {
+			if e.dfa.SearchAtAnchored(haystack, digitPos) != -1 {
 				return true
 			}
 		} else {
 			atomic.AddUint64(&e.stats.NFASearches, 1)
-			_, _, found := e.pikevm.SearchAt(haystack, digitPos)
-			if found {
+			start, _, found := e.pikevm.SearchAt(haystack, digitPos)
+			if found && start == digitPos {
 				return true
 			}
 		}
 
 		pos = digitPos + 1
+		// Skip entire digit run when safe (same optimization as findIndicesDigitPrefilter)
+		if e.digitRunSkipSafe {
+			for pos < len(haystack) && haystack[pos] >= '0' && haystack[pos] <= '9' {
+				pos++
+			}
+		}
 	}
 
 	return false
