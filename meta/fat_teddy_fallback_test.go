@@ -4,27 +4,18 @@ import (
 	"testing"
 )
 
-// TestFatTeddySmallHaystackFallback verifies that Fat Teddy (33-64 patterns)
-// correctly uses Aho-Corasick fallback for small haystacks.
+// TestFatTeddyACPrefilter verifies that Fat Teddy (33-64 patterns)
+// is replaced with Aho-Corasick prefilter at compile time (Issue #137).
 //
-// Background:
-// Fat Teddy's AVX2 SIMD has setup overhead that makes it slower than
-// Aho-Corasick for small haystacks (< 64 bytes). This follows Rust regex's
-// minimum_len() approach in rust-aho-corasick/src/packed/teddy/builder.rs.
-//
-// Benchmarks show:
-//   - 37-byte haystack with 50 patterns: Fat Teddy ~267 ns, Aho-Corasick ~130 ns
-//   - After fallback: ~110 ns (Aho-Corasick path used)
-func TestFatTeddySmallHaystackFallback(t *testing.T) {
-	// 50 patterns - uses Fat Teddy (33-64 pattern range)
-	// Each pattern >= 3 bytes with unique first characters to avoid prefix sharing
+// FatTeddy's AVX2 SIMD has known bugs with FindMatch at non-zero positions
+// causing false negatives in FindAll iteration. AC provides correct matching.
+func TestFatTeddyACPrefilter(t *testing.T) {
+	// 50 patterns - originally Fat Teddy range (33-64), now replaced with AC
 	patterns := make([]string, 50)
-	for i := 0; i < 50; i++ {
-		// Generate pattern like "p00", "p01", ..., "p49"
+	for i := range 50 {
 		patterns[i] = "p" + string('0'+byte(i/10)) + string('0'+byte(i%10))
 	}
 
-	// Build alternation pattern
 	pattern := patterns[0]
 	for i := 1; i < len(patterns); i++ {
 		pattern += "|" + patterns[i]
@@ -35,127 +26,76 @@ func TestFatTeddySmallHaystackFallback(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 
-	// Verify strategy is UseTeddy (not UseAhoCorasick - that's for >64 patterns)
 	if re.Strategy() != UseTeddy {
 		t.Fatalf("Strategy = %s, want UseTeddy for 50 patterns", re.Strategy())
 	}
 
-	// Verify fatTeddyFallback is set
-	if re.fatTeddyFallback == nil {
-		t.Fatal("fatTeddyFallback is nil, expected Aho-Corasick fallback for Fat Teddy")
+	// AC prefilter replaces FatTeddy at compile time
+	if re.prefilter == nil {
+		t.Fatal("prefilter is nil, expected Aho-Corasick prefilter")
 	}
 
-	t.Run("small_haystack_uses_fallback", func(t *testing.T) {
-		// Small haystack (37 bytes) - should use Aho-Corasick fallback
+	t.Run("find_correctness", func(t *testing.T) {
 		haystack := []byte("prefix p25 middle p42 suffix p01 end")
-		if len(haystack) >= fatTeddySmallHaystackThreshold {
-			t.Fatalf("Test haystack too large: %d >= %d", len(haystack), fatTeddySmallHaystackThreshold)
-		}
-
-		// Reset stats
-		re.stats = Stats{}
-
 		match := re.Find(haystack)
 		if match == nil {
 			t.Fatal("Find returned nil, expected match")
 		}
-
-		// Verify Aho-Corasick was used (not PrefilterHits)
-		if re.stats.AhoCorasickSearches == 0 {
-			t.Error("AhoCorasickSearches = 0, expected > 0 for small haystack fallback")
-		}
-		if re.stats.PrefilterHits != 0 {
-			t.Errorf("PrefilterHits = %d, expected 0 for small haystack fallback", re.stats.PrefilterHits)
-		}
-
-		// Verify match is correct
-		want := "p25"
-		if match.String() != want {
-			t.Errorf("Match = %q, want %q", match.String(), want)
+		if match.String() != "p25" {
+			t.Errorf("Match = %q, want %q", match.String(), "p25")
 		}
 	})
 
-	t.Run("large_haystack_uses_fat_teddy", func(t *testing.T) {
-		// Large haystack (>64 bytes) - should use Fat Teddy directly
+	t.Run("find_large_haystack", func(t *testing.T) {
 		haystack := make([]byte, 128)
 		copy(haystack, "prefix ")
 		copy(haystack[64:], "p42 suffix p01 end more padding to make it big")
 
-		if len(haystack) < fatTeddySmallHaystackThreshold {
-			t.Fatalf("Test haystack too small: %d < %d", len(haystack), fatTeddySmallHaystackThreshold)
-		}
-
-		// Reset stats
-		re.stats = Stats{}
-
 		match := re.Find(haystack)
 		if match == nil {
 			t.Fatal("Find returned nil, expected match")
 		}
-
-		// Verify Fat Teddy was used (PrefilterHits, not AhoCorasickSearches)
-		if re.stats.PrefilterHits == 0 {
-			t.Error("PrefilterHits = 0, expected > 0 for large haystack")
-		}
-		if re.stats.AhoCorasickSearches != 0 {
-			t.Errorf("AhoCorasickSearches = %d, expected 0 for large haystack", re.stats.AhoCorasickSearches)
-		}
 	})
 
-	t.Run("isMatch_small_haystack", func(t *testing.T) {
-		haystack := []byte("test p25 here")
-		re.stats = Stats{}
-
-		got := re.IsMatch(haystack)
-		if !got {
+	t.Run("is_match", func(t *testing.T) {
+		if !re.IsMatch([]byte("test p25 here")) {
 			t.Error("IsMatch returned false, expected true")
 		}
-
-		if re.stats.AhoCorasickSearches == 0 {
-			t.Error("AhoCorasickSearches = 0, expected > 0 for small haystack")
-		}
 	})
 
-	t.Run("findIndices_small_haystack", func(t *testing.T) {
+	t.Run("find_indices", func(t *testing.T) {
 		haystack := []byte("test p42 here")
-		re.stats = Stats{}
-
 		start, end, found := re.FindIndices(haystack)
 		if !found {
 			t.Fatal("FindIndices returned found=false")
 		}
-
 		if start != 5 || end != 8 {
 			t.Errorf("FindIndices = (%d, %d), want (5, 8)", start, end)
 		}
-
-		if re.stats.AhoCorasickSearches == 0 {
-			t.Error("AhoCorasickSearches = 0, expected > 0 for small haystack")
-		}
 	})
 
-	t.Run("no_match_small_haystack", func(t *testing.T) {
-		haystack := []byte("no patterns here at all")
-		re.stats = Stats{}
-
-		match := re.Find(haystack)
+	t.Run("no_match", func(t *testing.T) {
+		match := re.Find([]byte("no patterns here at all"))
 		if match != nil {
 			t.Errorf("Find returned %q, expected nil", match.String())
 		}
+	})
 
-		// Should still use Aho-Corasick (small haystack)
-		if re.stats.AhoCorasickSearches == 0 {
-			t.Error("AhoCorasickSearches = 0, expected > 0 even for no-match")
+	t.Run("find_all_iteration", func(t *testing.T) {
+		// Critical: verify FindAll works correctly with AC prefilter
+		haystack := []byte("p01 middle p25 end p42")
+		matches := re.FindAllIndicesStreaming(haystack, -1, nil)
+		if len(matches) != 3 {
+			t.Errorf("FindAll count = %d, want 3", len(matches))
 		}
 	})
 }
 
 // TestSlimTeddyNoFallback verifies that Slim Teddy (2-32 patterns)
-// does NOT have Aho-Corasick fallback (it's efficient enough for small haystacks).
+// does NOT get replaced with AC (SlimTeddy SIMD is correct).
 func TestSlimTeddyNoFallback(t *testing.T) {
-	// 20 patterns - uses Slim Teddy (2-32 pattern range)
 	patterns := make([]string, 20)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		patterns[i] = "pat" + string('0'+byte(i/10)) + string('0'+byte(i%10))
 	}
 
@@ -179,11 +119,10 @@ func TestSlimTeddyNoFallback(t *testing.T) {
 	}
 }
 
-// BenchmarkFatTeddyFallback compares Fat Teddy performance on small vs large haystacks.
-func BenchmarkFatTeddyFallback(b *testing.B) {
-	// 50 patterns - uses Fat Teddy
+// BenchmarkACPrefilter compares AC prefilter on small vs large haystacks.
+func BenchmarkACPrefilter(b *testing.B) {
 	patterns := make([]string, 50)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		patterns[i] = "p" + string('0'+byte(i/10)) + string('0'+byte(i%10))
 	}
 	pattern := patterns[0]

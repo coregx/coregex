@@ -4,6 +4,7 @@ package literal
 
 import (
 	"regexp/syntax"
+	"unicode"
 )
 
 // ExtractorConfig configures literal extraction limits.
@@ -132,14 +133,19 @@ func (e *Extractor) ExtractPrefixes(re *syntax.Regexp) *Seq {
 // The depth parameter prevents infinite recursion on malformed patterns.
 func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 	// Guard against excessive recursion (malformed or deeply nested patterns)
-	// Also skip case-insensitive patterns because prefilter does case-sensitive
-	// byte matching which would miss matches. Issue #87
-	if depth > 100 || re.Flags&syntax.FoldCase != 0 {
+	if depth > 100 {
 		return NewSeq()
 	}
 
 	switch re.Op {
 	case syntax.OpLiteral:
+		// Case-insensitive literal: expand all case-folding variants.
+		// "eval" with FoldCase → ["EVAL", "EVAl", "EVaL", ..., "eval"] (2^4 = 16 variants)
+		// The prefilter does case-sensitive byte matching, so we must provide ALL variants.
+		// This is exactly what Rust regex does (see regex-syntax/src/hir/literal.rs).
+		if re.Flags&syntax.FoldCase != 0 {
+			return e.expandCaseFoldLiteral(re.Rune)
+		}
 		// Direct literal: "hello" → ["hello"]
 		bytes := runeSliceToBytes(re.Rune)
 		if len(bytes) > e.config.MaxLiteralLen {
@@ -170,36 +176,7 @@ func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 		// IMPORTANT: If ANY alternative has no prefix requirement (empty Seq),
 		// the whole alternation has no prefix requirement.
 		// Example: abc|.*? → [] (.*? can match anything, so "abc" isn't required)
-		var allLits []Literal
-		truncated := false
-		for _, sub := range re.Sub {
-			seq := e.extractPrefixes(sub, depth+1)
-			if seq.IsEmpty() {
-				// This branch has no prefix requirement (e.g., .*?, .+, empty match)
-				// Therefore the whole alternation has no prefix requirement
-				return NewSeq()
-			}
-			for i := 0; i < seq.Len(); i++ {
-				allLits = append(allLits, seq.Get(i))
-				// Respect MaxLiterals limit
-				if len(allLits) >= e.config.MaxLiterals {
-					truncated = true
-					break
-				}
-			}
-			if truncated {
-				break
-			}
-		}
-		// If we hit MaxLiterals before processing all branches, the literal set
-		// is incomplete -- it does not cover all alternatives. Mark all as inexact
-		// to prevent literal-engine-bypass (Teddy/AhoCorasick without DFA verification).
-		if truncated {
-			for i := range allLits {
-				allLits[i].Complete = false
-			}
-		}
-		return NewSeq(allLits...)
+		return e.extractPrefixesAlternate(re, depth)
 
 	case syntax.OpCharClass:
 		// Character class: expand if small enough
@@ -232,9 +209,57 @@ func (e *Extractor) extractPrefixes(re *syntax.Regexp, depth int) *Seq {
 		return NewSeq()
 
 	default:
-		// OpEmptyMatch, OpRepeat, etc.: no extractable prefix
+		// OpEmptyMatch, OpRepeat, OpWordBoundary, etc.: no extractable prefix
 		return NewSeq()
 	}
+}
+
+// extractPrefixesAlternate extracts prefix literals from an alternation.
+// Collects literals from all branches, applies prefix trimming if over MaxLiterals.
+func (e *Extractor) extractPrefixesAlternate(re *syntax.Regexp, depth int) *Seq {
+	crossLimit := e.config.CrossProductLimit
+	if crossLimit <= 0 {
+		crossLimit = 250
+	}
+
+	var allLits []Literal
+	overflowed := false
+	for _, sub := range re.Sub {
+		seq := e.extractPrefixes(sub, depth+1)
+		if seq.IsEmpty() {
+			// This branch has no prefix requirement (e.g., .*?, .+, empty match)
+			// Therefore the whole alternation has no prefix requirement
+			return NewSeq()
+		}
+		for i := 0; i < seq.Len(); i++ {
+			allLits = append(allLits, seq.Get(i))
+			if len(allLits) > crossLimit {
+				overflowed = true
+				break
+			}
+		}
+		if overflowed {
+			break
+		}
+	}
+
+	result := NewSeq(allLits...)
+
+	if overflowed || result.Len() > e.config.MaxLiterals {
+		// Too many literals: trim to 3-byte prefixes, dedup, mark inexact.
+		// This mirrors Rust's optimize_for_prefix_by_preference:
+		// 250 variants → trim to 3 bytes → ~60 unique prefixes.
+		// Use 3 bytes (not 4) because Teddy requires minimum 3-byte patterns,
+		// and shorter prefixes yield better deduplication across alternation branches.
+		result.KeepFirstBytes(3)
+		e.markAllInexact(result)
+		result.Dedup()
+		if result.Len() > e.config.MaxLiterals {
+			result.literals = result.literals[:e.config.MaxLiterals]
+		}
+	}
+
+	return result
 }
 
 // extractPrefixesConcat handles cross-product literal expansion for OpConcat.
@@ -313,22 +338,18 @@ func (e *Extractor) extractPrefixesConcat(re *syntax.Regexp, depth int) *Seq {
 // to cross-product expansion, or nil if the sub-expression is not expandable.
 //
 // Expandable types:
-//   - OpLiteral (case-sensitive only): returns the literal as a single-element Seq
+//   - OpLiteral: returns the literal (with case-fold expansion if FoldCase)
 //   - OpCharClass (small): returns expanded individual character literals
 //   - OpAlternate (all-literal branches): returns union of branch literals
 //   - OpCapture: unwraps and recurses
-//
-// Case-insensitive (FoldCase) sub-expressions are NOT expandable because the
-// prefilter does case-sensitive byte matching. Extracting only the uppercase bytes
-// from a FoldCase literal would miss lowercase matches. (Issue #87)
+//   - OpWordBoundary/OpNoWordBoundary: skipped (zero-width assertion)
 func (e *Extractor) concatSubContribution(sub *syntax.Regexp, depth int) *Seq {
-	// Skip case-insensitive sub-expressions entirely
-	if sub.Flags&syntax.FoldCase != 0 {
-		return nil
-	}
-
 	switch sub.Op {
 	case syntax.OpLiteral:
+		// Case-insensitive literal: expand all case-folding variants for cross-product.
+		if sub.Flags&syntax.FoldCase != 0 {
+			return e.expandCaseFoldLiteral(sub.Rune)
+		}
 		b := runeSliceToBytes(sub.Rune)
 		return NewSeq(NewLiteral(b, true))
 
@@ -366,32 +387,99 @@ func (e *Extractor) concatSubContribution(sub *syntax.Regexp, depth int) *Seq {
 		}
 		return nil
 
+	case syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		// Word boundaries are zero-width assertions — they don't consume input.
+		// Return empty literal so cross-product skips over them.
+		return NewSeq(NewLiteral([]byte{}, true))
+
 	default:
 		return nil
 	}
 }
 
 // expandAlternateContribution tries to expand an alternation inside a concat
-// into a set of literals for cross-product. Returns nil if any branch is not
-// a simple literal/class that can be expanded.
+// into a set of literals for cross-product. Returns nil if any branch has no
+// extractable literals. When the total exceeds MaxLiterals, literals are trimmed
+// to 3-byte prefixes and deduplicated (like extractPrefixesAlternate).
+//
+// IMPORTANT: All branches must be processed even on overflow, because each branch
+// represents a distinct match alternative. Skipping branches causes false negatives
+// in the prefilter (Issue #137 correctness fix).
 func (e *Extractor) expandAlternateContribution(alt *syntax.Regexp, depth int) *Seq {
 	if alt.Op != syntax.OpAlternate {
 		return nil
 	}
+
+	crossLimit := e.config.CrossProductLimit
+	if crossLimit <= 0 {
+		crossLimit = 250
+	}
+
 	var allLits []Literal
+	overflowed := false
 	for _, sub := range alt.Sub {
 		seq := e.extractPrefixes(sub, depth+1)
 		if seq.IsEmpty() {
 			return nil // One branch has no literals, cannot expand
 		}
+
+		if overflowed {
+			allLits = e.appendTrimmedPrefixes(allLits, seq, crossLimit)
+			continue
+		}
+
+		// Still under limit: collect full literals
 		for i := 0; i < seq.Len(); i++ {
 			allLits = append(allLits, seq.Get(i))
-			if len(allLits) > e.config.MaxLiterals {
-				return nil // Too many
-			}
+		}
+		if len(allLits) > crossLimit {
+			// Just overflowed: trim everything collected so far to 3 bytes
+			overflowed = true
+			allLits = e.trimAndDedup(allLits)
 		}
 	}
-	return NewSeq(allLits...)
+
+	result := NewSeq(allLits...)
+
+	// Final trimming and dedup
+	if overflowed || result.Len() > e.config.MaxLiterals {
+		result.KeepFirstBytes(3)
+		e.markAllInexact(result)
+		result.Dedup()
+		if result.Len() > e.config.MaxLiterals {
+			result.literals = result.literals[:e.config.MaxLiterals]
+		}
+	}
+
+	return result
+}
+
+// appendTrimmedPrefixes adds 3-byte trimmed prefixes from seq to allLits,
+// deduplicating periodically when the list exceeds crossLimit.
+func (e *Extractor) appendTrimmedPrefixes(allLits []Literal, seq *Seq, crossLimit int) []Literal {
+	for i := 0; i < seq.Len(); i++ {
+		b := seq.Get(i).Bytes
+		if len(b) > 3 {
+			b = b[:3]
+		}
+		allLits = append(allLits, NewLiteral(b, false))
+	}
+	// Dedup periodically to keep memory bounded
+	if len(allLits) > crossLimit {
+		trimmed := NewSeq(allLits...)
+		trimmed.Dedup()
+		allLits = trimmed.literals
+	}
+	return allLits
+}
+
+// trimAndDedup trims all literals to 3 bytes, marks them inexact, and deduplicates.
+func (e *Extractor) trimAndDedup(allLits []Literal) []Literal {
+	trimmed := NewSeq(allLits...)
+	trimmed.KeepFirstBytes(3)
+	e.markAllInexact(trimmed)
+	trimmed.Dedup()
+	return trimmed.literals
 }
 
 // hasAnyExact returns true if at least one literal in the Seq is Complete (exact).
@@ -456,15 +544,19 @@ func (e *Extractor) ExtractSuffixes(re *syntax.Regexp) *Seq {
 
 // extractSuffixes is the internal recursive implementation for suffix extraction.
 //
-//nolint:cyclop // complexity 26 vs 25 limit due to FoldCase check (Issue #87 fix)
+//nolint:cyclop // complexity from case-fold expansion and OpWordBoundary handling
 func (e *Extractor) extractSuffixes(re *syntax.Regexp, depth int) *Seq {
-	// Guard against excessive recursion and skip case-insensitive patterns (Issue #87)
-	if depth > 100 || re.Flags&syntax.FoldCase != 0 {
+	// Guard against excessive recursion
+	if depth > 100 {
 		return NewSeq()
 	}
 
 	switch re.Op {
 	case syntax.OpLiteral:
+		// Case-insensitive literal: expand case-folding variants
+		if re.Flags&syntax.FoldCase != 0 {
+			return e.expandCaseFoldLiteral(re.Rune)
+		}
 		// Direct literal
 		bytes := runeSliceToBytes(re.Rune)
 		if len(bytes) > e.config.MaxLiteralLen {
@@ -485,13 +577,14 @@ func (e *Extractor) extractSuffixes(re *syntax.Regexp, depth int) *Seq {
 			return NewSeq()
 		}
 
-		// Skip trailing anchors ($, \z) to find the actual last element.
-		// For patterns like `\.php$`, the last AST element is OpEndLine,
-		// but we want to extract from the `.php` literal before it.
+		// Skip trailing anchors and word boundaries ($, \z, \b, \B).
+		// For patterns like `\.php$` or `eval\b`, the last AST element is
+		// an anchor/assertion, but we want to extract from the literal before it.
 		lastIdx := len(re.Sub) - 1
 		for lastIdx >= 0 {
 			op := re.Sub[lastIdx].Op
-			if op != syntax.OpEndLine && op != syntax.OpEndText {
+			if op != syntax.OpEndLine && op != syntax.OpEndText &&
+				op != syntax.OpWordBoundary && op != syntax.OpNoWordBoundary {
 				break
 			}
 			lastIdx--
@@ -509,6 +602,11 @@ func (e *Extractor) extractSuffixes(re *syntax.Regexp, depth int) *Seq {
 		// Walk backwards through concatenation, extending suffixes with preceding literals
 		for i := lastIdx - 1; i >= 0; i-- {
 			sub := re.Sub[i]
+
+			// Skip word boundaries (zero-width assertions)
+			if sub.Op == syntax.OpWordBoundary || sub.Op == syntax.OpNoWordBoundary {
+				continue
+			}
 
 			// Can only extend with literal sub-expressions
 			if sub.Op != syntax.OpLiteral {
@@ -590,6 +688,7 @@ func (e *Extractor) extractSuffixes(re *syntax.Regexp, depth int) *Seq {
 		return NewSeq()
 
 	default:
+		// OpEmptyMatch, OpWordBoundary, etc.: no extractable suffix
 		return NewSeq()
 	}
 }
@@ -613,13 +712,22 @@ func (e *Extractor) ExtractInner(re *syntax.Regexp) *Seq {
 
 // extractInner is the internal recursive implementation for inner literal extraction.
 func (e *Extractor) extractInner(re *syntax.Regexp, depth int) *Seq {
-	// Guard against excessive recursion and skip case-insensitive patterns (Issue #87)
-	if depth > 100 || re.Flags&syntax.FoldCase != 0 {
+	// Guard against excessive recursion
+	if depth > 100 {
 		return NewSeq()
 	}
 
 	switch re.Op {
 	case syntax.OpLiteral:
+		// Case-insensitive literal: expand case-folding variants
+		if re.Flags&syntax.FoldCase != 0 {
+			seq := e.expandCaseFoldLiteral(re.Rune)
+			// Inner literals are never "complete"
+			for i := range seq.literals {
+				seq.literals[i].Complete = false
+			}
+			return seq
+		}
 		bytes := runeSliceToBytes(re.Rune)
 		if len(bytes) > e.config.MaxLiteralLen {
 			bytes = bytes[:e.config.MaxLiteralLen]
@@ -682,6 +790,124 @@ func (e *Extractor) extractInner(re *syntax.Regexp, depth int) *Seq {
 
 // expandCharClass expands character class to literals.
 //
+// expandCaseFoldLiteral expands a case-insensitive literal into all case-folding variants.
+//
+// For each rune in the literal, it computes all case-folding equivalents using
+// unicode.SimpleFold. The cross-product of all positions gives the full variant set.
+//
+// Examples:
+//
+//	"eval" → ["EVAL", "EVAl", "EVaL", "EVal", "EvAL", ..., "eval"] (16 variants)
+//	"s"    → ["S", "s", "ſ"] (3 variants including long-s)
+//
+// If the total cross-product exceeds MaxLiterals, literals are trimmed to shorter
+// prefixes and deduplicated (like Rust's optimize_for_prefix_by_preference).
+//
+// All returned literals are marked as Complete=true because the expanded set covers
+// all possible case foldings — case-sensitive prefilter matching is correct.
+func (e *Extractor) expandCaseFoldLiteral(runes []rune) *Seq {
+	if len(runes) == 0 {
+		return NewSeq()
+	}
+
+	// Resolve CrossProductLimit: use default if not set
+	crossLimit := e.config.CrossProductLimit
+	if crossLimit <= 0 {
+		crossLimit = 250
+	}
+
+	// Build per-position fold sets
+	foldSets := make([][]rune, len(runes))
+	totalProduct := 1
+	for i, r := range runes {
+		folds := caseFolds(r)
+		foldSets[i] = folds
+		totalProduct *= len(folds)
+		// Early exit if cross-product would be too large even before trimming
+		if totalProduct > crossLimit {
+			break
+		}
+	}
+
+	// If cross-product fits within limits, generate all variants
+	if totalProduct <= e.config.MaxLiterals {
+		return e.generateCaseFoldVariants(foldSets, len(runes))
+	}
+
+	// Cross-product too large: trim to shorter prefix and deduplicate.
+	// Like Rust's optimize_for_prefix_by_preference: find max prefix length
+	// where cross-product fits within MaxLiterals.
+	trimLen := e.findMaxCaseFoldPrefix(foldSets)
+	if trimLen == 0 {
+		return NewSeq()
+	}
+
+	result := e.generateCaseFoldVariants(foldSets[:trimLen], trimLen)
+	// Trimmed variants are incomplete (don't cover the full literal)
+	for i := range result.literals {
+		result.literals[i].Complete = false
+	}
+	result.Dedup()
+	if result.Len() > e.config.MaxLiterals {
+		result.literals = result.literals[:e.config.MaxLiterals]
+	}
+	return result
+}
+
+// generateCaseFoldVariants generates cross-product of fold sets up to prefixLen runes.
+func (e *Extractor) generateCaseFoldVariants(foldSets [][]rune, prefixLen int) *Seq {
+	// Start with one empty literal
+	variants := [][]rune{{}}
+
+	for i := 0; i < prefixLen; i++ {
+		var next [][]rune
+		for _, prefix := range variants {
+			for _, r := range foldSets[i] {
+				extended := make([]rune, len(prefix)+1)
+				copy(extended, prefix)
+				extended[len(prefix)] = r
+				next = append(next, extended)
+			}
+		}
+		variants = next
+	}
+
+	lits := make([]Literal, 0, len(variants))
+	for _, v := range variants {
+		b := runeSliceToBytes(v)
+		if len(b) > e.config.MaxLiteralLen {
+			b = b[:e.config.MaxLiteralLen]
+		}
+		lits = append(lits, NewLiteral(b, true))
+	}
+	return NewSeq(lits...)
+}
+
+// findMaxCaseFoldPrefix finds the maximum prefix length where the cross-product
+// of case fold variants fits within MaxLiterals.
+func (e *Extractor) findMaxCaseFoldPrefix(foldSets [][]rune) int {
+	product := 1
+	for i, folds := range foldSets {
+		product *= len(folds)
+		if product > e.config.MaxLiterals {
+			return i // Trim to i runes (not including this position)
+		}
+	}
+	return len(foldSets)
+}
+
+// caseFolds returns all case-folding equivalents for a rune.
+// Uses unicode.SimpleFold to walk the fold chain.
+func caseFolds(r rune) []rune {
+	result := []rune{r}
+	f := unicode.SimpleFold(r)
+	for f != r {
+		result = append(result, f)
+		f = unicode.SimpleFold(f)
+	}
+	return result
+}
+
 // Small character classes like [abc] are expanded to ["a", "b", "c"].
 // Large classes like [a-z] (26 characters) are NOT expanded if they exceed
 // MaxClassSize, returning an empty Seq instead.

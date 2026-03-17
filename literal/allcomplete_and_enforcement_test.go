@@ -381,20 +381,22 @@ func TestExpandAlternateContributionTooMany(t *testing.T) {
 		t.Fatal("Expected non-empty seq")
 	}
 
-	// The alternation contributes 3 literals > MaxLiterals=2,
-	// expandAlternateContribution returns nil, concat stops extending.
-	// Result: "pre" marked as incomplete.
+	// The alternation contributes 3 literals > MaxLiterals=2.
+	// expandAlternateContribution trims to 3-byte prefixes, deduplicates,
+	// and caps at MaxLiterals=2. The cross-product with "pre" produces
+	// "prea" and "preb" (the first 2 of 3 alternation branches).
+	// All are marked inexact since the alternation was trimmed.
 	lit := seq.Get(0)
-	if string(lit.Bytes) != "pre" {
-		t.Errorf("Expected %q, got %q", "pre", lit.Bytes)
+	if string(lit.Bytes) != "prea" {
+		t.Errorf("Expected %q, got %q", "prea", string(lit.Bytes))
 	}
 	if lit.Complete {
-		t.Errorf("Expected incomplete since alternation blocked expansion")
+		t.Errorf("Expected incomplete since alternation was trimmed")
 	}
 }
 
 // TestExtractPrefixesCaseInsensitive verifies that case-insensitive patterns
-// (FoldCase flag) are skipped during prefix extraction.
+// produce case-fold expanded literals for prefiltering (Issue #137).
 func TestExtractPrefixesCaseInsensitive(t *testing.T) {
 	extractor := New(DefaultConfig())
 
@@ -404,8 +406,16 @@ func TestExtractPrefixesCaseInsensitive(t *testing.T) {
 	}
 
 	seq := extractor.ExtractPrefixes(re)
-	if !seq.IsEmpty() {
-		t.Errorf("Expected empty seq for case-insensitive pattern, got %d literals", seq.Len())
+	if seq.IsEmpty() {
+		t.Fatal("Expected non-empty seq for case-insensitive pattern with case-fold expansion")
+	}
+	// "hello" has 5 ASCII letters, each with 2 case folds -> 2^5 = 32 variants
+	if seq.Len() != 32 {
+		t.Errorf("Expected 32 case-fold variants for (?i)hello, got %d", seq.Len())
+	}
+	// All variants should be complete (case-fold expansion covers all cases)
+	if !seq.AllComplete() {
+		t.Error("Expected all case-fold variants to be complete")
 	}
 }
 

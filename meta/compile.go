@@ -497,6 +497,14 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	charClassResult := buildCharClassSearchers(strategy, re, nfaEngine, pikevmNFA)
 	strategy = charClassResult.finalStrategy
 
+	// Replace FatTeddy prefilter with Aho-Corasick for ALL strategies.
+	// FatTeddy's AVX2 SIMD has known boundary bugs with FindMatch at non-zero
+	// positions that cause false negatives in FindAll iteration. Aho-Corasick
+	// provides correct O(n) multi-pattern matching. (Issue #137)
+	if pf != nil {
+		pf = buildACPrefilter(pf)
+	}
+
 	// Check if pattern can match empty string.
 	// If true, BoundedBacktracker cannot be used for Find operations
 	// because its greedy semantics give wrong results for patterns like (?:|a)*
