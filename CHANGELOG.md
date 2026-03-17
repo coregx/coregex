@@ -12,6 +12,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.11] - 2026-03-17
+
+### Performance
+- **ReverseSuffix for multi-wildcard patterns** — removed `wildcardCount >= 2` guard
+  in `isSafeForReverseSuffix` (underlying reverse NFA bug fixed in v0.12.9). Patterns
+  like `\d+\.\d+\.\d+\.35` now use ReverseSuffix (memmem on ".35") instead of
+  DigitPrefilter (scanning all digit positions). LangArena `ips` pattern:
+  57ms → 1.08ms (**53x faster**, faster than Rust's 1.24ms).
+  Also fixes `Find()` leftmost semantics for non-`.*` patterns: uses `bytes.Index`
+  (leftmost) instead of `bytes.LastIndex` (rightmost).
+
+### Added
+- **`COREGEX_DEBUG` env var** — compile-time strategy logging comparable to Rust's
+  `RUST_LOG=debug`. `COREGEX_DEBUG=1`: strategy, NFA states, literal count, prefilter
+  type, engines built/skipped. `COREGEX_DEBUG=2`: + prefix/suffix literal contents.
+  Zero cost when disabled.
+
 ## [0.12.10] - 2026-03-17
 
 ### Performance

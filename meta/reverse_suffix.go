@@ -160,43 +160,54 @@ func (s *ReverseSuffixSearcher) Find(haystack []byte) *Match {
 		return nil
 	}
 
-	// Find the LAST suffix candidate for greedy matching
-	// OPTIMIZATION: Use bytes.LastIndex for O(n) single-pass search
-	// instead of iterating through all matches (was O(k*n) where k=match count)
-	lastPos := bytes.LastIndex(haystack, s.suffixBytes)
-	if lastPos == -1 {
-		// No suffix candidates found
-		return nil
-	}
-
-	// Calculate match end
-	revEnd := lastPos + s.suffixLen
-	if revEnd > len(haystack) {
-		revEnd = len(haystack)
-	}
-
-	// OPTIMIZATION: For unanchored patterns (like .*@suffix), match always starts at 0
-	// because the unanchored search starts from position 0 and .* matches everything.
-	// Skip the expensive reverse DFA scan entirely!
+	// For matchStartZero (unanchored .* prefix), match starts at 0 and extends
+	// to the LAST suffix — use LastIndex for greedy O(n) scan.
 	if s.matchStartZero {
+		lastPos := bytes.LastIndex(haystack, s.suffixBytes)
+		if lastPos == -1 {
+			return nil
+		}
+		revEnd := lastPos + s.suffixLen
+		if revEnd > len(haystack) {
+			revEnd = len(haystack)
+		}
 		return NewMatch(0, revEnd, haystack)
 	}
 
-	// Use reverse DFA to find match START position (for anchored patterns)
-	matchStart := s.reverseDFA.SearchReverse(haystack, 0, revEnd)
-	if matchStart >= 0 {
-		// Forward verification: get correct greedy match end.
-		// Without this, patterns like [a-z]+ing on "tingling" would return
-		// "ting" instead of "tingling" (Issue #124).
-		matchEnd := s.forwardDFA.SearchAt(haystack, matchStart)
-		if matchEnd >= 0 {
-			return NewMatch(matchStart, matchEnd, haystack)
+	// For bounded wildcards (e.g., \d+\.\d+\.35), find the FIRST suffix
+	// candidate for leftmost match semantics. LastIndex would give rightmost.
+	firstPos := bytes.Index(haystack, s.suffixBytes)
+	if firstPos == -1 {
+		return nil
+	}
+
+	// Try each suffix candidate left-to-right until we find a valid match.
+	// This ensures leftmost semantics for multi-wildcard patterns.
+	pos := firstPos
+	for pos >= 0 && pos+s.suffixLen <= len(haystack) {
+		revEnd := pos + s.suffixLen
+
+		// Use reverse DFA to find match START position
+		matchStart := s.reverseDFA.SearchReverse(haystack, 0, revEnd)
+		if matchStart >= 0 {
+			// Forward verification: get correct greedy match end.
+			matchEnd := s.forwardDFA.SearchAt(haystack, matchStart)
+			if matchEnd >= 0 {
+				return NewMatch(matchStart, matchEnd, haystack)
+			}
+			// DFA failed — fallback to PikeVM
+			start, end, found := s.pikevm.SearchAt(haystack, matchStart)
+			if found {
+				return NewMatch(start, end, haystack)
+			}
 		}
-		// DFA failed (cache full, etc) — fallback to PikeVM
-		start, end, found := s.pikevm.SearchAt(haystack, matchStart)
-		if found {
-			return NewMatch(start, end, haystack)
+
+		// Try next suffix candidate
+		next := bytes.Index(haystack[pos+1:], s.suffixBytes)
+		if next == -1 {
+			break
 		}
+		pos = pos + 1 + next
 	}
 
 	// No valid match found

@@ -473,6 +473,10 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		}
 	}
 
+	// Debug: log extracted literals (prefixes + suffixes)
+	debugLiterals("prefixes", literals)
+	debugSuffixes(re, config, isStartAnchored)
+
 	// Select strategy (pass re for anchor detection)
 	strategy := SelectStrategy(nfaEngine, re, literals, config)
 
@@ -497,6 +501,15 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	charClassResult := buildCharClassSearchers(strategy, re, nfaEngine, pikevmNFA)
 	strategy = charClassResult.finalStrategy
 
+	// Debug: log engines built
+	debugEngine("PikeVM", true, "")
+	debugEngine("OnePass DFA", onePassRes != nil, "not worth it or not anchored")
+	debugEngine("lazy DFA", engines.dfa != nil, "strategy does not need DFA")
+	debugEngine("reverse DFA", engines.reverseDFA != nil, "")
+
+	// Debug: log final strategy selection
+	debugStrategy(re.String(), strategy, nfaEngine.States(), literals, "")
+
 	// Replace FatTeddy prefilter with Aho-Corasick for ALL strategies.
 	// FatTeddy's AVX2 SIMD has known boundary bugs with FindMatch at non-zero
 	// positions that cause false negatives in FindAll iteration. Aho-Corasick
@@ -504,6 +517,9 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	if pf != nil {
 		pf = buildACPrefilter(pf)
 	}
+
+	// Debug: log prefilter selection
+	debugPrefilter(pf)
 
 	// Check if pattern can match empty string.
 	// If true, BoundedBacktracker cannot be used for Find operations
