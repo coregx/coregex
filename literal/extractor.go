@@ -126,7 +126,17 @@ func New(config ExtractorConfig) *Extractor {
 //
 // Returns empty Seq if no prefix literals can be extracted.
 func (e *Extractor) ExtractPrefixes(re *syntax.Regexp) *Seq {
-	return e.extractPrefixes(re, 0)
+	seq := e.extractPrefixes(re, 0)
+	// Optimize for prefilter: if too many INCOMPLETE literals for Teddy (>32),
+	// trim to shorter prefixes and deduplicate.
+	// Rust does this in optimize_for_prefix_by_preference().
+	// Example: 225 seven-byte literals → 17 four-byte prefixes → fits Teddy.
+	// Skip for AllComplete (exact match literals) — those go to Teddy/AC directly.
+	if seq != nil && seq.Len() > 32 && !seq.AllComplete() {
+		seq.KeepFirstBytes(4)
+		seq.Dedup()
+	}
+	return seq
 }
 
 // extractPrefixes is the internal recursive implementation.
