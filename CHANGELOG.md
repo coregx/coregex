@@ -11,7 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Look-around assertions
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
-- Case-insensitive literal extraction for Teddy/Aho-Corasick prefilter ([#137](https://github.com/coregx/coregex/issues/137))
+
+## [0.12.10] - 2026-03-17
+
+### Performance
+- **Case-insensitive literal extraction** (Issue [#137](https://github.com/coregx/coregex/issues/137)) —
+  Literal extractor now expands `(?i)` patterns into all case-folding variants
+  (e.g., `eval` → `EVAL, EVAl, ... eval`), trims to 3-byte prefixes, and feeds
+  them to Teddy/Aho-Corasick prefilter. Previously, ALL case-insensitive patterns
+  were rejected by the literal extractor (blanket guard for Issue #87), forcing
+  UseDFA without prefilter → DFA cache thrashing on large NFAs.
+  Pattern `(?iU)\b(eval|system|exec|...)\b`: **88,000x slower than stdlib → 24x faster**.
+  LangArena `(?i)` patterns: `bots` 43x faster, `methods` 14x faster than stdlib.
+
+### Fixed
+- **FatTeddy `FindMatch` false negatives** — FatTeddy AVX2 `FindMatch` at non-zero
+  positions returned false negatives, breaking `FindAll` iteration for >32-pattern
+  alternations. Fix: replace FatTeddy with Aho-Corasick prefilter at compile time.
+
+- **`isMatchDigitPrefilter` O(n²)** — used `dfa.FindAt` (unanchored) which scans
+  from each digit position to end of input. On 6MB with 19,536 digit positions:
+  7 minutes per `Match()` call. Fix: use `dfa.SearchAtAnchored` + `digitRunSkipSafe`
+  skip optimization. Result: 7 min → 2.1ms (**200,000x faster**).
+
+- **Large NFA without prefilter fallback** — patterns with >100 NFA states and no
+  extracted literals were routed to UseDFA causing cache thrashing. Now falls back
+  to UseNFA (PikeVM) which avoids DFA construction overhead.
 
 ## [0.12.9] - 2026-03-17
 

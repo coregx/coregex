@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-03-17 | **Current Version**: v0.12.9 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-03-17 | **Current Version**: v0.12.10 | **Target**: v1.0.0 stable
 
 ---
 
@@ -12,7 +12,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 
 ### Current State vs Target
 
-| Metric | Current (v0.12.9) | Target (v1.0.0) |
+| Metric | Current (v0.12.10) | Target (v1.0.0) |
 |--------|-------------------|-----------------|
 | Inner literal speedup | **280-3154x** | ✅ Achieved |
 | Case-insensitive speedup | **263x** | ✅ Achieved |
@@ -74,7 +74,9 @@ v0.12.7 ✅ → PikeVM sparse-dispatch for dot patterns, 2.8-4.8x speedup (#132)
          ↓
 v0.12.8 ✅ → Streaming ReplaceAll + DFA-first FindSubmatchAt (#135)
          ↓
-v0.12.9 (Current) ✅ → Bidirectional DFA, Teddy/reverse NFA fixes
+v0.12.9 ✅ → Bidirectional DFA, Teddy/reverse NFA fixes
+         ↓
+v0.12.10 (Current) ✅ → Case-insensitive literals, DigitPrefilter O(n²) fix (#137)
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
