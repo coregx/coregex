@@ -276,8 +276,9 @@ func TestIssue124_NonGreedy_VsGreedy(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestIssue124_ReverseSuffix_MultiVarLenGroups tests patterns with multiple
-// variable-length groups that previously broke the reverse NFA builder.
-// These patterns must NOT be routed to UseReverseSuffix (guard rejects them).
+// variable-length groups. These now correctly use ReverseSuffix after the
+// reverse NFA mixed-edge fix (fillMixedState, v0.12.9). Previously these
+// were blocked by wildcardCount >= 2 guard due to a reverse NFA bug.
 func TestIssue124_ReverseSuffix_MultiVarLenGroups(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -285,7 +286,7 @@ func TestIssue124_ReverseSuffix_MultiVarLenGroups(t *testing.T) {
 		haystack string
 		wantFind string
 	}{
-		// @kostya's original pattern
+		// @kostya's original pattern — LangArena ips
 		{
 			name:     "ip_suffix_35",
 			pattern:  `\d+\.\d+\.\d+\.35`,
@@ -316,6 +317,13 @@ func TestIssue124_ReverseSuffix_MultiVarLenGroups(t *testing.T) {
 			haystack: "server at 10.0.0.35 is down",
 			wantFind: "10.0.0.35",
 		},
+		// FindAll correctness — multiple matches
+		{
+			name:     "ip_multiple",
+			pattern:  `\d+\.\d+\.\d+\.35`,
+			haystack: "192.168.1.35 and 10.0.0.35",
+			wantFind: "192.168.1.35",
+		},
 	}
 
 	for _, tt := range tests {
@@ -325,9 +333,9 @@ func TestIssue124_ReverseSuffix_MultiVarLenGroups(t *testing.T) {
 				t.Fatalf("Compile(%q) error: %v", tt.pattern, err)
 			}
 
-			// These patterns must NOT use ReverseSuffix (guard rejects them)
-			if engine.Strategy() == UseReverseSuffix {
-				t.Errorf("pattern %q routed to UseReverseSuffix (should be rejected by guard)", tt.pattern)
+			// Multi-wildcard patterns now use ReverseSuffix
+			if engine.Strategy() != UseReverseSuffix {
+				t.Errorf("pattern %q uses %v, want UseReverseSuffix", tt.pattern, engine.Strategy())
 			}
 
 			m := engine.Find([]byte(tt.haystack))
@@ -339,6 +347,27 @@ func TestIssue124_ReverseSuffix_MultiVarLenGroups(t *testing.T) {
 			}
 		})
 	}
+
+	// FindAll correctness: verify match count matches stdlib
+	t.Run("find_all_vs_stdlib", func(t *testing.T) {
+		multiMatchTests := []struct {
+			pattern string
+			input   string
+			want    int
+		}{
+			{`\d+\.\d+\.\d+\.35`, "192.168.1.35 and 10.0.0.35 end", 2},
+			{`\d+\.\d+\.35`, "1.2.35 and 3.4.35 and 5.6.35", 3},
+			{`[a-z]+\.[a-z]+\.com`, "a.b.com x.y.com foo.bar.com", 3},
+			{`\w+@\w+\.org`, "a@b.org c@d.org", 2},
+		}
+		for _, tt := range multiMatchTests {
+			engine, _ := Compile(tt.pattern)
+			matches := engine.FindAllIndicesStreaming([]byte(tt.input), -1, nil)
+			if len(matches) != tt.want {
+				t.Errorf("FindAll(%q, %q) = %d matches, want %d", tt.pattern, tt.input, len(matches), tt.want)
+			}
+		}
+	})
 }
 
 // TestIssue124_ReverseSuffix_SingleVarLen tests patterns with exactly ONE
@@ -591,33 +620,10 @@ func TestIssue124_StdlibComparison_IsMatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestIssue124_StrategyGuard_MultiVarLen verifies that isSafeForReverseSuffix
-// rejects patterns with 2+ variable-length groups.
+// accepts patterns with multiple variable-length groups (guard removed in v0.12.10
+// after reverse NFA mixed-edge fix).
 func TestIssue124_StrategyGuard_MultiVarLen(t *testing.T) {
-	// Patterns that must NOT use ReverseSuffix
-	rejected := []struct {
-		name    string
-		pattern string
-	}{
-		{"three_digit_groups", `\d+\.\d+\.\d+\.35`},
-		{"two_digit_groups", `\d+\.\d+\.35`},
-		{"alpha_groups", `[a-z]+\.[a-z]+\.com`},
-		{"word_at_word", `\w+@\w+\.org`},
-		{"digit_dash_digit", `\d+-\d+\.35`},
-	}
-
-	for _, tt := range rejected {
-		t.Run("rejected/"+tt.name, func(t *testing.T) {
-			engine, err := Compile(tt.pattern)
-			if err != nil {
-				t.Fatalf("Compile(%q) error: %v", tt.pattern, err)
-			}
-			if engine.Strategy() == UseReverseSuffix {
-				t.Errorf("pattern %q should be rejected by guard, got UseReverseSuffix", tt.pattern)
-			}
-		})
-	}
-
-	// Patterns that should still be allowed for ReverseSuffix
+	// All wildcard+suffix patterns should now use ReverseSuffix
 	allowed := []struct {
 		name    string
 		pattern string
@@ -626,18 +632,21 @@ func TestIssue124_StrategyGuard_MultiVarLen(t *testing.T) {
 		{"dotplus_log", `.+\.log`},
 		{"charclass_conf", `[a-z]+\.conf`},
 		{"single_digit", `\d+\.35`},
+		{"three_digit_groups", `\d+\.\d+\.\d+\.35`},
+		{"two_digit_groups", `\d+\.\d+\.35`},
+		{"alpha_groups", `[a-z]+\.[a-z]+\.com`},
+		{"word_at_word", `\w+@\w+\.org`},
+		{"digit_dash_digit", `\d+-\d+\.35`},
 	}
 
 	for _, tt := range allowed {
-		t.Run("allowed/"+tt.name, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			engine, err := Compile(tt.pattern)
 			if err != nil {
 				t.Fatalf("Compile(%q) error: %v", tt.pattern, err)
 			}
-			// These should be UseReverseSuffix (unless prefilter not available)
-			strategy := engine.Strategy()
-			if strategy != UseReverseSuffix && strategy != UseNFA && strategy != UseDFA {
-				t.Logf("pattern %q uses strategy %v (expected UseReverseSuffix)", tt.pattern, strategy)
+			if engine.Strategy() != UseReverseSuffix {
+				t.Errorf("pattern %q uses %v, want UseReverseSuffix", tt.pattern, engine.Strategy())
 			}
 		})
 	}

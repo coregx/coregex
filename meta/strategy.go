@@ -640,12 +640,10 @@ func isSafeForReverseSuffix(re *syntax.Regexp) bool {
 		if wildcardCount == 0 {
 			return false // No wildcard pattern - not safe
 		}
-		// Multiple variable-length groups break the reverse NFA builder:
-		// fillReverseState() drops epsilon edges when mixed with byte-ranges,
-		// which breaks \d+ loops in patterns like \d+\.\d+\.35 (Issue #124).
-		if wildcardCount >= 2 {
-			return false
-		}
+		// Note: wildcardCount >= 2 guard removed. The underlying issues were:
+		// 1. Reverse NFA mixed-edge bug — fixed in v0.12.9 (fillMixedState)
+		// 2. Find() rightmost semantics — fixed: non-matchStartZero uses
+		//    bytes.Index (leftmost) instead of LastIndex (rightmost)
 		// Check for internal anchors (^ or $ not at expected positions)
 		for i := 1; i < len(re.Sub)-1; i++ {
 			if containsAnchor(re.Sub[i]) {
