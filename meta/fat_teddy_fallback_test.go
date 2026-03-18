@@ -1,6 +1,8 @@
 package meta
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -117,6 +119,83 @@ func TestSlimTeddyNoFallback(t *testing.T) {
 	if re.fatTeddyFallback != nil {
 		t.Error("fatTeddyFallback is not nil, Slim Teddy should not have fallback")
 	}
+}
+
+// TestFatTeddyCaseFoldRegression verifies correctness of (?i)get|post|put
+// which produces 40 case-fold expanded patterns (FatTeddy range).
+//
+// Root cause: fatTeddyAVX2_2 used ANDL to combine low/high 128-bit lane masks.
+// Patterns assigned only to buckets 0-7 (low lane) produced zero in the high
+// lane, so AND always yielded zero = missed matches. Fix: ORL.
+//
+// This was the LangArena "methods" pattern bug: 11456 matches instead of 34368.
+// Only POST matched (patterns spanning both lanes), GET and PUT were missed.
+func TestFatTeddyCaseFoldRegression(t *testing.T) {
+	re, err := Compile(`(?i)get|post|put`)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	t.Logf("Strategy: %s", re.Strategy())
+
+	stdlibRe := regexp.MustCompile(`(?i)get|post|put`)
+
+	// Test on generated log data similar to LangArena
+	data := generateTestLogData(1000)
+	haystack := []byte(data)
+
+	// Count matches with stdlib
+	stdlibMatches := stdlibRe.FindAllIndex(haystack, -1)
+	stdlibCount := len(stdlibMatches)
+
+	// Count matches with coregex
+	coregexMatches := re.FindAllIndicesStreaming(haystack, -1, nil)
+	coregexCount := len(coregexMatches)
+
+	t.Logf("stdlib: %d matches, coregex: %d matches", stdlibCount, coregexCount)
+
+	if coregexCount != stdlibCount {
+		t.Errorf("Match count mismatch: coregex=%d, stdlib=%d (diff=%d)",
+			coregexCount, stdlibCount, stdlibCount-coregexCount)
+
+		// Show first few mismatches for debugging
+		if len(stdlibMatches) > 0 && len(coregexMatches) > 0 {
+			si, ci := 0, 0
+			mismatches := 0
+			for si < len(stdlibMatches) && ci < len(coregexMatches) && mismatches < 5 {
+				sm := stdlibMatches[si]
+				cm := coregexMatches[ci]
+				switch {
+				case sm[0] == cm[0] && sm[1] == cm[1]:
+					si++
+					ci++
+				case sm[0] < cm[0]:
+					t.Logf("  Missing match at [%d:%d] = %q", sm[0], sm[1],
+						haystack[sm[0]:sm[1]])
+					si++
+					mismatches++
+				default:
+					t.Logf("  Extra match at [%d:%d] = %q", cm[0], cm[1],
+						haystack[cm[0]:cm[1]])
+					ci++
+					mismatches++
+				}
+			}
+		}
+	}
+}
+
+// generateTestLogData creates log-like data with GET/POST/PUT methods.
+func generateTestLogData(lines int) string {
+	methods := []string{"GET", "POST", "PUT", "DELETE"}
+	var b strings.Builder
+	b.Grow(lines * 100)
+	for i := 0; i < lines; i++ {
+		b.WriteString("192.168.1.1 - - [01/Oct/2023:12:00:00 +0000] \"")
+		b.WriteString(methods[i%len(methods)])
+		b.WriteString(" /path HTTP/1.1\" 200 1234\n")
+	}
+	return b.String()
 }
 
 // BenchmarkACPrefilter compares AC prefilter on small vs large haystacks.
