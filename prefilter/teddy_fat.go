@@ -270,24 +270,40 @@ func (t *FatTeddy) FindAllPositions(haystack []byte) []int {
 
 	bufPtr := candidateBufPool.Get().(*[]uint64)
 	buf := *bufPtr
-	count := fatTeddyAVX2_2_batch(t.masks, haystack, buf)
 
+	// Process in chunks to avoid long-running ASM (Go async preemption can
+	// clobber registers in ASM functions running > ~10ms).
+	const chunkSize = 64 * 1024 // 64KB chunks — safe from Go async preemption
 	var results []int
-	for i := 0; i < count; i++ {
-		packed := buf[i]
-		pos := int(packed >> 16)
-		bucketMask := uint16(packed & 0xFFFF)
+	offset := 0
+	for offset < len(haystack) {
+		end := offset + chunkSize
+		if end > len(haystack) {
+			end = len(haystack)
+		}
+		chunk := haystack[offset:end]
+		if len(chunk) < 16 {
+			break
+		}
+		count := fatTeddyAVX2_2_batch(t.masks, chunk, buf)
 
-		for bucketMask != 0 {
-			bucket := bits.TrailingZeros16(bucketMask)
-			bucketMask &^= 1 << bucket
+		for i := 0; i < count; i++ {
+			packed := buf[i]
+			pos := int(packed >> 16)
+			bucketMask := uint16(packed & 0xFFFF)
 
-			matchPos, _ := t.verifyBucket(haystack, pos, bucket)
-			if matchPos != -1 {
-				results = append(results, matchPos)
-				break // First match at this position
+			for bucketMask != 0 {
+				bucket := bits.TrailingZeros16(bucketMask)
+				bucketMask &^= 1 << bucket
+
+				matchPos, _ := t.verifyBucket(haystack, offset+pos, bucket)
+				if matchPos != -1 {
+					results = append(results, matchPos)
+					break
+				}
 			}
 		}
+		offset = end
 	}
 
 	candidateBufPool.Put(bufPtr)
