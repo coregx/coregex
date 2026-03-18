@@ -12,6 +12,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.13] - 2026-03-18
+
+### Performance
+- **FatTeddy VPTEST hot loop** — replaced 8-instruction candidate detection
+  (VPCMPEQB+VPMOVMSKB+NOTL+ORL chain) with single VPTEST instruction.
+  ORL lane combining moved to cold path. FatTeddy 35-pattern scan: 24% faster.
+
+- **FatTeddy batch FindAllPositions** — new `fatTeddyAVX2_2_batch` ASM scans
+  entire haystack in 64KB chunks, writing all candidates to pre-allocated buffer.
+  Eliminates Go→ASM round-trip overhead (masks loaded once per chunk vs per candidate).
+  FindAll 35 patterns on 6MB: 39ms → 22ms (1.8x faster).
+
+- **Prefilter-accelerated isMatchDFA** — candidate loop with anchored DFA
+  verification for large NFAs (>100 states). Issue #137 match case: 176μs → 27μs.
+
+- **Prefilter-accelerated findIndicesDFA** — same candidate loop for FindIndices
+  path (guard: nfaStateCount > 100 to avoid overhead on small NFAs).
+
+- **Cascading prefix trim** (Rust-style) — >64 literals trimmed via attempts
+  [(4,64), (3,64), (2,64)]. `auth_attempts` 128 → 18 literals → Teddy. 34ms → 7ms.
+
+### Fixed
+- **FatTeddy AVX2 ANDL→ORL** — `ANDL` required match in BOTH 128-bit lanes,
+  missing patterns assigned to single lane (GET in low, PUT in high).
+  `(?i)get|post|put`: 11456 → 34368 matches. Also DECQ SI for tail boundary.
+
+### Dependencies
+- **ahocorasick v0.1.0 → v0.2.1** — DFA backend with flat transition table,
+  premultiplied state IDs, SIMD skip-ahead prefilter. Find 3.4 GB/s (was 300 MB/s),
+  IsMatch 5.9-7.0 GB/s (was 260-545 MB/s). 11-22x throughput improvement.
+
 ## [0.12.12] - 2026-03-17
 
 ### Performance

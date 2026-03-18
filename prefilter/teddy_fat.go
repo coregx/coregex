@@ -20,6 +20,7 @@ package prefilter
 import (
 	"bytes"
 	"math/bits"
+	"sync"
 )
 
 // FatTeddyConfig configures Fat Teddy construction.
@@ -240,56 +241,105 @@ func buildFatMasks(patterns [][]byte, fingerprintLen int) (*fatTeddyMasks, [][]i
 // then verifies full pattern matches.
 //
 // Returns -1 if no match is found.
+// candidateBufPool provides pre-allocated buffers for batch candidate extraction.
+var candidateBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]uint64, 8192)
+		return &buf
+	},
+}
+
+// FindAllPositions returns all match positions using batch SIMD scan.
+// One ASM call extracts ALL candidates, then Go verifies each.
+// Eliminates Go→ASM round trip overhead for FindAll workloads.
+func (t *FatTeddy) FindAllPositions(haystack []byte) []int {
+	if len(haystack) < 16 || !hasAVX2 || t.masks.fingerprintLen != 2 {
+		// Fallback to per-candidate Find
+		var results []int
+		pos := 0
+		for {
+			p := t.Find(haystack, pos)
+			if p < 0 {
+				break
+			}
+			results = append(results, p)
+			pos = p + 1
+		}
+		return results
+	}
+
+	bufPtr := candidateBufPool.Get().(*[]uint64)
+	buf := *bufPtr
+
+	// Process in chunks to avoid long-running ASM (Go async preemption can
+	// clobber registers in ASM functions running > ~10ms).
+	const chunkSize = 64 * 1024 // 64KB chunks — safe from Go async preemption
+	var results []int
+	offset := 0
+	for offset < len(haystack) {
+		end := offset + chunkSize
+		if end > len(haystack) {
+			end = len(haystack)
+		}
+		chunk := haystack[offset:end]
+		if len(chunk) < 16 {
+			break
+		}
+		count := fatTeddyAVX2_2Batch(t.masks, chunk, buf)
+
+		for i := 0; i < count; i++ {
+			packed := buf[i]
+			pos := int(packed >> 16)
+			bucketMask := uint16(packed & 0xFFFF)
+
+			for bucketMask != 0 {
+				bucket := bits.TrailingZeros16(bucketMask)
+				bucketMask &^= 1 << bucket
+
+				matchPos, _ := t.verifyBucket(haystack, offset+pos, bucket)
+				if matchPos != -1 {
+					results = append(results, matchPos)
+					break
+				}
+			}
+		}
+		offset = end
+	}
+
+	candidateBufPool.Put(bufPtr)
+	return results
+}
+
 func (t *FatTeddy) Find(haystack []byte, start int) int {
-	// Bounds check
 	if start < 0 || start >= len(haystack) {
 		return -1
 	}
 
-	// Slice haystack from start position
-	haystack = haystack[start:]
-
-	// If haystack is too short for SIMD (< 16 bytes), use scalar search
-	if len(haystack) < 16 {
-		return t.findScalar(haystack, start)
+	remaining := haystack[start:]
+	if len(remaining) < 16 {
+		return t.findScalar(remaining, start)
 	}
 
-	// Use SIMD search
-	pos, bucketMask := t.findSIMD(haystack)
-
-	// Track accumulated offset for continuation searches
+	// Per-candidate path (for single Find — need first match, not all)
+	pos, bucketMask := t.findSIMD(remaining)
 	accumulatedOffset := 0
-
-	// Process candidates
 	for pos != -1 {
-		// Iterate through all set bits in bucket mask (16-bit for Fat Teddy)
 		for bucketMask != 0 {
-			// Find lowest set bit (bucket ID)
 			bucket := bits.TrailingZeros16(bucketMask)
-			bucketMask &^= 1 << bucket // Clear the bit
-
-			// Verify patterns in this specific bucket
-			matchPos, _ := t.verifyBucket(haystack[accumulatedOffset:], pos, bucket)
+			bucketMask &^= 1 << bucket
+			matchPos, _ := t.verifyBucket(remaining[accumulatedOffset:], pos, bucket)
 			if matchPos != -1 {
-				// Match found! Return absolute position
 				return start + accumulatedOffset + matchPos
 			}
 		}
-
-		// No match at this candidate in any bucket, continue searching
 		nextSearchStart := accumulatedOffset + pos + 1
-		if nextSearchStart >= len(haystack) {
+		if nextSearchStart >= len(remaining) {
 			break
 		}
-
-		// Update accumulated offset
 		accumulatedOffset = nextSearchStart
-
-		// Search in remaining haystack
-		pos, bucketMask = t.findSIMD(haystack[accumulatedOffset:])
+		pos, bucketMask = t.findSIMD(remaining[accumulatedOffset:])
 	}
-
-	return -1 // No match found
+	return -1
 }
 
 // FindMatch returns the start and end positions of the first match.

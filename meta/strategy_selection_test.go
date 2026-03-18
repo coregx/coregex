@@ -63,8 +63,10 @@ func TestStrategySelectionComprehensive(t *testing.T) {
 		{"digit_time", `\d+:\d+:\d+`, UseDigitPrefilter},
 		{"digit_ip_octet", `25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9]`, UseDigitPrefilter},
 
-		// ========== UseAhoCorasick: large literal alternations (>64 patterns) ==========
-		// Teddy handles up to ~64 patterns; AhoCorasick kicks in above that
+		// ========== Large literal alternations (>64 patterns) ==========
+		// With prefix trimming, 70 unique patterns reduce to ~46 two-byte
+		// prefixes (≤64) → routed through Teddy prefilter, not AhoCorasick.
+		// UseAhoCorasick only for patterns where trimming can't reduce below 64.
 		{
 			"ahocorasick_many_literals",
 			strings.Join([]string{
@@ -83,7 +85,7 @@ func TestStrategySelectionComprehensive(t *testing.T) {
 				"jujube", "kiwi", "lychee", "mulberry", "nutmeg",
 				"olive", "pear", "raisin", "saffron", "thyme",
 			}, "|"),
-			UseAhoCorasick,
+			UseNFA, // After prefix trimming: 70 → ~46 two-byte prefixes
 		},
 	}
 

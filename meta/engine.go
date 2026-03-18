@@ -115,7 +115,8 @@ type Engine struct {
 	// match end and reverseDFA finds match start. O(n) total.
 	// Placed after onepass to preserve field offsets of hot-path fields
 	// (charClassSearcher, strategy, etc.) for cache alignment stability.
-	reverseDFA *lazy.DFA
+	reverseDFA    *lazy.DFA
+	nfaStateCount int // NFA state count for prefilter loop guard
 
 	// statePool provides thread-safe pooling of per-search mutable state.
 	// This enables concurrent searches on the same Engine instance.

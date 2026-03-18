@@ -510,13 +510,8 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Debug: log final strategy selection
 	debugStrategy(re.String(), strategy, nfaEngine.States(), literals, "")
 
-	// Replace FatTeddy prefilter with Aho-Corasick for ALL strategies.
-	// FatTeddy's AVX2 SIMD has known boundary bugs with FindMatch at non-zero
-	// positions that cause false negatives in FindAll iteration. Aho-Corasick
-	// provides correct O(n) multi-pattern matching. (Issue #137)
-	if pf != nil {
-		pf = buildACPrefilter(pf)
-	}
+	// FatTeddy AVX2 is now correct (ORL fix for lane combining, DECQ SI for tail).
+	// No AC replacement needed for any strategy.
 
 	// Debug: log prefilter selection
 	debugPrefilter(pf)
@@ -600,6 +595,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		asciiBoundedBacktracker:        asciiBT,
 		dfa:                            engines.dfa,
 		reverseDFA:                     engines.reverseDFA,
+		nfaStateCount:                  nfaEngine.States(),
 		pikevm:                         pikevm,
 		boundedBacktracker:             charClassResult.boundedBT,
 		charClassSearcher:              charClassResult.charClassSrch,
