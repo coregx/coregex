@@ -252,7 +252,7 @@ found_scalar:
 	VZEROUPPER
 	RET
 
-// func fatTeddyAVX2_2_batch(masks *fatTeddyMasks, haystack []byte, buf []uint32) int
+// func fatTeddyAVX2_2Batch(masks *fatTeddyMasks, haystack []byte, buf []uint32) int
 //
 // Batch version: scans entire haystack, writes ALL candidates to buf.
 // Each candidate = (position << 16) | bucketMask packed in uint32.
@@ -268,7 +268,7 @@ found_scalar:
 //   buf_len+40(FP)        int (8)
 //   buf_cap+48(FP)        int (8)
 //   ret+56(FP)            int (8)
-TEXT ·fatTeddyAVX2_2_batch(SB), NOSPLIT, $32-64
+TEXT ·fatTeddyAVX2_2Batch(SB), NOSPLIT, $32-64
 	MOVQ    masks+0(FP), R8
 	MOVQ    haystack_base+8(FP), SI
 	MOVQ    haystack_len+16(FP), DX

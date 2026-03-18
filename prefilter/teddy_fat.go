@@ -285,7 +285,7 @@ func (t *FatTeddy) FindAllPositions(haystack []byte) []int {
 		if len(chunk) < 16 {
 			break
 		}
-		count := fatTeddyAVX2_2_batch(t.masks, chunk, buf)
+		count := fatTeddyAVX2_2Batch(t.masks, chunk, buf)
 
 		for i := 0; i < count; i++ {
 			packed := buf[i]
