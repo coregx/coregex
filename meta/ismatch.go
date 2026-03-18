@@ -135,25 +135,37 @@ func (e *Engine) isMatchNFA(haystack []byte) bool {
 func (e *Engine) isMatchDFA(haystack []byte) bool {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 
-	// Prefilter fast rejection: if prefilter says no candidates, no match possible.
-	// This is critical for large NFAs with extracted prefix literals (e.g., case-fold
-	// expanded alternations) where DFA cache thrashing dominates runtime.
+	// Prefilter-accelerated matching: use prefilter to skip non-matching regions,
+	// then verify each candidate with anchored DFA or PikeVM.
+	// This is critical for case-insensitive patterns with large NFAs (Issue #137).
 	if e.prefilter != nil {
-		pos := e.prefilter.Find(haystack, 0)
-		if pos == -1 {
-			return false
+		pos := 0
+		for pos < len(haystack) {
+			candidate := e.prefilter.Find(haystack, pos)
+			if candidate == -1 {
+				return false // No more candidates
+			}
+			atomic.AddUint64(&e.stats.PrefilterHits, 1)
+			// For complete prefilters, the find is sufficient
+			if e.prefilter.IsComplete() {
+				return true
+			}
+			// Verify candidate with anchored DFA (O(pattern_len) per candidate).
+			// Unanchored verification would scan to end of input = O(n) per candidate.
+			if e.dfa != nil {
+				if e.dfa.SearchAtAnchored(haystack, candidate) != -1 {
+					return true
+				}
+			} else {
+				// PikeVM fallback — check if match starts at candidate position
+				start, _, found := e.pikevm.SearchAt(haystack, candidate)
+				if found && start == candidate {
+					return true
+				}
+			}
+			pos = candidate + 1
 		}
-		atomic.AddUint64(&e.stats.PrefilterHits, 1)
-		// For complete prefilters, the find is sufficient
-		if e.prefilter.IsComplete() {
-			return true
-		}
-		// Verify candidate with NFA (PikeVM) at the candidate position.
-		// We use NFA instead of DFA for verification because large NFAs
-		// (e.g., 181 states for (?i) patterns) cause DFA cache thrashing.
-		// PikeVM is O(n*states) but avoids DFA construction overhead.
-		_, _, found := e.pikevm.SearchAt(haystack, pos)
-		return found
+		return false
 	}
 
 	// Use DFA.IsMatch which has early termination optimization

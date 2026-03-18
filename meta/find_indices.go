@@ -722,16 +722,6 @@ func (e *Engine) findIndicesTeddy(haystack []byte) (int, int, bool) {
 		return e.findIndicesNFA(haystack)
 	}
 
-	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
-	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
-		atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
-		match := e.fatTeddyFallback.Find(haystack, 0)
-		if match == nil {
-			return -1, -1, false
-		}
-		return match.Start, match.End, true
-	}
-
 	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
 	// Use FindMatch which returns both start and end positions
@@ -759,16 +749,6 @@ func (e *Engine) findIndicesTeddy(haystack []byte) (int, int, bool) {
 func (e *Engine) findIndicesTeddyAt(haystack []byte, at int) (int, int, bool) {
 	if e.prefilter == nil || at >= len(haystack) {
 		return e.findIndicesNFAAt(haystack, at)
-	}
-
-	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
-	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
-		atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
-		match := e.fatTeddyFallback.FindAt(haystack, at)
-		if match == nil {
-			return -1, -1, false
-		}
-		return match.Start, match.End, true
 	}
 
 	atomic.AddUint64(&e.stats.PrefilterHits, 1)

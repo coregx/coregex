@@ -510,11 +510,10 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Debug: log final strategy selection
 	debugStrategy(re.String(), strategy, nfaEngine.States(), literals, "")
 
-	// Replace FatTeddy prefilter with Aho-Corasick for ALL strategies.
-	// FatTeddy's AVX2 SIMD has known boundary bugs with FindMatch at non-zero
-	// positions that cause false negatives in FindAll iteration. Aho-Corasick
-	// provides correct O(n) multi-pattern matching. (Issue #137)
-	if pf != nil {
+	// Replace FatTeddy with AC for non-Teddy strategies only.
+	// Non-Teddy strategies need AC for DFA verification path.
+	// For UseTeddy, FatTeddy IS the search engine — keep SIMD.
+	if strategy != UseTeddy && pf != nil {
 		pf = buildACPrefilter(pf)
 	}
 

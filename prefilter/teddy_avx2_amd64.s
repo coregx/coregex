@@ -149,8 +149,11 @@ loop16:
 	JMP     loop16
 
 handle_tail:
-	// Process remaining bytes one at a time using scalar code
-	// Reset prev0 logic doesn't matter for scalar
+	// Cover the prev0 carry-over position (k*16) that the SIMD loop missed.
+	// The 2-byte fingerprint algorithm uses VPALIGNR to carry prev0 between
+	// SIMD iterations. When exiting to tail, position k*16 hasn't been checked
+	// because the SIMD iteration that would use prev0 never ran.
+	DECQ    SI
 
 tail_check:
 	// Need at least 2 bytes
