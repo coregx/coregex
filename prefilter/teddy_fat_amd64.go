@@ -23,6 +23,13 @@ package prefilter
 //go:noescape
 func fatTeddyAVX2_2(masks *fatTeddyMasks, haystack []byte) (pos int, bucketMask uint16)
 
+// fatTeddyAVX2_2_batch scans entire haystack in one call, writing all candidates
+// to buf. Each entry = (position << 16) | bucketMask packed in uint64.
+// Returns number of candidates written. Masks loaded once, no round-trip overhead.
+//
+//go:noescape
+func fatTeddyAVX2_2_batch(masks *fatTeddyMasks, haystack []byte, buf []uint64) int
+
 // findSIMD performs AVX2 search for candidate positions.
 //
 // This method dispatches to the appropriate SIMD implementation:
