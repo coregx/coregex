@@ -228,17 +228,61 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
 		return e.pikevm.Search(haystack)
 	}
 
-	// Prefilter skip: jump to candidate position.
+	// Prefilter-accelerated search: find candidate, verify with anchored DFA.
+	// For large NFAs (e.g., 181 states for (?i) patterns), bidirectional DFA
+	// cache-thrashes. Anchored verification at candidate position is O(pattern_len).
+	// Guards:
+	// - reverseDFA != nil: proxy for greedy patterns (non-greedy needs PikeVM)
+	// - nfaSize > 100: only for large NFAs where DFA cache-thrashes.
+	//   Small NFAs (e.g., 34 states for peak_hours) work fine with bidirectional DFA.
+	//   Single-byte prefilters (memchr on '[') produce too many false positives,
+	//   making candidate loop slower than single-pass DFA.
+	if e.prefilter != nil && e.reverseDFA != nil && e.nfaStateCount > 100 {
+		pos := 0
+		for pos < len(haystack) {
+			candidate := e.prefilter.Find(haystack, pos)
+			if candidate == -1 {
+				return -1, -1, false
+			}
+			atomic.AddUint64(&e.stats.PrefilterHits, 1)
+			// Complete prefilter: candidate IS the match
+			if e.prefilter.IsComplete() {
+				litLen := e.prefilter.LiteralLen()
+				if litLen > 0 {
+					return candidate, candidate + litLen, true
+				}
+				// FindMatch for variable-length complete matches
+				if matcher, ok := e.prefilter.(interface{ FindMatch([]byte, int) (int, int) }); ok {
+					s, end := matcher.FindMatch(haystack, pos)
+					if s >= 0 {
+						return s, end, true
+					}
+				}
+			}
+			// Anchored DFA verification at candidate position
+			if e.dfa != nil {
+				endPos := e.dfa.SearchAtAnchored(haystack, candidate)
+				if endPos != -1 {
+					return candidate, endPos, true
+				}
+			} else {
+				start, end, found := e.pikevm.SearchAt(haystack, candidate)
+				if found && start == candidate {
+					return start, end, true
+				}
+			}
+			pos = candidate + 1
+		}
+		return -1, -1, false
+	}
+
+	// Prefilter with non-greedy: use prefilter for rejection only, PikeVM for match.
 	if e.prefilter != nil {
 		pos := e.prefilter.Find(haystack, 0)
 		if pos == -1 {
 			return -1, -1, false
 		}
 		atomic.AddUint64(&e.stats.PrefilterHits, 1)
-		// Bidirectional DFA: forward DFA → end, reverse DFA → start. O(n) total.
-		if e.reverseDFA != nil {
-			return e.findIndicesBidirectionalDFA(haystack, pos)
-		}
 		return e.pikevm.SearchAt(haystack, pos)
 	}
 
@@ -722,16 +766,6 @@ func (e *Engine) findIndicesTeddy(haystack []byte) (int, int, bool) {
 		return e.findIndicesNFA(haystack)
 	}
 
-	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
-	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
-		atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
-		match := e.fatTeddyFallback.Find(haystack, 0)
-		if match == nil {
-			return -1, -1, false
-		}
-		return match.Start, match.End, true
-	}
-
 	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
 	// Use FindMatch which returns both start and end positions
@@ -759,16 +793,6 @@ func (e *Engine) findIndicesTeddy(haystack []byte) (int, int, bool) {
 func (e *Engine) findIndicesTeddyAt(haystack []byte, at int) (int, int, bool) {
 	if e.prefilter == nil || at >= len(haystack) {
 		return e.findIndicesNFAAt(haystack, at)
-	}
-
-	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
-	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
-		atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
-		match := e.fatTeddyFallback.FindAt(haystack, at)
-		if match == nil {
-			return -1, -1, false
-		}
-		return match.Start, match.End, true
 	}
 
 	atomic.AddUint64(&e.stats.PrefilterHits, 1)

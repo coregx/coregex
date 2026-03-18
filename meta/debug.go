@@ -102,8 +102,6 @@ func debugPrefilter(pf prefilter.Prefilter) {
 		name = "Teddy (SSSE3 slim)"
 	case *prefilter.FatTeddy:
 		name = "FatTeddy (AVX2 fat)"
-	case *acPrefilter:
-		name = "Aho-Corasick"
 	}
 	// Extract short name from *prefilter.memchrPrefilter → memchr
 	if strings.Contains(name, "memchr") {
