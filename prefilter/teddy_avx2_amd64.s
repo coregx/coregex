@@ -40,7 +40,7 @@
 //   +168: hiMasks[1] (32 bytes)
 //   +200: hiMasks[2] (32 bytes, unused)
 //   +232: hiMasks[3] (32 bytes, unused)
-TEXT ·fatTeddyAVX2_2(SB), NOSPLIT, $0-42
+TEXT ·fatTeddyAVX2_2(SB), NOSPLIT, $32-42
 	// Load parameters
 	MOVQ    masks+0(FP), R8             // R8 = pointer to fatTeddyMasks
 	MOVQ    haystack_base+8(FP), SI     // SI = haystack pointer
@@ -118,32 +118,10 @@ loop16:
 	// === Combine: res = res0_shifted AND res1 ===
 	VPAND   Y10, Y11, Y6                // Y6 = final candidates
 
-	// === Check for non-zero bytes ===
-	// In Fat Teddy, each byte position has an 8-bit bucket mask
-	// Low lane (bytes 0-15): buckets 0-7
-	// High lane (bytes 16-31): buckets 8-15 (same position, different buckets)
-	//
-	// We need to find first position where BOTH lanes have non-zero bytes
-	// A match at position i means: Y6[i] != 0 AND Y6[16+i] != 0
-
-	// Check if any byte is non-zero in low lane
-	VPXOR   Y12, Y12, Y12               // Y12 = zero
-	VPCMPEQB Y12, Y6, Y13               // Y13[i] = 0xFF if Y6[i] == 0, else 0
-	VPMOVMSKB Y13, CX                   // CX = byte mask (1 = zero, 0 = non-zero)
-	NOTL    CX                          // CX = inverted (1 = non-zero)
-
-	// Low 16 bits = positions 0-15 in low lane
-	// High 16 bits = positions 0-15 in high lane (buckets 8-15)
-	MOVL    CX, AX
-	ANDL    $0xFFFF, AX                 // AX = low lane mask
-	SHRL    $16, CX                     // CX = high lane mask
-
-	// Either lane having non-zero means a valid candidate exists.
-	// Low lane = buckets 0-7, high lane = buckets 8-15.
-	// A pattern only appears in ONE lane (its bucket's lane), so OR is correct.
-	ORL     CX, AX                      // AX = positions with candidates in EITHER lane
-
-	TESTL   AX, AX
+	// === Check for any non-zero byte in candidate vector ===
+	// VPTEST sets ZF if (Y6 AND Y6) == 0, i.e., all zero.
+	// This is 1 instruction vs 8 (VPCMPEQB+VPMOVMSKB+NOTL+ORL+TESTL).
+	VPTEST  Y6, Y6
 	JNZ     found_candidate
 
 	// No candidates in this chunk, advance
@@ -225,64 +203,40 @@ not_found:
 	RET
 
 found_candidate:
-	// AX contains mask of positions with candidates
-	// Find first set bit
-	BSFL    AX, BX                      // BX = first position with candidate
+	// Y6 is non-zero (VPTEST confirmed). Extract position + bucket mask.
+	// Y6[0:15] = buckets 0-7, Y6[16:31] = buckets 8-15 for same 16 positions.
+	//
+	// Extract position mask: find which bytes are non-zero (either lane).
+	VPXOR   Y12, Y12, Y12               // Y12 = zero
+	VPCMPEQB Y12, Y6, Y13              // Y13[i] = 0xFF if Y6[i]==0
+	VPMOVMSKB Y13, CX                  // CX = zero mask (1=zero)
+	NOTL    CX                          // CX = non-zero mask
+	// Combine lanes: position has candidate if either lane non-zero
+	MOVL    CX, AX
+	SHRL    $16, CX
+	ORL     CX, AX                      // AX = 16-bit position mask
+	// Find first candidate position
+	BSFL    AX, BX                      // BX = first position (0-15)
 
 	// Calculate absolute position: (cur - start - 1) + BX
 	// Note: we started at start+1, so actual match position is cur-1+BX relative to start
 	MOVQ    SI, AX
 	SUBQ    DI, AX                      // AX = cur - start
-	DECQ    AX                          // AX = cur - start - 1 (because we're at position after the match byte)
+	DECQ    AX                          // AX = cur - start - 1
 	ADDQ    BX, AX                      // AX = absolute position
 
-	// Extract 16-bit bucket mask at position BX
-	// Need to read Y6[BX] (buckets 0-7) and Y6[16+BX] (buckets 8-15)
-	// Use scalar reload from haystack
-	ADDQ    DI, BX                      // BX = absolute pointer to match position
-	SUBQ    $1, BX                      // Adjust for the -1 in position calc
-	ADDQ    AX, DI                      // DI = pointer to match position
+	// Extract 16-bit bucket mask directly from Y6 (the candidate vector).
+	// Spill Y6 to stack and read Y6[BX] (buckets 0-7) and Y6[16+BX] (buckets 8-15).
+	// This avoids the broken scalar re-derivation from haystack bytes which gives
+	// wrong results after VPALIGNR shift.
+	VMOVDQU Y6, (SP)                    // Spill Y6 to stack (32 bytes at SP)
 
-	// Reload bytes at match position for bucket mask calculation
-	MOVBLZX (DI), R10                   // R10 = first byte
-	MOVBLZX 1(DI), R11                  // R11 = second byte
-
-	// Position 0 bucket mask
-	MOVL    R10, BX
-	ANDL    $0x0F, BX
-	MOVL    R10, CX
-	SHRL    $4, CX
-	ANDL    $0x0F, CX
-
-	MOVBLZX 8(R8)(BX*1), R12
-	MOVBLZX 136(R8)(CX*1), R13
-	ANDL    R13, R12                    // R12 = pos0 buckets 0-7
-
-	MOVBLZX 24(R8)(BX*1), R13
-	MOVBLZX 152(R8)(CX*1), R14
-	ANDL    R14, R13
+	// Read bucket masks for position BX directly from spilled vector
+	MOVBLZX (SP)(BX*1), R12            // R12 = Y6[BX] = buckets 0-7 for this position
+	ADDQ    $16, BX
+	MOVBLZX (SP)(BX*1), R13            // R13 = Y6[16+BX_orig] = buckets 8-15
 	SHLL    $8, R13
-	ORL     R13, R12                    // R12 = 16-bit pos0 mask
-
-	// Position 1 bucket mask
-	MOVL    R11, BX
-	ANDL    $0x0F, BX
-	MOVL    R11, CX
-	SHRL    $4, CX
-	ANDL    $0x0F, CX
-
-	MOVBLZX 40(R8)(BX*1), R13
-	MOVBLZX 168(R8)(CX*1), R14
-	ANDL    R14, R13                    // R13 = pos1 buckets 0-7
-
-	MOVBLZX 56(R8)(BX*1), R14
-	MOVBLZX 184(R8)(CX*1), R15
-	ANDL    R15, R14
-	SHLL    $8, R14
-	ORL     R14, R13                    // R13 = 16-bit pos1 mask
-
-	// Combine
-	ANDL    R13, R12                    // R12 = final 16-bit bucket mask
+	ORL     R13, R12                    // R12 = 16-bit bucket mask
 
 	MOVQ    AX, pos+32(FP)
 	MOVW    R12, bucketMask+40(FP)
