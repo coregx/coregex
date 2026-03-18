@@ -138,8 +138,10 @@ loop16:
 	ANDL    $0xFFFF, AX                 // AX = low lane mask
 	SHRL    $16, CX                     // CX = high lane mask
 
-	// Both lanes must have non-zero for a valid candidate
-	ANDL    CX, AX                      // AX = positions with candidates in BOTH lanes
+	// Either lane having non-zero means a valid candidate exists.
+	// Low lane = buckets 0-7, high lane = buckets 8-15.
+	// A pattern only appears in ONE lane (its bucket's lane), so OR is correct.
+	ORL     CX, AX                      // AX = positions with candidates in EITHER lane
 
 	TESTL   AX, AX
 	JNZ     found_candidate
@@ -149,8 +151,11 @@ loop16:
 	JMP     loop16
 
 handle_tail:
-	// Process remaining bytes one at a time using scalar code
-	// Reset prev0 logic doesn't matter for scalar
+	// Cover the prev0 carry-over position (k*16) that the SIMD loop missed.
+	// The 2-byte fingerprint algorithm uses VPALIGNR to carry prev0 between
+	// SIMD iterations. When exiting to tail, position k*16 hasn't been checked
+	// because the SIMD iteration that would use prev0 never ran.
+	DECQ    SI
 
 tail_check:
 	// Need at least 2 bytes
