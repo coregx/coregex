@@ -127,14 +127,25 @@ func New(config ExtractorConfig) *Extractor {
 // Returns empty Seq if no prefix literals can be extracted.
 func (e *Extractor) ExtractPrefixes(re *syntax.Regexp) *Seq {
 	seq := e.extractPrefixes(re, 0)
-	// Optimize for prefilter: if too many INCOMPLETE literals for Teddy (>32),
-	// trim to shorter prefixes and deduplicate.
-	// Rust does this in optimize_for_prefix_by_preference().
-	// Example: 225 seven-byte literals → 17 four-byte prefixes → fits Teddy.
-	// Skip for AllComplete (exact match literals) — those go to Teddy/AC directly.
-	if seq != nil && seq.Len() > 32 && !seq.AllComplete() {
-		seq.KeepFirstBytes(4)
-		seq.Dedup()
+	// Optimize for prefilter: if >64 literals (exceeds FatTeddy capacity),
+	// try cascading prefix trim + dedup to fit Teddy.
+	// Inspired by Rust's optimize_for_prefix_by_preference ATTEMPTS table.
+	// Only trim to 3-4 bytes (longer prefixes = fewer false positives).
+	// Falls back to original if trimming doesn't reduce below 64.
+	if seq != nil && seq.Len() > 64 {
+		original := seq.Clone()
+		attempts := [][2]int{{4, 64}, {3, 64}, {2, 64}}
+		for _, a := range attempts {
+			keep, limit := a[0], a[1]
+			if seq.Len() <= limit {
+				break
+			}
+			seq.KeepFirstBytes(keep)
+			seq.Dedup()
+		}
+		if seq.Len() > 64 {
+			seq = original
+		}
 	}
 	return seq
 }
