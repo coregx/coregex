@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.14] - 2026-03-19
+
+### Fixed
+- **`isMatchDFA` concurrent safety** (Issue [#137](https://github.com/coregx/coregex/issues/137)) —
+  prefilter candidate loop called `e.dfa.SearchAtAnchored` concurrently from
+  `RunParallel`. Shared lazy DFA is NOT thread-safe for concurrent lazy state
+  construction. On ARM64 without SIMD prefilters, every candidate hit DFA →
+  cache corruption → 1.7GB allocs, 1s+ per op on M2 Max.
+  Fix: prefilter used for fast rejection only (one `Find` call), verification
+  falls through to `DFA.IsMatch` (read-mostly when cache warm).
+
+### Added
+- **Concurrent case-insensitive prefilter test** — `TestConcurrentCaseInsensitivePrefilter`
+  with 8 goroutines × 100 iterations, both match and no-match paths.
+
 ## [0.12.13] - 2026-03-18
 
 ### Performance

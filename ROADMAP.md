@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-03-18 | **Current Version**: v0.12.13 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-03-19 | **Current Version**: v0.12.14 | **Target**: v1.0.0 stable
 
 ---
 
@@ -12,7 +12,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 
 ### Current State vs Target
 
-| Metric | Current (v0.12.13) | Target (v1.0.0) |
+| Metric | Current (v0.12.14) | Target (v1.0.0) |
 |--------|-------------------|-----------------|
 | Inner literal speedup | **280-3154x** | ✅ Achieved |
 | Case-insensitive speedup | **263x** | ✅ Achieved |
@@ -82,7 +82,9 @@ v0.12.11 ✅ → ReverseSuffix multi-wildcard, COREGEX_DEBUG logging
          ↓
 v0.12.12 ✅ → Prefix trimming for case-fold literals (Teddy instead of AC)
          ↓
-v0.12.13 (Current) ✅ → FatTeddy fix, prefilter acceleration, AC v0.2.1
+v0.12.13 ✅ → FatTeddy fix, prefilter acceleration, AC v0.2.1
+         ↓
+v0.12.14 (Current) ✅ → Concurrent safety fix for isMatchDFA prefilter (#137)
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
