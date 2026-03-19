@@ -135,40 +135,28 @@ func (e *Engine) isMatchNFA(haystack []byte) bool {
 func (e *Engine) isMatchDFA(haystack []byte) bool {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 
-	// Prefilter-accelerated matching: use prefilter to skip non-matching regions,
-	// then verify each candidate with anchored DFA or PikeVM.
-	// This is critical for case-insensitive patterns with large NFAs (Issue #137).
+	// Prefilter fast rejection: if prefilter finds no candidates, no match.
+	// For incomplete prefilters with candidates, use pooled PikeVM for
+	// thread-safe verification. Shared lazy DFA (e.dfa) is NOT thread-safe
+	// for ANY concurrent access — even DFA.IsMatch causes data races on
+	// lazy state construction. Issue #137 (ARM64 M2 Max: 1.7GB allocs).
 	if e.prefilter != nil {
-		pos := 0
-		for pos < len(haystack) {
-			candidate := e.prefilter.Find(haystack, pos)
-			if candidate == -1 {
-				return false // No more candidates
-			}
-			atomic.AddUint64(&e.stats.PrefilterHits, 1)
-			// For complete prefilters, the find is sufficient
-			if e.prefilter.IsComplete() {
-				return true
-			}
-			// Verify candidate with anchored DFA (O(pattern_len) per candidate).
-			// Unanchored verification would scan to end of input = O(n) per candidate.
-			if e.dfa != nil {
-				if e.dfa.SearchAtAnchored(haystack, candidate) != -1 {
-					return true
-				}
-			} else {
-				// PikeVM fallback — check if match starts at candidate position
-				start, _, found := e.pikevm.SearchAt(haystack, candidate)
-				if found && start == candidate {
-					return true
-				}
-			}
-			pos = candidate + 1
+		pos := e.prefilter.Find(haystack, 0)
+		if pos == -1 {
+			return false // Prefilter says no candidates — fast rejection
 		}
-		return false
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		if e.prefilter.IsComplete() {
+			return true // Complete prefilter — find is sufficient
+		}
+		// Prefilter found candidate but isn't complete — verify with pooled PikeVM
+		state := e.getSearchState()
+		_, _, found := state.pikevm.SearchAt(haystack, pos)
+		e.putSearchState(state)
+		return found
 	}
 
-	// Use DFA.IsMatch which has early termination optimization
+	// No prefilter: use DFA.IsMatch (single-thread path, safe)
 	return e.dfa.IsMatch(haystack)
 }
 

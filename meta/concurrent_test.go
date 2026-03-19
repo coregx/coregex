@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -382,6 +383,77 @@ func TestConcurrentDifferentPatterns(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// TestConcurrentCaseInsensitivePrefilter verifies that case-insensitive patterns
+// with prefilter work correctly under concurrent RunParallel.
+// Regression test for Issue #137: on ARM64 without SIMD, concurrent access to
+// shared lazy DFA via prefilter candidate loop caused cache corruption
+// (1.7GB allocs, 1s+ per op on M2 Max).
+func TestConcurrentCaseInsensitivePrefilter(t *testing.T) {
+	// This pattern produces 60 case-fold prefix literals → FatTeddy/AC prefilter
+	// + UseDFA strategy with 181 NFA states
+	engine, err := Compile(`(?iU)\b(eval|system|exec|execute|passthru|shell_exec|phpinfo)\b`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Input WITH match — exercises verification path, not just rejection
+	matchInput := []byte(strings.Repeat("Mozilla/5.0 Safari/537.36 phpinfo", 8))
+	// Input WITHOUT match — exercises fast rejection path
+	noMatchInput := []byte(strings.Repeat("Mozilla/5.0 Safari/537.36 Chrome/96", 8))
+
+	t.Run("match_concurrent", func(t *testing.T) {
+		var wg sync.WaitGroup
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < 100; i++ {
+					if !engine.IsMatch(matchInput) {
+						t.Error("IsMatch returned false, expected true")
+						return
+					}
+				}
+			}()
+		}
+		wg.Wait()
+	})
+
+	t.Run("no_match_concurrent", func(t *testing.T) {
+		var wg sync.WaitGroup
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < 100; i++ {
+					if engine.IsMatch(noMatchInput) {
+						t.Error("IsMatch returned true, expected false")
+						return
+					}
+				}
+			}()
+		}
+		wg.Wait()
+	})
+}
+
+// BenchmarkConcurrentCaseInsensitiveMatch benchmarks concurrent IsMatch with
+// case-insensitive prefilter pattern — the pattern reported in Issue #137.
+func BenchmarkConcurrentCaseInsensitiveMatch(b *testing.B) {
+	engine, err := Compile(`(?iU)\b(eval|system|exec|execute|passthru|shell_exec|phpinfo)\b`)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	input := []byte(strings.Repeat("Mozilla/5.0 Safari/537.36 phpinfo", 8))
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			engine.IsMatch(input)
+		}
+	})
 }
 
 // BenchmarkConcurrentIsMatch benchmarks concurrent IsMatch performance.
