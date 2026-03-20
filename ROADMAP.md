@@ -22,8 +22,8 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 | Reverse search | **Yes (4 strategies)** | ✅ Achieved |
 | OnePass DFA | **Yes** | ✅ Achieved |
 | Slim Teddy (2-32 patterns) | **Yes (SSSE3, 9GB/s)** | ✅ Achieved |
-| AC DFA prefilter (>32 patterns) | **Yes (zero false positives)** | ✅ Achieved |
-| Aho-Corasick (>64 patterns) | **Yes** | ✅ Achieved |
+| Fat Teddy (33-64 patterns) | **Yes (AVX2, 9GB/s)** | ✅ Achieved |
+| Aho-Corasick (>64 patterns) | **Yes (AC DFA prefilter)** | ✅ Achieved |
 | Per-goroutine DFA cache | **Yes (Rust approach)** | ✅ Achieved |
 | BoundedBacktracker | **Yes** | ✅ Achieved |
 | CharClassSearcher | **Yes (35% faster than Rust!)** | ✅ Achieved |
