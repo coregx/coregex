@@ -103,9 +103,12 @@ type DFA struct {
 //   - A stateList for O(1) state-by-ID lookup
 //   - A StartTable with the DFA's immutable byteMap
 func (d *DFA) NewCache() *DFACache {
+	// Start small — grow on demand. Pre-allocating MaxStates (10,000) wastes
+	// ~400KB per cache and dominates cold-start cost for pooled caches.
+	const initCap = 64
 	return &DFACache{
-		states:     make(map[StateKey]*State, d.config.MaxStates),
-		stateList:  make([]*State, 0, d.config.MaxStates),
+		states:     make(map[StateKey]*State, initCap),
+		stateList:  make([]*State, 0, initCap),
 		startTable: newStartTableFromByteMap(&d.startByteMap),
 		maxStates:  d.config.MaxStates,
 		nextID:     StartState + 1,
