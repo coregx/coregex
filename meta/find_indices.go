@@ -608,10 +608,16 @@ func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int,
 // findIndicesBidirectionalDFALongest uses forward DFA (leftmost-longest) + reverse DFA.
 // Unlike findIndicesBidirectionalDFA, this preserves greedy/longest match semantics.
 // Used by BoundedBacktracker fallback where greedy semantics are required.
-func (e *Engine) findIndicesBidirectionalDFALongest(haystack []byte, at int) (int, int, bool) {
+// Accepts optional state to avoid redundant pool.Get when caller already has one.
+func (e *Engine) findIndicesBidirectionalDFALongest(haystack []byte, at int, existingState ...*SearchState) (int, int, bool) {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
-	state := e.getSearchState()
-	defer e.putSearchState(state)
+	var state *SearchState
+	if len(existingState) > 0 && existingState[0] != nil {
+		state = existingState[0]
+	} else {
+		state = e.getSearchState()
+		defer e.putSearchState(state)
+	}
 	end := e.dfa.SearchAt(state.dfaCache, haystack, at)
 	if end == -1 {
 		return -1, -1, false
@@ -1103,7 +1109,7 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 			if !e.asciiBoundedBacktracker.CanHandle(len(remaining)) {
 				// Bidirectional DFA: O(n) vs PikeVM's O(n*states)
 				if e.dfa != nil && e.reverseDFA != nil {
-					return e.findIndicesBidirectionalDFALongest(haystack, at)
+					return e.findIndicesBidirectionalDFALongest(haystack, at, state)
 				}
 				// V12 Windowed BoundedBacktracker for ASCII path
 				maxInput := e.asciiBoundedBacktracker.MaxInputSize()
@@ -1127,7 +1133,7 @@ func (e *Engine) findIndicesBoundedBacktrackerAtWithState(haystack []byte, at in
 	if !e.boundedBacktracker.CanHandle(len(remaining)) {
 		// Bidirectional DFA: O(n) vs PikeVM's O(n*states) for large inputs
 		if e.dfa != nil && e.reverseDFA != nil {
-			return e.findIndicesBidirectionalDFALongest(haystack, at)
+			return e.findIndicesBidirectionalDFALongest(haystack, at, state)
 		}
 		// V12 Windowed BoundedBacktracker fallback
 		maxInput := e.boundedBacktracker.MaxInputSize()
