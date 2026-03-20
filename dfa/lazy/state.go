@@ -70,6 +70,15 @@ type State struct {
 	// At start of input, this is false (no previous byte = non-word).
 	isFromWord bool
 
+	// matchAtWordBoundary is pre-computed during determinize:
+	// true if resolving \b assertions in this state's NFA states (when word
+	// boundary IS satisfied) would produce a match. This eliminates the
+	// expensive per-byte checkWordBoundaryMatch (30% CPU on \b patterns).
+	matchAtWordBoundary bool
+
+	// matchAtNonWordBoundary is the same but for when word boundary is NOT satisfied.
+	matchAtNonWordBoundary bool
+
 	// nfaStates is the set of NFA states this DFA state represents.
 	// This is used during determinization to compute transitions.
 	// Pre-allocated to avoid heap allocations during search.
@@ -160,6 +169,21 @@ func (s *State) Transition(classIdx byte) (StateID, bool) {
 	}
 	next := s.transitions[classIdx]
 	return next, next != InvalidState
+}
+
+// checkWordBoundaryFast checks if consuming byte b would produce a match
+// via word boundary resolution. Uses pre-computed flags — O(1), no allocation.
+// Replaces the expensive checkWordBoundaryMatch (30% CPU) which created Builder
+// and resolved word boundaries per byte.
+func (s *State) checkWordBoundaryFast(b byte) bool {
+	if s.isMatch {
+		return false // Already a match — let normal processing handle it
+	}
+	isBoundary := s.isFromWord != isWordByte(b)
+	if isBoundary {
+		return s.matchAtWordBoundary
+	}
+	return s.matchAtNonWordBoundary
 }
 
 // AddTransition adds a transition from this state to another on equivalence class classIdx.

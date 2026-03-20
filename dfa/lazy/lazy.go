@@ -264,8 +264,9 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 	for pos := at; pos < len(haystack); pos++ {
 		b := haystack[pos]
 
-		// Skip expensive check for patterns without word boundaries (Issue #105)
-		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
+		// O(1) word boundary match check using pre-computed flags (was 30% CPU).
+		// matchAtWordBoundary/matchAtNonWordBoundary computed during determinize.
+		if d.hasWordBoundary && currentState.checkWordBoundaryFast(b) {
 			return pos
 		}
 
@@ -621,8 +622,9 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 		b := haystack[pos]
 
 		// Check if word boundary would result in a match BEFORE consuming the byte.
-		// Skip expensive check for patterns without word boundaries (Issue #105)
-		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
+		// O(1) word boundary match check using pre-computed flags (was 30% CPU).
+		// matchAtWordBoundary/matchAtNonWordBoundary computed during determinize.
+		if d.hasWordBoundary && currentState.checkWordBoundaryFast(b) {
 			return true
 		}
 
@@ -705,8 +707,9 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 	for pos := startPos; pos < len(haystack); pos++ {
 		b := haystack[pos]
 
-		// Skip expensive check for patterns without word boundaries (Issue #105)
-		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
+		// O(1) word boundary match check using pre-computed flags (was 30% CPU).
+		// matchAtWordBoundary/matchAtNonWordBoundary computed during determinize.
+		if d.hasWordBoundary && currentState.checkWordBoundaryFast(b) {
 			return true
 		}
 
@@ -1252,6 +1255,17 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	// Create new DFA state with word context and compressed alphabet stride
 	isMatch := builder.containsMatchState(nextNFAStates)
 	newState := NewStateWithStride(InvalidState, nextNFAStates, isMatch, nextIsFromWord, d.AlphabetLen())
+
+	// Pre-compute word boundary match flags to avoid per-byte checkWordBoundaryMatch.
+	// This eliminates the expensive Builder + resolveWordBoundaries call in the hot loop.
+	if d.hasWordBoundary && !isMatch {
+		// Check: would resolving \b (word boundary satisfied) produce a match?
+		wbStates := builder.resolveWordBoundaries(nextNFAStates, true)
+		newState.matchAtWordBoundary = builder.containsMatchState(wbStates)
+		// Check: would resolving \B (word boundary NOT satisfied) produce a match?
+		nwbStates := builder.resolveWordBoundaries(nextNFAStates, false)
+		newState.matchAtNonWordBoundary = builder.containsMatchState(nwbStates)
+	}
 
 	// Insert into cache
 	_, err := cache.Insert(key, newState)
