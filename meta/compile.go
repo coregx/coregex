@@ -510,8 +510,8 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Debug: log final strategy selection
 	debugStrategy(re.String(), strategy, nfaEngine.States(), literals, "")
 
-	// FatTeddy AVX2 is now correct (ORL fix for lane combining, DECQ SI for tail).
-	// No AC replacement needed for any strategy.
+	// Prefilter selection: Slim Teddy (2-32 patterns), AC DFA (>32 patterns).
+	// FatTeddy replaced by AC for >32 patterns (130x faster, zero false positives).
 
 	// Debug: log prefilter selection
 	debugPrefilter(pf)
