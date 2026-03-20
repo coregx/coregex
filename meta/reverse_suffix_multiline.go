@@ -259,11 +259,66 @@ func (s *MultilineReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match 
 
 // FindIndicesAt returns match indices starting from position 'at' - zero allocation version.
 func (s *MultilineReverseSuffixSearcher) FindIndicesAt(haystack []byte, at int) (start, end int, found bool) {
-	match := s.FindAt(haystack, at)
-	if match == nil {
+	fwdCache := s.fwdCachePool.Get().(*lazy.DFACache)
+	defer s.fwdCachePool.Put(fwdCache)
+	return s.findIndicesAtImpl(haystack, at, fwdCache)
+}
+
+// FindIndicesAtWithCaches is like FindIndicesAt but uses an externally provided cache
+// instead of pool.Get/Put. This eliminates per-call pool overhead in FindAll loops
+// where the caller already holds a cache for the entire iteration.
+func (s *MultilineReverseSuffixSearcher) FindIndicesAtWithCaches(haystack []byte, at int, fwdCache *lazy.DFACache) (start, end int, found bool) {
+	if fwdCache == nil {
+		return s.FindIndicesAt(haystack, at)
+	}
+	return s.findIndicesAtImpl(haystack, at, fwdCache)
+}
+
+// findIndicesAtImpl is the shared implementation for FindIndicesAt and FindIndicesAtWithCaches.
+func (s *MultilineReverseSuffixSearcher) findIndicesAtImpl(haystack []byte, at int, fwdCache *lazy.DFACache) (start, end int, found bool) {
+	if at >= len(haystack) {
 		return -1, -1, false
 	}
-	return match.start, match.end, true
+
+	pos := at
+	for {
+		// Find next suffix candidate starting from pos
+		suffixPos := s.prefilter.Find(haystack, pos)
+		if suffixPos == -1 {
+			return -1, -1, false
+		}
+
+		// Find line start (but not before 'at' for FindAt semantics)
+		lineStart := findLineStart(haystack, suffixPos)
+		if lineStart < at {
+			lineStart = at
+		}
+
+		// Fast path: simple prefix verification
+		if len(s.prefixBytes) > 0 {
+			if s.verifyPrefix(haystack, lineStart) {
+				return lineStart, suffixPos + s.suffixLen, true
+			}
+			// Prefix doesn't match - skip to next line
+			nextLine := bytes.IndexByte(haystack[suffixPos:], '\n')
+			if nextLine == -1 {
+				return -1, -1, false
+			}
+			pos = suffixPos + nextLine + 1
+		} else {
+			// Slow path: use DFA
+			endPos := s.forwardDFA.SearchAtAnchored(fwdCache, haystack, lineStart)
+			if endPos >= 0 {
+				return lineStart, endPos, true
+			}
+			// Move past this suffix candidate
+			pos = suffixPos + 1
+		}
+
+		if pos >= len(haystack) {
+			return -1, -1, false
+		}
+	}
 }
 
 // IsMatch checks if the pattern matches using suffix prefilter + line-aware verification.

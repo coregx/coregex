@@ -265,13 +265,26 @@ func (s *ReverseSuffixSetSearcher) FindAt(haystack []byte, at int) *Match {
 // FindIndicesAt returns match indices - zero allocation version.
 // Includes anti-quadratic guard to prevent O(n^2) behavior with many suffix false positives.
 func (s *ReverseSuffixSetSearcher) FindIndicesAt(haystack []byte, at int) (start, end int, found bool) {
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
+	return s.findIndicesAtImpl(haystack, at, revCache)
+}
+
+// FindIndicesAtWithCaches is like FindIndicesAt but uses an externally provided cache
+// instead of pool.Get/Put. This eliminates per-call pool overhead in FindAll loops
+// where the caller already holds a cache for the entire iteration.
+func (s *ReverseSuffixSetSearcher) FindIndicesAtWithCaches(haystack []byte, at int, revCache *lazy.DFACache) (start, end int, found bool) {
+	if revCache == nil {
+		return s.FindIndicesAt(haystack, at)
+	}
+	return s.findIndicesAtImpl(haystack, at, revCache)
+}
+
+// findIndicesAtImpl is the shared implementation for FindIndicesAt and FindIndicesAtWithCaches.
+func (s *ReverseSuffixSetSearcher) findIndicesAtImpl(haystack []byte, at int, revCache *lazy.DFACache) (start, end int, found bool) {
 	if at >= len(haystack) {
 		return -1, -1, false
 	}
-
-	// Acquire cache once for the entire candidate loop
-	revCache := s.revCachePool.Get().(*lazy.DFACache)
-	defer s.revCachePool.Put(revCache)
 
 	searchStart := at
 	minStart := at // Anti-quadratic guard

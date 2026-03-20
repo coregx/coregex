@@ -506,6 +506,25 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 // This is used by FindAll* operations for efficient iteration.
 // Includes anti-quadratic guard to prevent O(n^2) behavior with many inner literal false positives.
 func (s *ReverseInnerSearcher) FindIndicesAt(haystack []byte, at int) (start, end int, found bool) {
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	fwdCache := s.fwdCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
+	defer s.fwdCachePool.Put(fwdCache)
+	return s.findIndicesAtImpl(haystack, at, fwdCache, revCache)
+}
+
+// FindIndicesAtWithCaches is like FindIndicesAt but uses externally provided caches
+// instead of pool.Get/Put. This eliminates per-call pool overhead in FindAll loops
+// where the caller already holds caches for the entire iteration.
+func (s *ReverseInnerSearcher) FindIndicesAtWithCaches(haystack []byte, at int, fwdCache, revCache *lazy.DFACache) (start, end int, found bool) {
+	if fwdCache == nil || revCache == nil {
+		return s.FindIndicesAt(haystack, at)
+	}
+	return s.findIndicesAtImpl(haystack, at, fwdCache, revCache)
+}
+
+// findIndicesAtImpl is the shared implementation for FindIndicesAt and FindIndicesAtWithCaches.
+func (s *ReverseInnerSearcher) findIndicesAtImpl(haystack []byte, at int, fwdCache, revCache *lazy.DFACache) (start, end int, found bool) {
 	if at >= len(haystack) {
 		return -1, -1, false
 	}
@@ -521,12 +540,6 @@ func (s *ReverseInnerSearcher) FindIndicesAt(haystack []byte, at int) (start, en
 		}
 		return -1, -1, false
 	}
-
-	// Acquire caches once for the entire candidate loop
-	revCache := s.revCachePool.Get().(*lazy.DFACache)
-	fwdCache := s.fwdCachePool.Get().(*lazy.DFACache)
-	defer s.revCachePool.Put(revCache)
-	defer s.fwdCachePool.Put(fwdCache)
 
 	// Search for inner literal starting from 'at'
 	searchStart := at

@@ -991,11 +991,11 @@ func (e *Engine) findIndicesAtWithState(haystack []byte, at int, state *SearchSt
 		// Adaptive uses e.pikevm (shared) or delegates to NFA path
 		return e.findIndicesAdaptiveAt(haystack, at)
 	case UseReverseSuffix:
-		return e.findIndicesReverseSuffixAt(haystack, at)
+		return e.reverseSuffixSearcher.FindIndicesAtWithCaches(haystack, at, state.stratFwdCache, state.stratRevCache)
 	case UseReverseSuffixSet:
-		return e.findIndicesReverseSuffixSetAt(haystack, at)
+		return e.reverseSuffixSetSearcher.FindIndicesAtWithCaches(haystack, at, state.stratRevCache)
 	case UseReverseInner:
-		return e.findIndicesReverseInnerAt(haystack, at)
+		return e.reverseInnerSearcher.FindIndicesAtWithCaches(haystack, at, state.stratFwdCache, state.stratRevCache)
 	case UseBoundedBacktracker:
 		return e.findIndicesBoundedBacktrackerAtWithState(haystack, at, state)
 	case UseCharClassSearcher:
@@ -1011,7 +1011,7 @@ func (e *Engine) findIndicesAtWithState(haystack []byte, at int, state *SearchSt
 	case UseAhoCorasick:
 		return e.findIndicesAhoCorasickAt(haystack, at)
 	case UseMultilineReverseSuffix:
-		return e.findIndicesMultilineReverseSuffixAt(haystack, at)
+		return e.multilineReverseSuffixSearcher.FindIndicesAtWithCaches(haystack, at, state.stratFwdCache)
 	case UseAnchoredLiteral:
 		return e.findIndicesAnchoredLiteralAt(haystack, at)
 	default:

@@ -620,9 +620,51 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		canMatchEmpty:                  canMatchEmpty,
 		isStartAnchored:                isStartAnchored,
 		fatTeddyFallback:               fatTeddyFallback,
-		statePool:                      newSearchStatePool(pikevmNFA, numCaptures, engines.dfa, engines.reverseDFA),
-		stats:                          Stats{},
+		statePool: newSearchStatePool(buildSearchStateConfig(
+			pikevmNFA, numCaptures, engines, strategy,
+		)),
+		stats: Stats{},
 	}, nil
+}
+
+// buildSearchStateConfig extracts all DFA references needed for per-search caches.
+// Strategy-specific DFAs come from reverse searchers (which have their own DFAs).
+func buildSearchStateConfig(nfaEngine *nfa.NFA, numCaptures int, engines strategyEngines, strategy Strategy) searchStateConfig {
+	cfg := searchStateConfig{
+		nfaEngine:   nfaEngine,
+		numCaptures: numCaptures,
+		forwardDFA:  engines.dfa,
+		reverseDFA:  engines.reverseDFA,
+	}
+
+	// Extract strategy-specific DFAs from reverse searchers
+	switch strategy {
+	case UseReverseSuffix:
+		if s := engines.reverseSuffixSearcher; s != nil {
+			cfg.stratFwdDFA = s.forwardDFA
+			cfg.stratRevDFA = s.reverseDFA
+		}
+	case UseReverseInner:
+		if s := engines.reverseInnerSearcher; s != nil {
+			cfg.stratFwdDFA = s.forwardDFA
+			cfg.stratRevDFA = s.reverseDFA
+		}
+	case UseReverseSuffixSet:
+		if s := engines.reverseSuffixSetSearcher; s != nil {
+			cfg.stratFwdDFA = s.forwardDFA
+			cfg.stratRevDFA = s.reverseDFA
+		}
+	case UseReverseAnchored:
+		if s := engines.reverseSearcher; s != nil {
+			cfg.stratRevDFA = s.reverseDFA
+		}
+	case UseMultilineReverseSuffix:
+		if s := engines.multilineReverseSuffixSearcher; s != nil {
+			cfg.stratFwdDFA = s.forwardDFA
+		}
+	}
+
+	return cfg
 }
 
 // CompileError represents a pattern compilation error.
