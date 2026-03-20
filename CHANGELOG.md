@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positives, O(n) flat transition table scan.
   IsMatch match 264B: 13.4μs → **1.9μs** (7x). No-match 33B: 1.2μs → **91ns** (13x).
 
+- **Integrated prefilter+DFA loop** (Rust approach) — replaced two-pass
+  `prefilter.Find → DFA.searchAnchored → repeat` with single DFA loop where
+  dead-state transitions trigger prefilter skip-ahead. Eliminates function call
+  overhead between passes. Match 33B: 596ns → **443ns** (1.35x).
+  No-match 33B: 91ns → **67ns** (1.36x).
+
 - **Eliminated double prefilter scan** — `isMatchDFA` called prefilter externally,
   then `DFA.IsMatch` called it again internally. Removed redundant external call.
 

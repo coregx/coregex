@@ -451,27 +451,113 @@ func (d *DFA) IsMatchAt(cache *DFACache, haystack []byte, at int) bool {
 	return d.searchEarliestMatch(cache, haystack, at)
 }
 
-// isMatchWithPrefilter uses prefilter for fast boolean match.
-// Returns as soon as any match is found.
+// isMatchWithPrefilter uses an integrated prefilter+DFA loop (Rust approach).
+//
+// Instead of two separate passes (prefilter.Find → DFA.searchAnchored → repeat),
+// this runs a single DFA loop where dead-state transitions trigger prefilter
+// skip-ahead. This eliminates Go function call overhead between passes and
+// avoids redundant start-state setup on each candidate.
+//
+// Reference: rust regex-automata hybrid/search.rs find_fwd_imp — prefilter
+// is called inside the DFA loop when returning to start state.
 func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 	// If prefilter is complete, its match is sufficient
 	if d.prefilter.IsComplete() {
 		return d.prefilter.Find(haystack, 0) != -1
 	}
 
-	// Find first candidate
+	// Find first candidate to start DFA from
 	pos := d.prefilter.Find(haystack, 0)
 	if pos == -1 {
 		return false
 	}
 
-	// Try to match at candidate - use ANCHORED search to verify match starts here
-	// Issue #105: unanchored search caused catastrophic slowdown
-	if d.searchEarliestMatchAnchored(cache, haystack, pos) {
+	// Get anchored start state at candidate position
+	currentState := d.getStartState(cache, haystack, pos, true)
+	if currentState == nil {
+		// Fallback: use old two-pass approach with NFA
+		return d.isMatchWithPrefilterFallback(cache, haystack, pos)
+	}
+	if currentState.IsMatch() {
 		return true
 	}
 
-	// Continue searching from next position
+	// Integrated prefilter+DFA loop: single scan, prefilter on dead state
+	endPos := len(haystack)
+	for pos < endPos {
+		b := haystack[pos]
+
+		// Word boundary check
+		if d.hasWordBoundary && currentState.checkWordBoundaryFast(b) {
+			return true
+		}
+
+		// Get next state
+		classIdx := d.byteToClass(b)
+		nextID, ok := currentState.Transition(classIdx)
+		switch {
+		case !ok:
+			// Determinize on demand
+			nextState, err := d.determinize(cache, currentState, b)
+			if err != nil {
+				// Cache error — NFA fallback from current position
+				start, end, matched := d.pikevm.SearchAt(haystack, pos)
+				return matched && start >= 0 && end >= start
+			}
+			if nextState == nil {
+				// Dead state — skip ahead with prefilter
+				goto pfSkip
+			}
+			currentState = nextState
+
+		case nextID == DeadState:
+			// Dead state — skip ahead with prefilter
+			goto pfSkip
+
+		default:
+			currentState = cache.getState(nextID)
+			if currentState == nil {
+				start, end, matched := d.pikevm.SearchAt(haystack, pos)
+				return matched && start >= 0 && end >= start
+			}
+		}
+
+		pos++
+		if currentState.IsMatch() {
+			return true
+		}
+		continue
+
+	pfSkip:
+		// Prefilter skip: find next candidate after current position
+		pos++
+		candidate := d.prefilter.Find(haystack, pos)
+		if candidate == -1 {
+			return false
+		}
+		pos = candidate
+
+		// Restart DFA at new candidate with anchored start state
+		currentState = d.getStartState(cache, haystack, pos, true)
+		if currentState == nil {
+			return d.isMatchWithPrefilterFallback(cache, haystack, pos)
+		}
+		if currentState.IsMatch() {
+			return true
+		}
+	}
+
+	return d.checkEOIMatch(currentState)
+}
+
+// isMatchWithPrefilterFallback is the old two-pass approach used when
+// DFA start state cannot be obtained (NFA fallback needed).
+func (d *DFA) isMatchWithPrefilterFallback(cache *DFACache, haystack []byte, pos int) bool {
+	// Try anchored DFA search at current position
+	if d.searchEarliestMatchAnchored(cache, haystack, pos) {
+		return true
+	}
+	// Continue with remaining candidates
 	for pos < len(haystack) {
 		pos++
 		candidate := d.prefilter.Find(haystack, pos)
@@ -483,7 +569,6 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 			return true
 		}
 	}
-
 	return false
 }
 
