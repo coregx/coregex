@@ -36,6 +36,7 @@ func newACPrefilter(seq *literal.Seq) Prefilter {
 
 	ac, err := ahocorasick.NewBuilder().
 		AddPatterns(patterns).
+		SetPrefilter(false). // Disable start-byte skip — degrades to O(n²) when start bytes are common
 		Build()
 	if err != nil {
 		return nil

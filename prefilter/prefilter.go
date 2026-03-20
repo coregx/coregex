@@ -284,15 +284,11 @@ func selectPrefilter(prefixes, suffixes *literal.Seq) Prefilter {
 	// Multiple literals: choose Teddy or Aho-Corasick based on count
 	ml := minLen(seq)
 	if seq.Len() >= 2 && ml >= 3 {
-		if seq.Len() <= MaxSlimTeddyPatterns {
-			// 2-32 patterns: Slim Teddy (SSSE3) — low collision rate
+		if seq.Len() <= MaxTeddyPatterns {
+			// 2-64 patterns: Teddy (Slim ≤32 SSSE3, Fat 33-64 AVX2)
 			return newTeddyFromSeq(seq)
 		}
-		// >32 patterns: Aho-Corasick DFA is faster than FatTeddy.
-		// FatTeddy's 2-byte fingerprints cause excessive bucket collisions
-		// with many short patterns (e.g., 48 case-fold variants: 130x slower
-		// than AC on real workloads). AC's flat DFA transition table gives
-		// zero false positives with O(n) scan.
+		// >64 patterns: Aho-Corasick DFA (zero false positives, O(n) scan).
 		return newACPrefilter(seq)
 	}
 
