@@ -137,25 +137,8 @@ func (e *Engine) isMatchNFA(haystack []byte) bool {
 func (e *Engine) isMatchDFA(haystack []byte) bool {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 
-	if e.prefilter != nil {
-		pos := e.prefilter.Find(haystack, 0)
-		if pos == -1 {
-			return false // Prefilter says no candidates — fast rejection
-		}
-		atomic.AddUint64(&e.stats.PrefilterHits, 1)
-		if e.prefilter.IsComplete() {
-			return true // Complete prefilter — find is sufficient
-		}
-		// Now thread-safe: pooled DFACache, no shared mutable state.
-		// Use DFA.IsMatch (not SearchAtAnchored) because the prefilter
-		// position may not exactly align with match start (e.g., \b assertions).
-		state := e.getSearchState()
-		result := e.dfa.IsMatch(state.dfaCache, haystack)
-		e.putSearchState(state)
-		return result
-	}
-
-	// No prefilter: use DFA.IsMatch with pooled cache
+	// DFA.IsMatch handles prefilter internally (isMatchWithPrefilter).
+	// Don't call prefilter separately — avoids double prefilter scan.
 	state := e.getSearchState()
 	result := e.dfa.IsMatch(state.dfaCache, haystack)
 	e.putSearchState(state)
