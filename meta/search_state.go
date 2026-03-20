@@ -3,6 +3,7 @@ package meta
 import (
 	"sync"
 
+	"github.com/coregx/coregex/dfa/lazy"
 	"github.com/coregx/coregex/dfa/onepass"
 	"github.com/coregx/coregex/nfa"
 )
@@ -29,6 +30,17 @@ type SearchState struct {
 	// so we pool entire PikeVM instances for thread-safety.
 	pikevm *nfa.PikeVM
 
+	// dfaCache holds per-search mutable state for lazy DFA searches.
+	// Each goroutine gets its own cache, eliminating the data race on shared
+	// DFA state construction that previously required PikeVM workarounds.
+	// Nil if no forward DFA was compiled (e.g., NFA-only strategies).
+	dfaCache *lazy.DFACache
+
+	// revDFACache holds per-search mutable state for reverse lazy DFA searches.
+	// Used by bidirectional DFA strategies (ReverseSuffix, ReverseInner, etc.)
+	// to find match start positions. Nil if no reverse DFA was compiled.
+	revDFACache *lazy.DFACache
+
 	// onepassSlots holds capture slot storage for OnePass DFA searches.
 	// Pre-allocated to avoid allocation per search.
 	onepassSlots []int
@@ -39,10 +51,20 @@ type SearchState struct {
 
 // newSearchState creates a new SearchState with pre-allocated buffers.
 // nfaEngine is required to create a new PikeVM instance.
-func newSearchState(nfaEngine *nfa.NFA, numCaptures int) *SearchState {
+// forwardDFA and reverseDFA are optional; when non-nil, per-search caches are created.
+func newSearchState(nfaEngine *nfa.NFA, numCaptures int, forwardDFA, reverseDFA *lazy.DFA) *SearchState {
 	state := &SearchState{
 		backtracker: nfa.NewBacktrackerState(),
 		pikevm:      nfa.NewPikeVM(nfaEngine), // Create per-search PikeVM instance
+	}
+
+	// Create per-search DFA caches for thread-safe concurrent access.
+	// Each goroutine gets its own cache, eliminating shared mutable state.
+	if forwardDFA != nil {
+		state.dfaCache = forwardDFA.NewCache()
+	}
+	if reverseDFA != nil {
+		state.revDFACache = reverseDFA.NewCache()
 	}
 
 	// Pre-allocate onepass slots if captures are present
@@ -84,17 +106,22 @@ type searchStatePool struct {
 	// Configuration for creating new states
 	nfaEngine   *nfa.NFA
 	numCaptures int
+	forwardDFA  *lazy.DFA
+	reverseDFA  *lazy.DFA
 }
 
 // newSearchStatePool creates a pool configured for the given engine parameters.
-func newSearchStatePool(nfaEngine *nfa.NFA, numCaptures int) *searchStatePool {
+// forwardDFA and reverseDFA are optional; when non-nil, per-search caches are created.
+func newSearchStatePool(nfaEngine *nfa.NFA, numCaptures int, forwardDFA, reverseDFA *lazy.DFA) *searchStatePool {
 	p := &searchStatePool{
 		nfaEngine:   nfaEngine,
 		numCaptures: numCaptures,
+		forwardDFA:  forwardDFA,
+		reverseDFA:  reverseDFA,
 	}
 	p.pool = sync.Pool{
 		New: func() any {
-			return newSearchState(p.nfaEngine, p.numCaptures)
+			return newSearchState(p.nfaEngine, p.numCaptures, p.forwardDFA, p.reverseDFA)
 		},
 	}
 	return p

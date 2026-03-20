@@ -7,6 +7,7 @@ package meta
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/coregx/coregex/dfa/lazy"
 	"github.com/coregx/coregex/literal"
@@ -47,6 +48,7 @@ type ReverseSuffixSetSearcher struct {
 	pikevm         *nfa.PikeVM
 	suffixLiterals *literal.Seq // All suffix literals
 	matchStartZero bool         // True if pattern starts with .* (match always starts at 0)
+	revCachePool   sync.Pool
 }
 
 // NewReverseSuffixSetSearcher creates a reverse suffix set searcher.
@@ -106,7 +108,7 @@ func NewReverseSuffixSetSearcher(
 
 	// matchStartZero is true only when pattern has .* prefix (e.g., `.*\.(txt|log|md)`).
 	// Only OpStar(AnyChar) guarantees match starts at 0/at — skip reverse DFA.
-	return &ReverseSuffixSetSearcher{
+	s := &ReverseSuffixSetSearcher{
 		forwardNFA:     forwardNFA,
 		reverseNFA:     reverseNFA,
 		reverseDFA:     reverseDFA,
@@ -115,7 +117,11 @@ func NewReverseSuffixSetSearcher(
 		pikevm:         pikevm,
 		suffixLiterals: suffixLiterals,
 		matchStartZero: matchStartZero,
-	}, nil
+	}
+	s.revCachePool = sync.Pool{
+		New: func() any { return s.reverseDFA.NewCache() },
+	}
+	return s, nil
 }
 
 // Find searches using Teddy suffix prefilter + reverse DFA.
@@ -128,6 +134,10 @@ func (s *ReverseSuffixSetSearcher) Find(haystack []byte) *Match {
 	if len(haystack) == 0 {
 		return nil
 	}
+
+	// Acquire cache once for the entire candidate loop
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
 
 	// For greedy matching, find the LAST suffix candidate
 	// We scan forward and keep track of the last valid match
@@ -159,7 +169,7 @@ func (s *ReverseSuffixSetSearcher) Find(haystack []byte) *Match {
 			lastMatch = NewMatch(0, suffixEnd, haystack)
 		} else {
 			// Use reverse DFA with anti-quadratic guard to find match start
-			matchStart := s.reverseDFA.SearchReverseLimited(haystack, 0, suffixEnd, minStart)
+			matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, 0, suffixEnd, minStart)
 			if matchStart == lazy.SearchReverseLimitedQuadratic {
 				// Quadratic behavior detected - fall back to PikeVM
 				pStart, pEnd, found := s.pikevm.Search(haystack)
@@ -193,6 +203,10 @@ func (s *ReverseSuffixSetSearcher) FindAt(haystack []byte, at int) *Match {
 		return nil
 	}
 
+	// Acquire cache once for the entire candidate loop
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
+
 	searchStart := at
 	minStart := at // Anti-quadratic guard
 	for {
@@ -223,7 +237,7 @@ func (s *ReverseSuffixSetSearcher) FindAt(haystack []byte, at int) *Match {
 		}
 
 		// Use reverse DFA with anti-quadratic guard to find match start
-		matchStart := s.reverseDFA.SearchReverseLimited(haystack, at, suffixEnd, minStart)
+		matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, at, suffixEnd, minStart)
 		if matchStart >= 0 {
 			return NewMatch(matchStart, suffixEnd, haystack)
 		}
@@ -255,6 +269,10 @@ func (s *ReverseSuffixSetSearcher) FindIndicesAt(haystack []byte, at int) (start
 		return -1, -1, false
 	}
 
+	// Acquire cache once for the entire candidate loop
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
+
 	searchStart := at
 	minStart := at // Anti-quadratic guard
 	for {
@@ -285,7 +303,7 @@ func (s *ReverseSuffixSetSearcher) FindIndicesAt(haystack []byte, at int) (start
 		}
 
 		// Use reverse DFA with anti-quadratic guard to find match start
-		matchStart := s.reverseDFA.SearchReverseLimited(haystack, at, suffixEnd, minStart)
+		matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, at, suffixEnd, minStart)
 		if matchStart >= 0 {
 			return matchStart, suffixEnd, true
 		}
@@ -313,6 +331,10 @@ func (s *ReverseSuffixSetSearcher) IsMatch(haystack []byte) bool {
 		return false
 	}
 
+	// Acquire cache once for the entire candidate loop
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
+
 	start := 0
 	minStart := 0 // Anti-quadratic guard for reverse scans
 	for {
@@ -336,7 +358,7 @@ func (s *ReverseSuffixSetSearcher) IsMatch(haystack []byte) bool {
 		}
 
 		// Use reverse DFA with anti-quadratic guard to check if pattern matches
-		revResult := s.reverseDFA.SearchReverseLimited(haystack, 0, revEnd, minStart)
+		revResult := s.reverseDFA.SearchReverseLimited(revCache, haystack, 0, revEnd, minStart)
 		if revResult >= 0 {
 			return true
 		}

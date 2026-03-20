@@ -620,7 +620,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		canMatchEmpty:                  canMatchEmpty,
 		isStartAnchored:                isStartAnchored,
 		fatTeddyFallback:               fatTeddyFallback,
-		statePool:                      newSearchStatePool(pikevmNFA, numCaptures),
+		statePool:                      newSearchStatePool(pikevmNFA, numCaptures, engines.dfa, engines.reverseDFA),
 		stats:                          Stats{},
 	}, nil
 }

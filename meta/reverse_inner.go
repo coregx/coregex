@@ -8,6 +8,7 @@ package meta
 import (
 	"errors"
 	"regexp/syntax"
+	"sync"
 
 	"github.com/coregx/coregex/dfa/lazy"
 	"github.com/coregx/coregex/literal"
@@ -153,6 +154,8 @@ type ReverseInnerSearcher struct {
 	universalPrefix bool // True if prefix is .* (matches everything from start)
 	universalSuffix bool // True if suffix ends with .* (matches everything to end)
 	startAnchored   bool // True if prefix only contains start anchors (^, ^+, etc.)
+	fwdCachePool    sync.Pool
+	revCachePool    sync.Pool
 }
 
 // NewReverseInnerSearcher creates a reverse inner searcher using AST splitting.
@@ -261,7 +264,7 @@ func NewReverseInnerSearcher(
 	// Check if prefix is only start anchors (^, ^+, etc.) - trivially matches at position 0
 	startAnchored := isStartAnchorOnly(innerInfo.PrefixAST)
 
-	return &ReverseInnerSearcher{
+	s := &ReverseInnerSearcher{
 		forwardNFA:      suffixNFA,
 		reverseNFA:      reverseNFA,
 		reverseDFA:      reverseDFA,
@@ -272,7 +275,14 @@ func NewReverseInnerSearcher(
 		universalPrefix: universalPrefix,
 		universalSuffix: universalSuffix,
 		startAnchored:   startAnchored,
-	}, nil
+	}
+	s.fwdCachePool = sync.Pool{
+		New: func() any { return s.forwardDFA.NewCache() },
+	}
+	s.revCachePool = sync.Pool{
+		New: func() any { return s.reverseDFA.NewCache() },
+	}
+	return s, nil
 }
 
 // Find searches using inner literal prefilter + bidirectional DFA and returns the match.
@@ -335,6 +345,13 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 	searchStart := 0
 	minPreStart := 0   // Track minimum position for forward scan quadratic detection
 	minMatchStart := 0 // Anti-quadratic guard for reverse scan
+
+	// Acquire caches once for the entire candidate loop
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	fwdCache := s.fwdCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
+	defer s.fwdCachePool.Put(fwdCache)
+
 	for {
 		// Find next inner literal candidate
 		pos := s.prefilter.Find(haystack, searchStart)
@@ -359,7 +376,7 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 		// Step 1: Reverse search on PREFIX portion with anti-quadratic guard
 		// Check if we can reach this inner literal from an earlier position.
 		// Use minMatchStart to avoid re-scanning regions already proven to have no match.
-		matchStart := s.reverseDFA.SearchReverseLimited(haystack, 0, pos, minMatchStart)
+		matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, 0, pos, minMatchStart)
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
 			// Reverse scan hit the anti-quadratic guard - fall back to PikeVM
 			start, end, found := s.pikevm.Search(haystack)
@@ -380,7 +397,7 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 		// Step 2: Forward search on SUFFIX portion
 		// Find the end of the match (forward DFA finds longest match = greedy)
 		suffixHaystack := haystack[pos:]
-		matchEndRel := s.forwardDFA.Find(suffixHaystack)
+		matchEndRel := s.forwardDFA.Find(fwdCache, suffixHaystack)
 		if matchEndRel < 0 {
 			// Suffix doesn't match - update minPreStart and try next candidate
 			minPreStart = pos + s.innerLen
@@ -425,6 +442,12 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 		return false
 	}
 
+	// Acquire caches once for the entire candidate loop
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	fwdCache := s.fwdCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
+	defer s.fwdCachePool.Put(fwdCache)
+
 	// Use prefilter to find inner literal candidates
 	searchStart := 0
 	minStart := 0 // Anti-quadratic guard for reverse scans
@@ -448,7 +471,7 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 			prefixMatches = true
 		} else if pos > 0 {
 			// Use SearchReverseLimited for anti-quadratic protection
-			revResult := s.reverseDFA.SearchReverseLimited(haystack, 0, pos, minStart)
+			revResult := s.reverseDFA.SearchReverseLimited(revCache, haystack, 0, pos, minStart)
 			if revResult == lazy.SearchReverseLimitedQuadratic {
 				// Quadratic behavior detected - fall back to PikeVM
 				_, _, matched := s.pikevm.Search(haystack)
@@ -460,7 +483,7 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 		if prefixMatches {
 			// Step 2: Check if suffix matches (forward DFA from inner position)
 			suffixHaystack := haystack[pos:]
-			if s.forwardDFA.IsMatch(suffixHaystack) {
+			if s.forwardDFA.IsMatch(fwdCache, suffixHaystack) {
 				// Both prefix and suffix match - pattern matches!
 				return true
 			}
@@ -499,6 +522,12 @@ func (s *ReverseInnerSearcher) FindIndicesAt(haystack []byte, at int) (start, en
 		return -1, -1, false
 	}
 
+	// Acquire caches once for the entire candidate loop
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	fwdCache := s.fwdCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
+	defer s.fwdCachePool.Put(fwdCache)
+
 	// Search for inner literal starting from 'at'
 	searchStart := at
 	minMatchStart := at // Anti-quadratic guard for reverse scans
@@ -511,7 +540,7 @@ func (s *ReverseInnerSearcher) FindIndicesAt(haystack []byte, at int) (start, en
 
 		// Step 1: Reverse search on PREFIX portion with anti-quadratic guard
 		// Use minMatchStart to avoid re-scanning regions already checked
-		matchStart := s.reverseDFA.SearchReverseLimited(haystack, at, pos, minMatchStart)
+		matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, at, pos, minMatchStart)
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
 			// Quadratic behavior detected - fall back to PikeVM
 			return s.pikevm.SearchAt(haystack, at)
@@ -527,7 +556,7 @@ func (s *ReverseInnerSearcher) FindIndicesAt(haystack []byte, at int) (start, en
 
 		// Step 2: Forward search on SUFFIX portion
 		suffixHaystack := haystack[pos:]
-		matchEndRel := s.forwardDFA.Find(suffixHaystack)
+		matchEndRel := s.forwardDFA.Find(fwdCache, suffixHaystack)
 		if matchEndRel < 0 {
 			// Suffix doesn't match - try next candidate
 			searchStart = pos + 1

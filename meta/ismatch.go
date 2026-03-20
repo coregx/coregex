@@ -132,14 +132,11 @@ func (e *Engine) isMatchNFA(haystack []byte) bool {
 // Uses prefilter for fast rejection when available (Issue #137):
 // e.g., AC with 60 case-fold prefixes rejects no-match inputs in ~5us
 // vs DFA cache thrashing at 80,000ns on 181-state NFA.
+//
+// Thread-safe: uses pooled DFACache for lazy DFA state construction.
 func (e *Engine) isMatchDFA(haystack []byte) bool {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 
-	// Prefilter fast rejection: if prefilter finds no candidates, no match.
-	// For incomplete prefilters with candidates, use pooled PikeVM for
-	// thread-safe verification. Shared lazy DFA (e.dfa) is NOT thread-safe
-	// for ANY concurrent access — even DFA.IsMatch causes data races on
-	// lazy state construction. Issue #137 (ARM64 M2 Max: 1.7GB allocs).
 	if e.prefilter != nil {
 		pos := e.prefilter.Find(haystack, 0)
 		if pos == -1 {
@@ -149,15 +146,20 @@ func (e *Engine) isMatchDFA(haystack []byte) bool {
 		if e.prefilter.IsComplete() {
 			return true // Complete prefilter — find is sufficient
 		}
-		// Prefilter found candidate but isn't complete — verify with pooled PikeVM
+		// Now thread-safe: pooled DFACache, no shared mutable state.
+		// Use DFA.IsMatch (not SearchAtAnchored) because the prefilter
+		// position may not exactly align with match start (e.g., \b assertions).
 		state := e.getSearchState()
-		_, _, found := state.pikevm.SearchAt(haystack, pos)
+		result := e.dfa.IsMatch(state.dfaCache, haystack)
 		e.putSearchState(state)
-		return found
+		return result
 	}
 
-	// No prefilter: use DFA.IsMatch (single-thread path, safe)
-	return e.dfa.IsMatch(haystack)
+	// No prefilter: use DFA.IsMatch with pooled cache
+	state := e.getSearchState()
+	result := e.dfa.IsMatch(state.dfaCache, haystack)
+	e.putSearchState(state)
+	return result
 }
 
 // isMatchAdaptive tries prefilter/DFA first, falls back to NFA.
@@ -180,11 +182,15 @@ func (e *Engine) isMatchAdaptive(haystack []byte) bool {
 	// Fall back to DFA
 	if e.dfa != nil {
 		atomic.AddUint64(&e.stats.DFASearches, 1)
-		if e.dfa.IsMatch(haystack) {
+		state := e.getSearchState()
+		matched := e.dfa.IsMatch(state.dfaCache, haystack)
+		if matched {
+			e.putSearchState(state)
 			return true
 		}
 		// DFA returned false - check if cache was full
-		size, capacity, _, _, _ := e.dfa.CacheStats()
+		size, capacity, _, _, _ := e.dfa.CacheStats(state.dfaCache)
+		e.putSearchState(state)
 		if size >= int(capacity)*9/10 {
 			atomic.AddUint64(&e.stats.DFACacheFull, 1)
 			// Cache nearly full, fall back to NFA
@@ -302,6 +308,10 @@ func (e *Engine) isMatchDigitPrefilter(haystack []byte) bool {
 	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 	pos := 0
 
+	// Acquire pooled state once for the entire loop to avoid repeated get/put
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
 	for pos < len(haystack) {
 		digitPos := e.digitPrefilter.Find(haystack, pos)
 		if digitPos < 0 {
@@ -313,12 +323,12 @@ func (e *Engine) isMatchDigitPrefilter(haystack []byte) bool {
 		// Anchored checks only a few bytes per candidate = O(pattern_len).
 		if e.dfa != nil {
 			atomic.AddUint64(&e.stats.DFASearches, 1)
-			if e.dfa.SearchAtAnchored(haystack, digitPos) != -1 {
+			if e.dfa.SearchAtAnchored(state.dfaCache, haystack, digitPos) != -1 {
 				return true
 			}
 		} else {
 			atomic.AddUint64(&e.stats.NFASearches, 1)
-			start, _, found := e.pikevm.SearchAt(haystack, digitPos)
+			start, _, found := state.pikevm.SearchAt(haystack, digitPos)
 			if found && start == digitPos {
 				return true
 			}
