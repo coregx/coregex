@@ -167,7 +167,7 @@ func (c *DFACache) Clear() {
 	// Clear map (GC will reclaim memory)
 	c.states = make(map[StateKey]*State, c.maxStates)
 	c.stateList = c.stateList[:0]
-	c.startTable = newStartTableFromByteMap(c.startTable.byteMap)
+	c.startTable = newStartTableFromByteMap(&c.startTable.byteMap)
 	c.nextID = StartState + 1
 	c.clearCount = 0
 	c.hits = 0
@@ -197,7 +197,7 @@ func (c *DFACache) ClearKeepMemory() {
 		delete(c.states, k)
 	}
 	c.stateList = c.stateList[:0]
-	c.startTable = newStartTableFromByteMap(c.startTable.byteMap)
+	c.startTable = newStartTableFromByteMap(&c.startTable.byteMap)
 	c.nextID = StartState + 1
 	c.clearCount++
 }
@@ -247,7 +247,7 @@ func (c *DFACache) Reset() {
 		delete(c.states, k)
 	}
 	c.stateList = c.stateList[:0]
-	c.startTable = newStartTableFromByteMap(c.startTable.byteMap)
+	c.startTable = newStartTableFromByteMap(&c.startTable.byteMap)
 	c.nextID = StartState + 1
 	c.clearCount = 0
 	c.hits = 0

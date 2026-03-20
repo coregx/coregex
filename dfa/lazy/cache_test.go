@@ -14,7 +14,7 @@ func newTestCache(maxStates uint32) *DFACache {
 	return &DFACache{
 		states:     make(map[StateKey]*State, maxStates),
 		stateList:  make([]*State, 0, maxStates),
-		startTable: newStartTableFromByteMap(byteMap),
+		startTable: newStartTableFromByteMap(&byteMap),
 		maxStates:  maxStates,
 		nextID:     StartState + 1,
 	}

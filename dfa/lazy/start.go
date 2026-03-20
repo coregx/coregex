@@ -86,8 +86,8 @@ func NewStartTable() *StartTable {
 
 // newStartTableFromByteMap creates a StartTable that reuses an existing byteMap.
 // This avoids recomputing the byte map when clearing/resetting the cache.
-func newStartTableFromByteMap(byteMap [256]StartKind) StartTable {
-	st := StartTable{byteMap: byteMap}
+func newStartTableFromByteMap(byteMap *[256]StartKind) StartTable {
+	st := StartTable{byteMap: *byteMap}
 	initStartStates(&st)
 	return st
 }

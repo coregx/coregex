@@ -106,7 +106,7 @@ func (d *DFA) NewCache() *DFACache {
 	return &DFACache{
 		states:     make(map[StateKey]*State, d.config.MaxStates),
 		stateList:  make([]*State, 0, d.config.MaxStates),
-		startTable: newStartTableFromByteMap(d.startByteMap),
+		startTable: newStartTableFromByteMap(&d.startByteMap),
 		maxStates:  d.config.MaxStates,
 		nextID:     StartState + 1,
 	}
