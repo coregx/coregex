@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-03-19 | **Current Version**: v0.12.14 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-03-20 | **Current Version**: v0.12.15 | **Target**: v1.0.0 stable
 
 ---
 
@@ -12,7 +12,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 
 ### Current State vs Target
 
-| Metric | Current (v0.12.14) | Target (v1.0.0) |
+| Metric | Current (v0.12.15) | Target (v1.0.0) |
 |--------|-------------------|-----------------|
 | Inner literal speedup | **280-3154x** | ✅ Achieved |
 | Case-insensitive speedup | **263x** | ✅ Achieved |
@@ -22,8 +22,9 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 | Reverse search | **Yes (4 strategies)** | ✅ Achieved |
 | OnePass DFA | **Yes** | ✅ Achieved |
 | Slim Teddy (2-32 patterns) | **Yes (SSSE3, 9GB/s)** | ✅ Achieved |
-| Fat Teddy (33-64 patterns) | **Yes (AVX2, 9GB/s)** | ✅ Achieved |
+| AC DFA prefilter (>32 patterns) | **Yes (zero false positives)** | ✅ Achieved |
 | Aho-Corasick (>64 patterns) | **Yes** | ✅ Achieved |
+| Per-goroutine DFA cache | **Yes (Rust approach)** | ✅ Achieved |
 | BoundedBacktracker | **Yes** | ✅ Achieved |
 | CharClassSearcher | **Yes (35% faster than Rust!)** | ✅ Achieved |
 | **Patterns faster than Rust** | **5 patterns** | ✅ Achieved |
@@ -84,7 +85,9 @@ v0.12.12 ✅ → Prefix trimming for case-fold literals (Teddy instead of AC)
          ↓
 v0.12.13 ✅ → FatTeddy fix, prefilter acceleration, AC v0.2.1
          ↓
-v0.12.14 (Current) ✅ → Concurrent safety fix for isMatchDFA prefilter (#137)
+v0.12.14 ✅ → Concurrent safety fix for isMatchDFA prefilter (#137)
+         ↓
+v0.12.15 (Current) ✅ → Per-goroutine DFA cache, word boundary 30%→0.3% CPU, AC prefilter
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
@@ -121,7 +124,13 @@ v1.0.0 STABLE → Production release with API stability guarantee
 - ✅ **v0.12.6**: BoundedBacktracker span-based CanHandle, ReplaceAllStringFunc O(n) (#127)
 - ✅ **v0.12.7**: PikeVM sparse-dispatch for `.` patterns, 2.8-4.8x speedup (#132)
 - ✅ **v0.12.8**: Streaming ReplaceAll + DFA-first FindSubmatchAt, Rust-style two-phase search (#135)
-- ✅ **v0.12.8**: Streaming ReplaceAll + DFA-first FindSubmatchAt, Rust-style two-phase search (#135)
+- ✅ **v0.12.9**: Bidirectional DFA, Teddy/reverse NFA fixes
+- ✅ **v0.12.10**: Case-insensitive literals, DigitPrefilter O(n²) fix (#137)
+- ✅ **v0.12.11**: ReverseSuffix multi-wildcard, COREGEX_DEBUG logging
+- ✅ **v0.12.12**: Prefix trimming for case-fold literals
+- ✅ **v0.12.13**: FatTeddy fix (ANDL→ORL, VPTEST), prefilter acceleration, AC v0.2.1
+- ✅ **v0.12.14**: Concurrent safety fix for isMatchDFA prefilter (#137)
+- ✅ **v0.12.15**: Per-goroutine DFA cache (Rust approach), word boundary 30%→0.3% CPU, AC DFA prefilter for >32 literals (7-13x faster)
 
 ---
 

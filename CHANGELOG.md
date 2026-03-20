@@ -12,6 +12,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.15] - 2026-03-20
+
+### Performance
+- **Per-goroutine DFA cache** (Rust approach) — split lazy DFA into immutable `DFA`
+  (shared across goroutines) + mutable `DFACache` (pooled via `sync.Pool`).
+  Eliminates all data races on concurrent `IsMatch`/`Find`/`FindSubmatch`.
+  Concurrent case-insensitive IsMatch: data race → **450 ns/op** (zero-contention).
+
+- **Pre-computed word boundary match flags** — `matchAtWordBoundary` /
+  `matchAtNonWordBoundary` flags computed during `determinize()`, replacing
+  per-byte `checkWordBoundaryMatch` (was 30% CPU). Word boundary check:
+  **30% → 0.3% CPU**.
+
+- **Aho-Corasick DFA prefilter for >32 literals** — FatTeddy's 2-byte fingerprints
+  cause catastrophic bucket collisions with many short case-fold patterns (60 literals
+  from `(?i)eval|system|exec|...`). Replaced with AC DFA prefilter: zero false
+  positives, O(n) flat transition table scan.
+  IsMatch match 264B: 13.4μs → **1.9μs** (7x). No-match 33B: 1.2μs → **91ns** (13x).
+
+- **Eliminated double prefilter scan** — `isMatchDFA` called prefilter externally,
+  then `DFA.IsMatch` called it again internally. Removed redundant external call.
+
+### Refactored
+- `dfa/lazy/cache.go` — `Cache` renamed to `DFACache`, `sync.RWMutex` removed
+  (single-owner per goroutine, no locking needed).
+- `dfa/lazy/start.go` — `StartTable` moved into `DFACache` (mutable start states).
+- `meta/search_state.go` — `SearchState` now carries `dfaCache` and `revDFACache`.
+- All DFA call sites in `meta/` updated to pass pooled cache (14+ call sites).
+
 ## [0.12.14] - 2026-03-19
 
 ### Fixed

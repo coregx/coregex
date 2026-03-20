@@ -80,7 +80,7 @@ Cross-language benchmarks on 6MB input, AMD EPYC ([source](https://github.com/ko
 - IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — SIMD digit prefilter skips non-digit regions
 - Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search optimization (1000x+)
 - Inner literals (`.*error.*`, `.*@example\.com`) — bidirectional DFA (900x+)
-- Multi-pattern (`foo|bar|baz|...`) — Slim Teddy (≤32), Fat Teddy (33-64), or Aho-Corasick (>64)
+- Multi-pattern (`foo|bar|baz|...`) — Slim Teddy (≤32), AC DFA prefilter (>32), or Aho-Corasick (>64)
 - Anchored alternations (`^(\d+|UUID|hex32)`) — O(1) branch dispatch (5-20x)
 - Concatenated char classes (`[a-zA-Z]+[0-9]+`) — DFA with byte classes (5-7x)
 
@@ -102,7 +102,6 @@ coregex automatically selects the optimal engine:
 | AhoCorasick | `a\|b\|c\|...\|z` (>64 patterns) | 75-113x |
 | CharClassSearcher | `[\w]+`, `\d+` | 4-25x |
 | Slim Teddy | `foo\|bar\|baz` (2-32 patterns) | 15-240x |
-| Fat Teddy | 33-64 patterns | 60-73x |
 | OnePass | Anchored captures | 10x |
 | BoundedBacktracker | Small patterns | 2-5x |
 
