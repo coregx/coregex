@@ -14,6 +14,7 @@ func TestSearchAtPositionVariations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompilePattern error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	input := []byte("foo bar foo baz foo")
 
@@ -33,7 +34,7 @@ func TestSearchAtPositionVariations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dfa.FindAt(input, tt.at)
+			got := dfa.FindAt(cache, input, tt.at)
 			if got != tt.want {
 				t.Errorf("FindAt(%d) = %d, want %d", tt.at, got, tt.want)
 			}
@@ -65,8 +66,9 @@ func TestSearchAtAnchored(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 			}
+			cache := dfa.NewCache()
 
-			got := dfa.SearchAtAnchored([]byte(tt.input), tt.at)
+			got := dfa.SearchAtAnchored(cache, []byte(tt.input), tt.at)
 			if got != tt.want {
 				t.Errorf("SearchAtAnchored(%q, %d) = %d, want %d",
 					tt.input, tt.at, got, tt.want)
@@ -99,8 +101,9 @@ func TestSearchAtWithoutPrefilter(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 			}
+			cache := dfa.NewCache()
 
-			got := dfa.SearchAt([]byte(tt.input), tt.at)
+			got := dfa.SearchAt(cache, []byte(tt.input), tt.at)
 			if got != tt.want {
 				t.Errorf("SearchAt(%q, %d) = %d, want %d",
 					tt.input, tt.at, got, tt.want)
@@ -144,9 +147,10 @@ func TestIsMatchFindConsistency(t *testing.T) {
 					t.Skipf("Pattern %q not supported: %v", pattern, err)
 					return
 				}
+				cache := dfa.NewCache()
 
-				isMatch := dfa.IsMatch([]byte(input))
-				findResult := dfa.Find([]byte(input))
+				isMatch := dfa.IsMatch(cache, []byte(input))
+				findResult := dfa.Find(cache, []byte(input))
 				findFound := findResult >= 0
 
 				if isMatch != findFound {
@@ -186,9 +190,10 @@ func TestCachePressureWithManyPatterns(t *testing.T) {
 			if err != nil {
 				t.Fatalf("DFA compile error: %v", err)
 			}
+			cache := dfa.NewCache()
 
 			// Should still produce correct result (via NFA fallback if needed)
-			got := dfa.IsMatch([]byte(tt.input))
+			got := dfa.IsMatch(cache, []byte(tt.input))
 			re := regexp.MustCompile(tt.pattern)
 			want := re.MatchString(tt.input)
 
@@ -248,15 +253,16 @@ func TestLargeInputSearchCorrectness(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompilePattern error: %v", err)
 			}
+			cache := dfa.NewCache()
 
 			input := []byte(tt.haystack())
-			got := dfa.IsMatch(input)
+			got := dfa.IsMatch(cache, input)
 			if got != tt.want {
 				t.Errorf("IsMatch on %d bytes = %v, want %v", len(input), got, tt.want)
 			}
 
 			// Verify with Find
-			findResult := dfa.Find(input)
+			findResult := dfa.Find(cache, input)
 			findFound := findResult >= 0
 			if findFound != tt.want {
 				t.Errorf("Find on %d bytes = %d (found=%v), want found=%v",
@@ -288,11 +294,12 @@ func TestSearchAtVsStdlib(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompilePattern error: %v", err)
 			}
+			cache := dfa.NewCache()
 
 			re := regexp.MustCompile(tc.pattern)
 
 			// Compare Find (at=0) with stdlib
-			dfaEnd := dfa.Find([]byte(tc.input))
+			dfaEnd := dfa.Find(cache, []byte(tc.input))
 			loc := re.FindStringIndex(tc.input)
 
 			var stdlibEnd int
@@ -316,6 +323,7 @@ func TestEmptyPatternBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompilePattern('') error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	tests := []struct {
 		name      string
@@ -329,12 +337,12 @@ func TestEmptyPatternBehavior(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dfa.Find([]byte(tt.input))
+			got := dfa.Find(cache, []byte(tt.input))
 			if got != tt.findWant {
 				t.Errorf("Find(%q) = %d, want %d", tt.input, got, tt.findWant)
 			}
 
-			isMatch := dfa.IsMatch([]byte(tt.input))
+			isMatch := dfa.IsMatch(cache, []byte(tt.input))
 			if isMatch != tt.matchWant {
 				t.Errorf("IsMatch(%q) = %v, want %v", tt.input, isMatch, tt.matchWant)
 			}
@@ -348,6 +356,7 @@ func TestSearchAtAnchoredEmptyPattern(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompilePattern error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// Empty pattern matches at any position (returns that position)
 	tests := []struct {
@@ -361,7 +370,7 @@ func TestSearchAtAnchoredEmptyPattern(t *testing.T) {
 
 	input := []byte("abc")
 	for _, tt := range tests {
-		got := dfa.SearchAtAnchored(input, tt.at)
+		got := dfa.SearchAtAnchored(cache, input, tt.at)
 		if got != tt.want {
 			t.Errorf("SearchAtAnchored(%q, %d) = %d, want %d", input, tt.at, got, tt.want)
 		}
@@ -374,12 +383,13 @@ func TestCacheStatsAfterSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompilePattern error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// Search to populate cache
-	dfa.Find([]byte("abc123"))
-	dfa.Find([]byte("xyz789"))
+	dfa.Find(cache, []byte("abc123"))
+	dfa.Find(cache, []byte("xyz789"))
 
-	size, capacity, hits, misses, hitRate := dfa.CacheStats()
+	size, capacity, hits, misses, hitRate := dfa.CacheStats(cache)
 
 	if size == 0 {
 		t.Error("Expected non-zero cache size after search")
@@ -398,26 +408,27 @@ func TestResetCacheRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompilePattern error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	input := []byte("say hello there")
 
 	// First search
-	got1 := dfa.Find(input)
+	got1 := dfa.Find(cache, input)
 	if got1 != 9 {
 		t.Fatalf("First Find = %d, want 9", got1)
 	}
 
 	// Reset cache
-	dfa.ResetCache()
+	dfa.ResetCache(cache)
 
 	// Second search should still work
-	got2 := dfa.Find(input)
+	got2 := dfa.Find(cache, input)
 	if got2 != 9 {
 		t.Errorf("Find after ResetCache = %d, want 9", got2)
 	}
 
 	// IsMatch should also work
-	if !dfa.IsMatch(input) {
+	if !dfa.IsMatch(cache, input) {
 		t.Error("IsMatch after ResetCache returned false")
 	}
 }
@@ -429,24 +440,25 @@ func TestAnchoredPatternAtNonZeroPosition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompilePattern error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// Match at position 0
-	got := dfa.Find([]byte("hello world"))
+	got := dfa.Find(cache, []byte("hello world"))
 	if got != 5 {
 		t.Errorf("Find('^hello', 'hello world') = %d, want 5", got)
 	}
 
 	// Should NOT match when searching from position > 0
-	got = dfa.FindAt([]byte("say hello world"), 4)
+	got = dfa.FindAt(cache, []byte("say hello world"), 4)
 	if got != -1 {
 		t.Errorf("FindAt('^hello', offset=4) = %d, want -1 (anchored)", got)
 	}
 
 	// IsMatch should reflect the same
-	if dfa.IsMatch([]byte("hello world")) != true {
+	if dfa.IsMatch(cache, []byte("hello world")) != true {
 		t.Error("IsMatch should be true when pattern starts at position 0")
 	}
-	if dfa.IsMatch([]byte("say hello")) != false {
+	if dfa.IsMatch(cache, []byte("say hello")) != false {
 		t.Error("IsMatch should be false when ^hello doesn't start at position 0")
 	}
 }
@@ -471,9 +483,10 @@ func TestMatchesEmptyForVariousPatterns(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompilePattern error: %v", err)
 			}
+			cache := dfa.NewCache()
 
 			// Test via Find with empty input
-			got := dfa.Find([]byte{})
+			got := dfa.Find(cache, []byte{})
 			if tt.wantEmpty && got < 0 {
 				t.Errorf("Find(empty) = %d, want >= 0 for empty-matching pattern", got)
 			}
@@ -482,7 +495,7 @@ func TestMatchesEmptyForVariousPatterns(t *testing.T) {
 			}
 
 			// Test via IsMatch
-			isMatch := dfa.IsMatch([]byte{})
+			isMatch := dfa.IsMatch(cache, []byte{})
 			if isMatch != tt.wantEmpty {
 				t.Errorf("IsMatch(empty) = %v, want %v", isMatch, tt.wantEmpty)
 			}
@@ -512,8 +525,9 @@ func TestUnicodePatterns(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 			}
+			cache := dfa.NewCache()
 
-			got := dfa.IsMatch([]byte(tt.input))
+			got := dfa.IsMatch(cache, []byte(tt.input))
 			if got != tt.wantMatch {
 				t.Errorf("IsMatch(%q, %q) = %v, want %v",
 					tt.pattern, tt.input, got, tt.wantMatch)

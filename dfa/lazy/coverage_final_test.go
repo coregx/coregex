@@ -18,8 +18,9 @@ func TestCompileConvenience(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile failed: %v", err)
 	}
+	cache := d.NewCache()
 
-	pos := d.Find([]byte("xabbc"))
+	pos := d.Find(cache, []byte("xabbc"))
 	if pos != 5 {
 		t.Errorf("expected Find=5, got %d", pos)
 	}
@@ -39,6 +40,7 @@ func TestSearchAtAnchoredCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
+	cache := d.NewCache()
 
 	tests := []struct {
 		name     string
@@ -56,7 +58,7 @@ func TestSearchAtAnchoredCoverage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := d.SearchAtAnchored([]byte(tt.haystack), tt.at)
+			got := d.SearchAtAnchored(cache, []byte(tt.haystack), tt.at)
 			if got != tt.want {
 				t.Errorf("SearchAtAnchored(%q, %d) = %d, want %d",
 					tt.haystack, tt.at, got, tt.want)
@@ -71,15 +73,16 @@ func TestSearchAtAnchoredEmptyPatternCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
+	cache := d.NewCache()
 
 	// At end of input, a* matches empty string
-	got := d.SearchAtAnchored([]byte("abc"), 3)
+	got := d.SearchAtAnchored(cache, []byte("abc"), 3)
 	if got != 3 {
 		t.Errorf("expected 3 (empty match at end), got %d", got)
 	}
 
 	// At position 0, should match "a"
-	got = d.SearchAtAnchored([]byte("abc"), 0)
+	got = d.SearchAtAnchored(cache, []byte("abc"), 0)
 	if got < 0 {
 		t.Errorf("expected match at position 0, got %d", got)
 	}
@@ -170,15 +173,16 @@ func TestSearchReverseLimitedBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cache := d.NewCache()
 
 	// Normal reverse search (start, end, minStart)
-	pos := d.SearchReverseLimited([]byte("xyzabc"), 0, 6, 0)
+	pos := d.SearchReverseLimited(cache, []byte("xyzabc"), 0, 6, 0)
 	if pos < 0 {
 		t.Errorf("expected match start, got %d", pos)
 	}
 
 	// Empty range
-	pos = d.SearchReverseLimited([]byte("abc"), 3, 3, 0)
+	pos = d.SearchReverseLimited(cache, []byte("abc"), 3, 3, 0)
 	if pos != -1 {
 		t.Errorf("expected -1 for empty range, got %d", pos)
 	}
@@ -197,24 +201,25 @@ func TestIsMatchReverseEdge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cache := d.NewCache()
 
 	// Match exists (reverse DFA matches "cba" backwards = "abc" forwards)
-	if !d.IsMatchReverse([]byte("abc"), 0, 3) {
+	if !d.IsMatchReverse(cache, []byte("abc"), 0, 3) {
 		t.Error("expected IsMatchReverse to find 'abc'")
 	}
 
 	// No match
-	if d.IsMatchReverse([]byte("xyz"), 0, 3) {
+	if d.IsMatchReverse(cache, []byte("xyz"), 0, 3) {
 		t.Error("expected IsMatchReverse to not find 'xyz'")
 	}
 
 	// Out of bounds (end <= start)
-	if d.IsMatchReverse([]byte("abc"), 0, 0) {
+	if d.IsMatchReverse(cache, []byte("abc"), 0, 0) {
 		t.Error("expected false for empty range")
 	}
 
 	// Out of bounds (end > len)
-	if d.IsMatchReverse([]byte("abc"), 0, 10) {
+	if d.IsMatchReverse(cache, []byte("abc"), 0, 10) {
 		t.Error("expected false when end > len(haystack)")
 	}
 }
@@ -225,21 +230,22 @@ func TestSearchAtEmptyMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
+	cache := d.NewCache()
 
 	// SearchAt at end of haystack
-	got := d.SearchAt([]byte("abc"), 3)
+	got := d.SearchAt(cache, []byte("abc"), 3)
 	if got != 3 {
 		t.Errorf("expected 3 (empty match at end), got %d", got)
 	}
 
 	// SearchAt past end
-	got = d.SearchAt([]byte("abc"), 10)
+	got = d.SearchAt(cache, []byte("abc"), 10)
 	if got != -1 {
 		t.Errorf("expected -1 for past end, got %d", got)
 	}
 
 	// SearchAt on empty input
-	got = d.SearchAt([]byte(""), 0)
+	got = d.SearchAt(cache, []byte(""), 0)
 	if got != 0 {
 		t.Errorf("expected 0 (empty match on empty input), got %d", got)
 	}
@@ -300,8 +306,9 @@ func TestSearchReverseStartGtEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cache := d.NewCache()
 
-	pos := d.SearchReverse([]byte("abc"), 3, 0)
+	pos := d.SearchReverse(cache, []byte("abc"), 3, 0)
 	if pos != -1 {
 		t.Errorf("expected -1 for start > end, got %d", pos)
 	}
@@ -313,8 +320,9 @@ func TestFindAtWithLargeOffset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cache := d.NewCache()
 
-	got := d.FindAt([]byte("abc"), 100)
+	got := d.FindAt(cache, []byte("abc"), 100)
 	if got != -1 {
 		t.Errorf("expected -1 for large offset, got %d", got)
 	}
@@ -333,12 +341,13 @@ func TestDetectAccelerationFullState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cache := dfa.NewCache()
 
 	// Force some state transitions
-	_ = dfa.Find([]byte("bbbba"))
+	_ = dfa.Find(cache, []byte("bbbba"))
 
 	// Try acceleration detection on each state
-	for _, s := range dfa.states {
+	for _, s := range cache.stateList {
 		if s != nil {
 			result := builder.DetectAcceleration(s)
 			// result can be nil or a slice - just verify no panic
@@ -403,6 +412,7 @@ func TestSearchAtAnchoredWordBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cache := d.NewCache()
 
 	tests := []struct {
 		name     string
@@ -416,7 +426,7 @@ func TestSearchAtAnchoredWordBoundary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := d.SearchAtAnchored([]byte(tt.haystack), tt.at)
+			got := d.SearchAtAnchored(cache, []byte(tt.haystack), tt.at)
 			if got != tt.want {
 				t.Errorf("SearchAtAnchored(%q, %d) = %d, want %d",
 					tt.haystack, tt.at, got, tt.want)
@@ -438,8 +448,10 @@ func TestGetStateDeadState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cache := d.NewCache()
+	_ = d.Find(cache, []byte("abc")) // populate some states
 
-	s := d.getState(DeadState)
+	s := cache.getState(DeadState)
 	if s != nil {
 		t.Error("expected nil for DeadState")
 	}
@@ -451,8 +463,9 @@ func TestGetStateOutOfRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cache := d.NewCache()
 
-	s := d.getState(9999)
+	s := cache.getState(9999)
 	if s != nil {
 		t.Error("expected nil for out-of-range state ID")
 	}

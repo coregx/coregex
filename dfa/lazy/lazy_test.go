@@ -31,8 +31,9 @@ func TestLazyDFABasicLiteral(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 			}
+			cache := dfa.NewCache()
 
-			got := dfa.Find([]byte(tt.input))
+			got := dfa.Find(cache, []byte(tt.input))
 			if got != tt.wantPos {
 				t.Errorf("Find(%q, %q) = %d, want %d", tt.pattern, tt.input, got, tt.wantPos)
 			}
@@ -58,8 +59,9 @@ func TestLazyDFAConcat(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 		}
+		cache := dfa.NewCache()
 
-		got := dfa.Find([]byte(tt.input))
+		got := dfa.Find(cache, []byte(tt.input))
 		if got != tt.wantPos {
 			t.Errorf("Find(%q, %q) = %d, want %d", tt.pattern, tt.input, got, tt.wantPos)
 		}
@@ -86,8 +88,9 @@ func TestLazyDFAAlternation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 		}
+		cache := dfa.NewCache()
 
-		got := dfa.Find([]byte(tt.input))
+		got := dfa.Find(cache, []byte(tt.input))
 		if got != tt.wantPos {
 			t.Errorf("Find(%q, %q) = %d, want %d", tt.pattern, tt.input, got, tt.wantPos)
 		}
@@ -114,8 +117,9 @@ func TestLazyDFACharClass(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 		}
+		cache := dfa.NewCache()
 
-		got := dfa.Find([]byte(tt.input))
+		got := dfa.Find(cache, []byte(tt.input))
 		if got != tt.wantPos {
 			t.Errorf("Find(%q, %q) = %d, want %d", tt.pattern, tt.input, got, tt.wantPos)
 		}
@@ -152,8 +156,9 @@ func TestLazyDFARepetition(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 			}
+			cache := dfa.NewCache()
 
-			got := dfa.Find([]byte(tt.input))
+			got := dfa.Find(cache, []byte(tt.input))
 			if got != tt.wantPos {
 				t.Errorf("Find(%q, %q) = %d, want %d", tt.pattern, tt.input, got, tt.wantPos)
 			}
@@ -181,8 +186,9 @@ func TestLazyDFAIsMatch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 		}
+		cache := dfa.NewCache()
 
-		got := dfa.IsMatch([]byte(tt.input))
+		got := dfa.IsMatch(cache, []byte(tt.input))
 		if got != tt.wantMatch {
 			t.Errorf("IsMatch(%q, %q) = %v, want %v", tt.pattern, tt.input, got, tt.wantMatch)
 		}
@@ -208,13 +214,14 @@ func TestLazyDFAEmptyInput(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 		}
+		cache := dfa.NewCache()
 
-		gotMatch := dfa.IsMatch([]byte{})
+		gotMatch := dfa.IsMatch(cache, []byte{})
 		if gotMatch != tt.wantMatch {
 			t.Errorf("IsMatch(%q, empty) = %v, want %v", tt.pattern, gotMatch, tt.wantMatch)
 		}
 
-		gotPos := dfa.Find([]byte{})
+		gotPos := dfa.Find(cache, []byte{})
 		if gotPos != tt.wantPos {
 			t.Errorf("Find(%q, empty) = %d, want %d", tt.pattern, gotPos, tt.wantPos)
 		}
@@ -236,15 +243,16 @@ func TestLazyDFACacheFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DFA compile error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// This should fill the cache and potentially trigger NFA fallback
 	input := []byte("aaaabbbbccccdddd")
-	pos := dfa.Find(input)
+	pos := dfa.Find(cache, input)
 	if pos == -1 {
 		t.Errorf("Find returned -1, want match")
 	}
 
-	size, capacity, _, _, _ := dfa.CacheStats() //nolint:dogsled // Testing cache size and capacity only
+	size, capacity, _, _, _ := dfa.CacheStats(cache) //nolint:dogsled // Testing cache size and capacity only
 	t.Logf("Cache after search: size=%d, capacity=%d", size, capacity)
 
 	// Verify cache is close to or at capacity
@@ -272,10 +280,11 @@ func TestCacheClearAndContinue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DFA compile error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// Search should succeed even with a tiny cache by clearing and rebuilding
 	input := []byte("aaaabbbbccccdddd")
-	pos := dfa.Find(input)
+	pos := dfa.Find(cache, input)
 	if pos == -1 {
 		t.Errorf("Find returned -1, want match")
 	}
@@ -284,8 +293,8 @@ func TestCacheClearAndContinue(t *testing.T) {
 	}
 
 	// The cache should have been cleared at least once
-	clearCount := dfa.cache.ClearCount()
-	t.Logf("Cache clears: %d, final size: %d", clearCount, dfa.cache.Size())
+	clearCount := cache.ClearCount()
+	t.Logf("Cache clears: %d, final size: %d", clearCount, cache.Size())
 }
 
 // TestCacheClearAndContinueIsMatch tests cache clearing with the IsMatch method.
@@ -302,14 +311,15 @@ func TestCacheClearAndContinueIsMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DFA compile error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// IsMatch should return true even with cache clearing
-	if !dfa.IsMatch([]byte("aaaabbbbccccdddd")) {
+	if !dfa.IsMatch(cache, []byte("aaaabbbbccccdddd")) {
 		t.Error("IsMatch returned false, want true")
 	}
 
 	// No match should also work correctly
-	if dfa.IsMatch([]byte("aaaabbbbeeeedddd")) {
+	if dfa.IsMatch(cache, []byte("aaaabbbbeeeedddd")) {
 		t.Error("IsMatch returned true for non-matching input, want false")
 	}
 }
@@ -330,10 +340,11 @@ func TestCacheClearMaxClearsExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DFA compile error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// Should still find the match (via NFA fallback after max clears exceeded)
 	input := []byte("aaaabbbbccccdddd")
-	pos := dfa.Find(input)
+	pos := dfa.Find(cache, input)
 	if pos == -1 {
 		t.Errorf("Find returned -1, want match (NFA fallback should work)")
 	}
@@ -354,17 +365,18 @@ func TestCacheClearDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DFA compile error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// Should still find the match (via NFA fallback)
 	input := []byte("aaaabbbbccccdddd")
-	pos := dfa.Find(input)
+	pos := dfa.Find(cache, input)
 	if pos == -1 {
 		t.Errorf("Find returned -1, want match (NFA fallback should work)")
 	}
 
 	// Cache should have 0 clears (disabled)
-	if dfa.cache.ClearCount() != 0 {
-		t.Errorf("Expected 0 cache clears with MaxCacheClears=0, got %d", dfa.cache.ClearCount())
+	if cache.ClearCount() != 0 {
+		t.Errorf("Expected 0 cache clears with MaxCacheClears=0, got %d", cache.ClearCount())
 	}
 }
 
@@ -400,13 +412,14 @@ func TestCacheClearCorrectnessVsStdlib(t *testing.T) {
 			if err != nil {
 				t.Fatalf("DFA compile error: %v", err)
 			}
+			cache := dfa.NewCache()
 
 			// Compare with stdlib
 			re := regexp.MustCompile(pattern)
 
 			for _, input := range inputs {
 				// IsMatch
-				dfaMatch := dfa.IsMatch([]byte(input))
+				dfaMatch := dfa.IsMatch(cache, []byte(input))
 				stdlibMatch := re.MatchString(input)
 				if dfaMatch != stdlibMatch {
 					t.Errorf("IsMatch(%q, %q): DFA=%v, stdlib=%v",
@@ -432,14 +445,15 @@ func TestCacheClearCountReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DFA compile error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// Run a search that will trigger cache clears
-	dfa.Find([]byte("aaabbccddd"))
+	dfa.Find(cache, []byte("aaabbccddd"))
 
 	// ResetCache should reset the clear count
-	dfa.ResetCache()
-	if dfa.cache.ClearCount() != 0 {
-		t.Errorf("Expected clear count 0 after ResetCache, got %d", dfa.cache.ClearCount())
+	dfa.ResetCache(cache)
+	if cache.ClearCount() != 0 {
+		t.Errorf("Expected clear count 0 after ResetCache, got %d", cache.ClearCount())
 	}
 }
 
@@ -471,6 +485,7 @@ func TestLazyDFAVsStdlib(t *testing.T) {
 				t.Skipf("Pattern %q not supported by lazy DFA: %v", pattern, err)
 				return
 			}
+			cache := dfa.NewCache()
 
 			// Compile with stdlib
 			re, err := regexp.Compile(pattern)
@@ -480,7 +495,7 @@ func TestLazyDFAVsStdlib(t *testing.T) {
 
 			for _, input := range inputs {
 				// Test Find
-				dfaPos := dfa.Find([]byte(input))
+				dfaPos := dfa.Find(cache, []byte(input))
 				stdlibLoc := re.FindStringIndex(input)
 
 				var stdlibPos int
@@ -505,7 +520,7 @@ func TestLazyDFAVsStdlib(t *testing.T) {
 				}
 
 				// Test IsMatch
-				dfaMatch := dfa.IsMatch([]byte(input))
+				dfaMatch := dfa.IsMatch(cache, []byte(input))
 				stdlibMatch := re.MatchString(input)
 				if dfaMatch != stdlibMatch {
 					t.Errorf("IsMatch(%q, %q): DFA=%v, stdlib=%v", pattern, input, dfaMatch, stdlibMatch)
@@ -524,29 +539,31 @@ func TestLazyDFAThreadSafety(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompilePattern error: %v", err)
 	}
+	cache1 := dfa1.NewCache()
 
 	dfa2, err := CompilePattern("bar")
 	if err != nil {
 		t.Fatalf("CompilePattern error: %v", err)
 	}
+	cache2 := dfa2.NewCache()
 
 	input := []byte("foo bar foo bar")
 
 	// Search with dfa1
-	pos1 := dfa1.Find(input)
+	pos1 := dfa1.Find(cache1, input)
 	if pos1 != 3 { // "foo" ends at position 3
 		t.Errorf("dfa1.Find = %d, want 3", pos1)
 	}
 
 	// Search with dfa2
-	pos2 := dfa2.Find(input)
+	pos2 := dfa2.Find(cache2, input)
 	if pos2 != 7 { // "bar" ends at position 7
 		t.Errorf("dfa2.Find = %d, want 7", pos2)
 	}
 
 	// Verify caches are independent
-	size1, _, _, _, _ := dfa1.CacheStats() //nolint:dogsled // Testing cache size only
-	size2, _, _, _, _ := dfa2.CacheStats() //nolint:dogsled // Testing cache size only
+	size1, _, _, _, _ := dfa1.CacheStats(cache1) //nolint:dogsled // Testing cache size only
+	size2, _, _, _, _ := dfa2.CacheStats(cache2) //nolint:dogsled // Testing cache size only
 	if size1 == size2 {
 		t.Logf("Warning: Both caches have same size (%d), may indicate shared state", size1)
 	}
@@ -593,11 +610,12 @@ func BenchmarkLazyDFASimpleLiteral(t *testing.B) {
 	t.ReportAllocs()
 
 	dfa, _ := CompilePattern("hello")
+	cache := dfa.NewCache()
 	input := []byte("say hello world hello there")
 
 	t.ResetTimer()
 	for i := 0; i < t.N; i++ {
-		_ = dfa.Find(input)
+		_ = dfa.Find(cache, input)
 	}
 }
 
@@ -606,11 +624,12 @@ func BenchmarkLazyDFAAlternation(t *testing.B) {
 	t.ReportAllocs()
 
 	dfa, _ := CompilePattern("foo|bar|baz")
+	cache := dfa.NewCache()
 	input := []byte("test foo test bar test baz repeat")
 
 	t.ResetTimer()
 	for i := 0; i < t.N; i++ {
-		_ = dfa.Find(input)
+		_ = dfa.Find(cache, input)
 	}
 }
 
@@ -619,11 +638,12 @@ func BenchmarkLazyDFARepetition(t *testing.B) {
 	t.ReportAllocs()
 
 	dfa, _ := CompilePattern("a+b+c+")
+	cache := dfa.NewCache()
 	input := []byte("xyzaaabbbbccccdef")
 
 	t.ResetTimer()
 	for i := 0; i < t.N; i++ {
-		_ = dfa.Find(input)
+		_ = dfa.Find(cache, input)
 	}
 }
 
@@ -674,6 +694,7 @@ func TestByteClassesIntegration(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 			}
+			cache := dfa.NewCache()
 
 			// Verify ByteClasses is available
 			bc := dfa.ByteClasses()
@@ -706,7 +727,7 @@ func TestByteClassesIntegration(t *testing.T) {
 			// Verify DFA still works correctly with ByteClasses
 			// This ensures the integration doesn't break matching
 			input := []byte("test abc 123 xyz")
-			if got := dfa.Find(input); got < 0 {
+			if got := dfa.Find(cache, input); got < 0 {
 				t.Errorf("Find() = %d, expected match for pattern %q", got, tt.pattern)
 			}
 		})
@@ -719,6 +740,7 @@ func TestByteClassesLiteralPattern(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompilePattern error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	bc := dfa.ByteClasses()
 	if bc == nil {
@@ -733,7 +755,7 @@ func TestByteClassesLiteralPattern(t *testing.T) {
 	}
 
 	// Verify matching still works
-	if got := dfa.Find([]byte("say hello")); got != 9 {
+	if got := dfa.Find(cache, []byte("say hello")); got != 9 {
 		t.Errorf("Find() = %d, want 9", got)
 	}
 }
@@ -773,8 +795,9 @@ func TestIssue15_CaptureGroupIsMatch(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 			}
+			cache := dfa.NewCache()
 
-			got := dfa.IsMatch([]byte(tt.input))
+			got := dfa.IsMatch(cache, []byte(tt.input))
 			if got != stdWant {
 				t.Errorf("IsMatch(%q, %q) = %v, stdlib says %v", tt.pattern, tt.input, got, stdWant)
 			}

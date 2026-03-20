@@ -178,10 +178,11 @@ func TestWordBoundaryDFACorrectness(t *testing.T) {
 				t.Skipf("Pattern %q not supported: %v", tt.pattern, err)
 				return
 			}
+			cache := dfa.NewCache()
 
 			re := regexp.MustCompile(tt.pattern)
 			stdlibMatch := re.MatchString(tt.input)
-			dfaMatch := dfa.IsMatch([]byte(tt.input))
+			dfaMatch := dfa.IsMatch(cache, []byte(tt.input))
 
 			if dfaMatch != stdlibMatch {
 				t.Errorf("IsMatch(%q, %q): DFA=%v, stdlib=%v", tt.pattern, tt.input, dfaMatch, stdlibMatch)

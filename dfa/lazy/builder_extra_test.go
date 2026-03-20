@@ -264,6 +264,7 @@ func TestCompilePatternEdgeCases(t *testing.T) {
 				if dfa == nil {
 					t.Error("CompilePattern returned nil DFA without error")
 				}
+				_ = dfa.NewCache() // verify NewCache works
 			} else if err == nil {
 				t.Errorf("CompilePattern(%q) expected error, got nil", tt.pattern)
 			}
@@ -323,10 +324,11 @@ func TestCompileWithConfigCombinations(t *testing.T) {
 				if err != nil {
 					t.Fatalf("CompileWithConfig error: %v", err)
 				}
+				cache := dfa.NewCache()
 
 				// Verify DFA works
 				input := []byte("abc123")
-				got := dfa.IsMatch(input)
+				got := dfa.IsMatch(cache, input)
 				re := regexp.MustCompile(`[a-z]+\d+`)
 				want := re.Match(input)
 				if got != want {
@@ -435,6 +437,7 @@ func TestDFAIsAlwaysAnchoredField(t *testing.T) {
 			if err != nil {
 				t.Fatalf("DFA compile error: %v", err)
 			}
+			cache := dfa.NewCache()
 
 			// Verify consistency: isAlwaysAnchored matches NFA's IsAlwaysAnchored
 			if dfa.isAlwaysAnchored != nfaObj.IsAlwaysAnchored() {
@@ -445,7 +448,7 @@ func TestDFAIsAlwaysAnchoredField(t *testing.T) {
 			// If always anchored, verify FindAt from non-zero position returns -1
 			if dfa.isAlwaysAnchored {
 				input := []byte("hello world")
-				got := dfa.FindAt(input, 5)
+				got := dfa.FindAt(cache, input, 5)
 				if got != -1 {
 					t.Errorf("Anchored FindAt from non-zero position should return -1, got %d", got)
 				}
@@ -476,11 +479,12 @@ func TestDFAWordBoundaryPatterns(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompilePattern(%q) error: %v", tt.pattern, err)
 			}
+			cache := dfa.NewCache()
 
 			re := regexp.MustCompile(tt.pattern)
 			stdlibMatch := re.MatchString(tt.input)
 
-			got := dfa.IsMatch([]byte(tt.input))
+			got := dfa.IsMatch(cache, []byte(tt.input))
 			if got != stdlibMatch {
 				t.Errorf("IsMatch(%q, %q) = %v, stdlib says %v",
 					tt.pattern, tt.input, got, stdlibMatch)
