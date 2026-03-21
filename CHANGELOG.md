@@ -12,6 +12,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.15] - 2026-03-21
+
+### Performance
+- **Per-goroutine DFA cache** (Rust approach) — split lazy DFA into immutable `DFA`
+  (shared across goroutines) + mutable `DFACache` (pooled via `sync.Pool`).
+  Eliminates all data races on concurrent `IsMatch`/`Find`/`FindSubmatch`.
+  Concurrent case-insensitive IsMatch: data race → **450 ns/op** (zero-contention).
+
+- **Pre-computed word boundary match flags** — `matchAtWordBoundary` /
+  `matchAtNonWordBoundary` flags computed during `determinize()`, replacing
+  per-byte `checkWordBoundaryMatch` (was 30% CPU). Word boundary check:
+  **30% → 0.3% CPU**.
+
+- **Aho-Corasick DFA prefilter for >64 literals** — for patterns exceeding
+  FatTeddy's 64-pattern limit, AC DFA provides zero false positives with
+  O(n) flat transition table scan. FatTeddy retained for 33-64 patterns.
+
+- **Integrated prefilter+DFA loop** (Rust approach) — replaced two-pass
+  `prefilter.Find → DFA.searchAnchored → repeat` with single DFA loop where
+  dead-state transitions trigger prefilter skip-ahead. Eliminates function call
+  overhead between passes.
+
+- **Eliminated double prefilter scan** — `isMatchDFA` called prefilter externally,
+  then `DFA.IsMatch` called it again internally. Removed redundant external call.
+
+- **Strategy DFA caches in SearchState** — reverse searchers (ReverseSuffix,
+  ReverseInner, etc.) had per-call `sync.Pool` access for DFA caches. Now
+  strategy-specific caches live in `SearchState`, eliminating N×pool.Get/Put
+  per FindAll iteration.
+
+### Fixed
+- **`.*` newline boundary** — ReverseSuffix/ReverseSuffixSet `matchStartZero`
+  path crossed `\n` boundaries. Pattern `.*@example.com` on multi-line input
+  matched from line 1 across newline into line 2. Fix: `lineStartBefore()`
+  constrains `.*` to single line (matching stdlib behavior).
+
+- **Teddy ignoring anchors** — `(?m)^(GET|POST|...)` selected UseTeddy which
+  doesn't verify `^` anchor, returning matches mid-line. Fix:
+  `hasAnchorAssertions()` prevents UseTeddy for anchored patterns.
+
+- **`(?m)^` multiline anchor in DFA** — DFA can't verify multiline line-start
+  assertions. Fix: `hasMultilineLineAnchor()` routes to UseNFA with prefilter
+  skip-ahead. `http_methods` on 6MB: 73ms (DFA) → 1.56ms (NFA+prefilter).
+
+- **`.*` FindAll with DFA cache clear** — `UseBoth` strategy caused incorrect
+  match positions when DFA cache cleared mid-FindAll for empty-matchable
+  patterns. Fix: `canMatchEmpty()` routes to UseNFA.
+
+- **Partial prefilter on `(?i)` alternation overflow** — literal extractor
+  truncated alternation branches on cross-product overflow (>250), producing
+  a partial prefilter that missed uncovered branches. Fix: return empty Seq
+  on overflow (Rust approach) — NFA handles all branches without prefilter.
+
+- **`expandCaseFoldLiteral` incomplete foldSets** — early exit on
+  CrossProductLimit left trailing nil entries in foldSets array.
+  `generateCaseFoldVariants` produced 0 results. Fix: track `filledCount`.
+
+- **Prefilter `IsComplete` with anchors** — prefilter marked `complete=true`
+  skipped anchor verification. Fix: `WrapIncomplete()` forces engine
+  verification when pattern has anchors.
+
+### Added
+- **Stdlib compatibility test** — 38 patterns (regex-bench + LangArena + edge
+  cases) compared against `regexp` for IsMatch, Find, FindAllIndex, Count.
+  Runs in CI on every PR. 38/38 PASS.
+
+### Refactored
+- `dfa/lazy/cache.go` — `Cache` renamed to `DFACache`, `sync.RWMutex` removed
+  (single-owner per goroutine, no locking needed).
+- `dfa/lazy/start.go` — `StartTable` moved into `DFACache` (mutable start states).
+- `meta/search_state.go` — `SearchState` carries `dfaCache`, `revDFACache`,
+  and strategy-specific caches (`stratFwdCache`, `stratRevCache`).
+- All DFA call sites in `meta/` updated to pass pooled cache (14+ call sites).
+- `prefilter/ahocorasick.go` — AC DFA prefilter for >64 patterns.
+- `prefilter/wrap.go` — `WrapIncomplete()` for anchor-aware prefilter gating.
+
 ## [0.12.14] - 2026-03-19
 
 ### Fixed

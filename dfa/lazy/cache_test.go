@@ -7,6 +7,19 @@ import (
 	"github.com/coregx/coregex/nfa"
 )
 
+// newTestCache creates a DFACache for testing without needing a DFA.
+func newTestCache(maxStates uint32) *DFACache {
+	var byteMap [256]StartKind
+	initByteMap(&byteMap)
+	return &DFACache{
+		states:     make(map[StateKey]*State, maxStates),
+		stateList:  make([]*State, 0, maxStates),
+		startTable: newStartTableFromByteMap(&byteMap),
+		maxStates:  maxStates,
+		nextID:     StartState + 1,
+	}
+}
+
 func TestNewCache(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -19,30 +32,30 @@ func TestNewCache(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := NewCache(tt.maxStates)
+			c := newTestCache(tt.maxStates)
 			if c == nil {
-				t.Fatal("NewCache returned nil")
+				t.Fatal("newTestCache returned nil")
 			}
 			if c.Size() != 0 {
-				t.Errorf("NewCache.Size() = %d, want 0", c.Size())
+				t.Errorf("newTestCache.Size() = %d, want 0", c.Size())
 			}
 			if c.IsFull() {
-				t.Error("NewCache should not be full")
+				t.Error("newTestCache should not be full")
 			}
 			if c.ClearCount() != 0 {
-				t.Errorf("NewCache.ClearCount() = %d, want 0", c.ClearCount())
+				t.Errorf("newTestCache.ClearCount() = %d, want 0", c.ClearCount())
 			}
 
 			hits, misses, hitRate := c.Stats()
 			if hits != 0 || misses != 0 || hitRate != 0 {
-				t.Errorf("NewCache.Stats() = (%d, %d, %f), want (0, 0, 0)", hits, misses, hitRate)
+				t.Errorf("newTestCache.Stats() = (%d, %d, %f), want (0, 0, 0)", hits, misses, hitRate)
 			}
 		})
 	}
 }
 
 func TestCacheInsertAndGet(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	// Create a state
 	nfaStates := []nfa.StateID{1, 2, 3}
@@ -74,7 +87,7 @@ func TestCacheInsertAndGet(t *testing.T) {
 }
 
 func TestCacheInsertDuplicate(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	nfaStates := []nfa.StateID{1, 2}
 	key := ComputeStateKey(nfaStates)
@@ -103,7 +116,7 @@ func TestCacheInsertDuplicate(t *testing.T) {
 }
 
 func TestCacheIsFull(t *testing.T) {
-	c := NewCache(3)
+	c := newTestCache(3)
 
 	// Insert up to capacity
 	for i := nfa.StateID(0); i < 3; i++ {
@@ -132,7 +145,7 @@ func TestCacheIsFull(t *testing.T) {
 }
 
 func TestCacheGetOrInsert(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	nfaStates := []nfa.StateID{5, 10}
 	key := ComputeStateKey(nfaStates)
@@ -165,7 +178,7 @@ func TestCacheGetOrInsert(t *testing.T) {
 }
 
 func TestCacheGetOrInsertFull(t *testing.T) {
-	c := NewCache(1)
+	c := newTestCache(1)
 
 	// Fill the cache
 	nfaStates := []nfa.StateID{1}
@@ -187,7 +200,7 @@ func TestCacheGetOrInsertFull(t *testing.T) {
 }
 
 func TestCacheGetNotFound(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	key := ComputeStateKey([]nfa.StateID{42})
 	got, ok := c.Get(key)
@@ -200,7 +213,7 @@ func TestCacheGetNotFound(t *testing.T) {
 }
 
 func TestCacheStats(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	// After some operations, stats should be tracked
 	nfaStates := []nfa.StateID{1}
@@ -225,7 +238,7 @@ func TestCacheStats(t *testing.T) {
 }
 
 func TestCacheResetStats(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	// Generate some stats
 	nfaStates := []nfa.StateID{1}
@@ -244,7 +257,7 @@ func TestCacheResetStats(t *testing.T) {
 }
 
 func TestCacheClear(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	// Insert some states
 	for i := nfa.StateID(0); i < 5; i++ {
@@ -275,7 +288,7 @@ func TestCacheClear(t *testing.T) {
 }
 
 func TestCacheClearKeepMemory(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	// Insert some states
 	for i := nfa.StateID(0); i < 5; i++ {
@@ -311,7 +324,7 @@ func TestCacheClearKeepMemory(t *testing.T) {
 }
 
 func TestCacheClearKeepMemoryMultiple(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	// Multiple clears should increment counter
 	c.ClearKeepMemory()
@@ -324,7 +337,7 @@ func TestCacheClearKeepMemoryMultiple(t *testing.T) {
 }
 
 func TestCacheResetClearCount(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	// Increment clear count
 	c.ClearKeepMemory()
@@ -342,7 +355,7 @@ func TestCacheResetClearCount(t *testing.T) {
 
 func TestCacheCapacityBoundary(t *testing.T) {
 	// Test with capacity of 1
-	c := NewCache(1)
+	c := newTestCache(1)
 
 	nfaStates := []nfa.StateID{1}
 	key := ComputeStateKey(nfaStates)
@@ -369,7 +382,7 @@ func TestCacheCapacityBoundary(t *testing.T) {
 }
 
 func TestCacheStatsHitRate(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	// Insert a state
 	nfaStates := []nfa.StateID{1}
@@ -391,7 +404,7 @@ func TestCacheStatsHitRate(t *testing.T) {
 }
 
 func TestCacheStateIDAssignment(t *testing.T) {
-	c := NewCache(100)
+	c := newTestCache(100)
 
 	// Insert multiple states and verify IDs are sequential
 	var ids []StateID

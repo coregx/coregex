@@ -6,7 +6,9 @@ package meta
 // See docs/OPTIMIZATIONS.md for algorithm details and benchmark data.
 
 import (
+	"bytes"
 	"errors"
+	"sync"
 
 	"github.com/coregx/coregex/dfa/lazy"
 	"github.com/coregx/coregex/literal"
@@ -47,6 +49,7 @@ type ReverseSuffixSetSearcher struct {
 	pikevm         *nfa.PikeVM
 	suffixLiterals *literal.Seq // All suffix literals
 	matchStartZero bool         // True if pattern starts with .* (match always starts at 0)
+	revCachePool   sync.Pool
 }
 
 // NewReverseSuffixSetSearcher creates a reverse suffix set searcher.
@@ -106,7 +109,7 @@ func NewReverseSuffixSetSearcher(
 
 	// matchStartZero is true only when pattern has .* prefix (e.g., `.*\.(txt|log|md)`).
 	// Only OpStar(AnyChar) guarantees match starts at 0/at — skip reverse DFA.
-	return &ReverseSuffixSetSearcher{
+	s := &ReverseSuffixSetSearcher{
 		forwardNFA:     forwardNFA,
 		reverseNFA:     reverseNFA,
 		reverseDFA:     reverseDFA,
@@ -115,7 +118,11 @@ func NewReverseSuffixSetSearcher(
 		pikevm:         pikevm,
 		suffixLiterals: suffixLiterals,
 		matchStartZero: matchStartZero,
-	}, nil
+	}
+	s.revCachePool = sync.Pool{
+		New: func() any { return s.reverseDFA.NewCache() },
+	}
+	return s, nil
 }
 
 // Find searches using Teddy suffix prefilter + reverse DFA.
@@ -128,6 +135,10 @@ func (s *ReverseSuffixSetSearcher) Find(haystack []byte) *Match {
 	if len(haystack) == 0 {
 		return nil
 	}
+
+	// Acquire cache once for the entire candidate loop
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
 
 	// For greedy matching, find the LAST suffix candidate
 	// We scan forward and keep track of the last valid match
@@ -154,12 +165,14 @@ func (s *ReverseSuffixSetSearcher) Find(haystack []byte) *Match {
 			suffixEnd = len(haystack)
 		}
 
-		// For unanchored patterns, match starts at 0
+		// For unanchored patterns, .* cannot cross \n boundaries.
+		// Match starts at the beginning of the line containing the suffix.
 		if s.matchStartZero {
-			lastMatch = NewMatch(0, suffixEnd, haystack)
+			matchStart := lineStartBefore(haystack, 0, pos)
+			lastMatch = NewMatch(matchStart, suffixEnd, haystack)
 		} else {
 			// Use reverse DFA with anti-quadratic guard to find match start
-			matchStart := s.reverseDFA.SearchReverseLimited(haystack, 0, suffixEnd, minStart)
+			matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, 0, suffixEnd, minStart)
 			if matchStart == lazy.SearchReverseLimitedQuadratic {
 				// Quadratic behavior detected - fall back to PikeVM
 				pStart, pEnd, found := s.pikevm.Search(haystack)
@@ -193,6 +206,10 @@ func (s *ReverseSuffixSetSearcher) FindAt(haystack []byte, at int) *Match {
 		return nil
 	}
 
+	// Acquire cache once for the entire candidate loop
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
+
 	searchStart := at
 	minStart := at // Anti-quadratic guard
 	for {
@@ -217,13 +234,41 @@ func (s *ReverseSuffixSetSearcher) FindAt(haystack []byte, at int) *Match {
 			suffixEnd = len(haystack)
 		}
 
-		// For unanchored patterns, match starts at 'at'
+		// For unanchored patterns, .* cannot cross \n boundaries.
+		// Match starts at the beginning of the line containing the suffix.
+		// For greedy semantics, find the LAST suffix on this line.
 		if s.matchStartZero {
-			return NewMatch(at, suffixEnd, haystack)
+			matchStart := lineStartBefore(haystack, at, pos)
+			// Find line end
+			lineEndRel := bytes.IndexByte(haystack[pos:], '\n')
+			var lineEnd int
+			if lineEndRel == -1 {
+				lineEnd = len(haystack)
+			} else {
+				lineEnd = pos + lineEndRel
+			}
+			// Scan line for the last valid suffix candidate
+			lastSuffixEnd := suffixEnd
+			scan := pos + 1
+			for scan < lineEnd {
+				nextPos := s.prefilter.Find(haystack, scan)
+				if nextPos == -1 || nextPos >= lineEnd {
+					break
+				}
+				nextLen := s.getSuffixLen(haystack, nextPos)
+				if nextLen > 0 {
+					nextEnd := nextPos + nextLen
+					if nextEnd <= lineEnd {
+						lastSuffixEnd = nextEnd
+					}
+				}
+				scan = nextPos + 1
+			}
+			return NewMatch(matchStart, lastSuffixEnd, haystack)
 		}
 
 		// Use reverse DFA with anti-quadratic guard to find match start
-		matchStart := s.reverseDFA.SearchReverseLimited(haystack, at, suffixEnd, minStart)
+		matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, at, suffixEnd, minStart)
 		if matchStart >= 0 {
 			return NewMatch(matchStart, suffixEnd, haystack)
 		}
@@ -251,6 +296,23 @@ func (s *ReverseSuffixSetSearcher) FindAt(haystack []byte, at int) *Match {
 // FindIndicesAt returns match indices - zero allocation version.
 // Includes anti-quadratic guard to prevent O(n^2) behavior with many suffix false positives.
 func (s *ReverseSuffixSetSearcher) FindIndicesAt(haystack []byte, at int) (start, end int, found bool) {
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
+	return s.findIndicesAtImpl(haystack, at, revCache)
+}
+
+// FindIndicesAtWithCaches is like FindIndicesAt but uses an externally provided cache
+// instead of pool.Get/Put. This eliminates per-call pool overhead in FindAll loops
+// where the caller already holds a cache for the entire iteration.
+func (s *ReverseSuffixSetSearcher) FindIndicesAtWithCaches(haystack []byte, at int, revCache *lazy.DFACache) (start, end int, found bool) {
+	if revCache == nil {
+		return s.FindIndicesAt(haystack, at)
+	}
+	return s.findIndicesAtImpl(haystack, at, revCache)
+}
+
+// findIndicesAtImpl is the shared implementation for FindIndicesAt and FindIndicesAtWithCaches.
+func (s *ReverseSuffixSetSearcher) findIndicesAtImpl(haystack []byte, at int, revCache *lazy.DFACache) (start, end int, found bool) {
 	if at >= len(haystack) {
 		return -1, -1, false
 	}
@@ -279,13 +341,39 @@ func (s *ReverseSuffixSetSearcher) FindIndicesAt(haystack []byte, at int) (start
 			suffixEnd = len(haystack)
 		}
 
-		// For unanchored patterns, match starts at 'at'
+		// For unanchored patterns, .* cannot cross \n boundaries.
+		// Match starts at the beginning of the line containing the suffix.
+		// For greedy semantics, find the LAST suffix on this line.
 		if s.matchStartZero {
-			return at, suffixEnd, true
+			matchStart := lineStartBefore(haystack, at, pos)
+			lineEndRel := bytes.IndexByte(haystack[pos:], '\n')
+			var lineEnd int
+			if lineEndRel == -1 {
+				lineEnd = len(haystack)
+			} else {
+				lineEnd = pos + lineEndRel
+			}
+			lastSuffixEnd := suffixEnd
+			scan := pos + 1
+			for scan < lineEnd {
+				nextPos := s.prefilter.Find(haystack, scan)
+				if nextPos == -1 || nextPos >= lineEnd {
+					break
+				}
+				nextLen := s.getSuffixLen(haystack, nextPos)
+				if nextLen > 0 {
+					nextEnd := nextPos + nextLen
+					if nextEnd <= lineEnd {
+						lastSuffixEnd = nextEnd
+					}
+				}
+				scan = nextPos + 1
+			}
+			return matchStart, lastSuffixEnd, true
 		}
 
 		// Use reverse DFA with anti-quadratic guard to find match start
-		matchStart := s.reverseDFA.SearchReverseLimited(haystack, at, suffixEnd, minStart)
+		matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, at, suffixEnd, minStart)
 		if matchStart >= 0 {
 			return matchStart, suffixEnd, true
 		}
@@ -313,6 +401,10 @@ func (s *ReverseSuffixSetSearcher) IsMatch(haystack []byte) bool {
 		return false
 	}
 
+	// Acquire cache once for the entire candidate loop
+	revCache := s.revCachePool.Get().(*lazy.DFACache)
+	defer s.revCachePool.Put(revCache)
+
 	start := 0
 	minStart := 0 // Anti-quadratic guard for reverse scans
 	for {
@@ -336,7 +428,7 @@ func (s *ReverseSuffixSetSearcher) IsMatch(haystack []byte) bool {
 		}
 
 		// Use reverse DFA with anti-quadratic guard to check if pattern matches
-		revResult := s.reverseDFA.SearchReverseLimited(haystack, 0, revEnd, minStart)
+		revResult := s.reverseDFA.SearchReverseLimited(revCache, haystack, 0, revEnd, minStart)
 		if revResult >= 0 {
 			return true
 		}

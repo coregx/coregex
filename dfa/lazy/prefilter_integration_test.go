@@ -9,7 +9,7 @@ import (
 )
 
 // buildDFAWithPrefilter creates a DFA with a prefilter from a single literal prefix.
-func buildDFAWithPrefilter(t *testing.T, pattern string, prefix string) *DFA {
+func buildDFAWithPrefilter(t *testing.T, pattern string, prefix string) (*DFA, *DFACache) {
 	t.Helper()
 	compiler := nfa.NewDefaultCompiler()
 	nfaObj, err := compiler.Compile(pattern)
@@ -28,7 +28,8 @@ func buildDFAWithPrefilter(t *testing.T, pattern string, prefix string) *DFA {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
-	return dfa
+	cache := dfa.NewCache()
+	return dfa, cache
 }
 
 func TestIsMatchWithPrefilterComplete(t *testing.T) {
@@ -50,6 +51,7 @@ func TestIsMatchWithPrefilterComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	tests := []struct {
 		name  string
@@ -65,7 +67,7 @@ func TestIsMatchWithPrefilterComplete(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dfa.IsMatch([]byte(tt.input))
+			got := dfa.IsMatch(cache, []byte(tt.input))
 			if got != tt.want {
 				t.Errorf("IsMatch(%q) with complete prefilter = %v, want %v", tt.input, got, tt.want)
 			}
@@ -92,6 +94,7 @@ func TestIsMatchWithPrefilterIncomplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	tests := []struct {
 		name  string
@@ -106,7 +109,7 @@ func TestIsMatchWithPrefilterIncomplete(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dfa.IsMatch([]byte(tt.input))
+			got := dfa.IsMatch(cache, []byte(tt.input))
 			if got != tt.want {
 				t.Errorf("IsMatch(%q) with incomplete prefilter = %v, want %v", tt.input, got, tt.want)
 			}
@@ -116,7 +119,7 @@ func TestIsMatchWithPrefilterIncomplete(t *testing.T) {
 
 func TestFindWithPrefilterComplete(t *testing.T) {
 	// Complete prefilter: Find returns prefilter position directly
-	dfa := buildDFAWithPrefilter(t, "hello", "hello")
+	dfa, cache := buildDFAWithPrefilter(t, "hello", "hello")
 
 	tests := []struct {
 		name  string
@@ -131,7 +134,7 @@ func TestFindWithPrefilterComplete(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dfa.Find([]byte(tt.input))
+			got := dfa.Find(cache, []byte(tt.input))
 			// Find returns end position, but with complete prefilter it returns prefilter.Find
 			// which returns start position of the needle
 			if tt.want == -1 && got != -1 {
@@ -162,6 +165,7 @@ func TestFindWithPrefilterIncomplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	tests := []struct {
 		name      string
@@ -176,7 +180,7 @@ func TestFindWithPrefilterIncomplete(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dfa.Find([]byte(tt.input))
+			got := dfa.Find(cache, []byte(tt.input))
 			gotMatch := got != -1
 			if gotMatch != tt.wantMatch {
 				t.Errorf("Find(%q) match = %v (pos=%d), want match = %v",
@@ -204,17 +208,18 @@ func TestFindWithPrefilterMultipleCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// Multiple 'a' positions but only one leads to full match
 	input := []byte("ax ay az ab123 end")
-	got := dfa.Find(input)
+	got := dfa.Find(cache, input)
 	if got == -1 {
 		t.Error("Find should match 'ab123'")
 	}
 
 	// No full match among candidates
 	input2 := []byte("ax ay az")
-	got2 := dfa.Find(input2)
+	got2 := dfa.Find(cache, input2)
 	if got2 != -1 {
 		t.Errorf("Find should return -1 for no full match, got %d", got2)
 	}
@@ -226,16 +231,17 @@ func TestDFAWithPrefilterNoPrefilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompilePattern error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// IsMatch and Find should work without prefilter
-	if !dfa.IsMatch([]byte("hello world")) {
+	if !dfa.IsMatch(cache, []byte("hello world")) {
 		t.Error("IsMatch should be true")
 	}
-	if dfa.IsMatch([]byte("goodbye")) {
+	if dfa.IsMatch(cache, []byte("goodbye")) {
 		t.Error("IsMatch should be false")
 	}
 
-	got := dfa.Find([]byte("say hello"))
+	got := dfa.Find(cache, []byte("say hello"))
 	if got == -1 {
 		t.Error("Find should match")
 	}

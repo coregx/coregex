@@ -281,16 +281,18 @@ func selectPrefilter(prefixes, suffixes *literal.Seq) Prefilter {
 		return newMemmemPrefilter(lit.Bytes, lit.Complete)
 	}
 
-	// Multiple literals: use Teddy if suitable
-	if seq.Len() >= 2 && seq.Len() <= MaxTeddyPatterns && minLen(seq) >= 3 {
-		// Teddy is effective for 2-32 literals of length >= 3
-		// Provides 20-50x speedup using SSSE3 SIMD instructions
-		return newTeddyFromSeq(seq)
+	// Multiple literals: choose Teddy or Aho-Corasick based on count
+	ml := minLen(seq)
+	if seq.Len() >= 2 && ml >= 3 {
+		if seq.Len() <= MaxTeddyPatterns {
+			// 2-64 patterns: Teddy (Slim ≤32 SSSE3, Fat 33-64 AVX2)
+			return newTeddyFromSeq(seq)
+		}
+		// >64 patterns: Aho-Corasick DFA (zero false positives, O(n) scan).
+		return newACPrefilter(seq)
 	}
 
-	// Many literals or short literals
-	// TODO: implement Aho-Corasick (Phase 3)
-	// Aho-Corasick handles many patterns efficiently via automaton
+	// Short literals or other cases without effective prefilter
 	return nil
 }
 
@@ -325,13 +327,12 @@ func WouldBeFast(prefixes *literal.Seq) bool {
 		return true
 	}
 
-	// Multiple literals: Teddy is fast when minLen >= 3
-	if prefixes.Len() >= 2 && prefixes.Len() <= MaxTeddyPatterns {
+	// Multiple literals: Teddy and AC are fast when minLen >= 3
+	if prefixes.Len() >= 2 {
 		ml := minLen(prefixes)
 		return ml >= 3
 	}
 
-	// >64 patterns would use Aho-Corasick, which is not considered fast
 	return false
 }
 

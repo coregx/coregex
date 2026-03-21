@@ -3,6 +3,7 @@ package meta
 import (
 	"bytes"
 	"errors"
+	"sync"
 
 	"github.com/coregx/coregex/dfa/lazy"
 	"github.com/coregx/coregex/literal"
@@ -37,10 +38,11 @@ var ErrNoMultilinePrefilter = errors.New("no prefilter available for multiline s
 //   - Slow path: O(n) with DFA overhead
 //   - Expected speedup: 50-100x for simple patterns like `(?m)^/.*\.php`
 type MultilineReverseSuffixSearcher struct {
-	prefilter   prefilter.Prefilter
-	prefixBytes []byte    // Prefix literal for fast verification (nil = use DFA)
-	suffixLen   int       // Length of the suffix literal
-	forwardDFA  *lazy.DFA // Fallback DFA for complex patterns
+	prefilter    prefilter.Prefilter
+	prefixBytes  []byte    // Prefix literal for fast verification (nil = use DFA)
+	suffixLen    int       // Length of the suffix literal
+	forwardDFA   *lazy.DFA // Fallback DFA for complex patterns
+	fwdCachePool sync.Pool
 }
 
 // NewMultilineReverseSuffixSearcher creates a multiline-aware suffix searcher.
@@ -85,12 +87,16 @@ func NewMultilineReverseSuffixSearcher(
 		return nil, err
 	}
 
-	return &MultilineReverseSuffixSearcher{
+	s := &MultilineReverseSuffixSearcher{
 		prefilter:   pre,
 		prefixBytes: nil, // Will be set by SetPrefixLiterals if applicable
 		forwardDFA:  forwardDFA,
 		suffixLen:   suffixLen,
-	}, nil
+	}
+	s.fwdCachePool = sync.Pool{
+		New: func() any { return s.forwardDFA.NewCache() },
+	}
+	return s, nil
 }
 
 // SetPrefixLiterals enables fast path verification using prefix literals.
@@ -179,7 +185,9 @@ func (s *MultilineReverseSuffixSearcher) Find(haystack []byte) *Match {
 			pos = suffixPos + nextLine + 1
 		} else {
 			// Slow path: use DFA for complex pattern verification
-			end := s.forwardDFA.SearchAtAnchored(haystack, lineStart)
+			fwdCache := s.fwdCachePool.Get().(*lazy.DFACache)
+			end := s.forwardDFA.SearchAtAnchored(fwdCache, haystack, lineStart)
+			s.fwdCachePool.Put(fwdCache)
 			if end >= 0 {
 				return NewMatch(lineStart, end, haystack)
 			}
@@ -233,7 +241,9 @@ func (s *MultilineReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match 
 			pos = suffixPos + nextLine + 1
 		} else {
 			// Slow path: use DFA
-			end := s.forwardDFA.SearchAtAnchored(haystack, lineStart)
+			fwdCache := s.fwdCachePool.Get().(*lazy.DFACache)
+			end := s.forwardDFA.SearchAtAnchored(fwdCache, haystack, lineStart)
+			s.fwdCachePool.Put(fwdCache)
 			if end >= 0 {
 				return NewMatch(lineStart, end, haystack)
 			}
@@ -249,11 +259,66 @@ func (s *MultilineReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match 
 
 // FindIndicesAt returns match indices starting from position 'at' - zero allocation version.
 func (s *MultilineReverseSuffixSearcher) FindIndicesAt(haystack []byte, at int) (start, end int, found bool) {
-	match := s.FindAt(haystack, at)
-	if match == nil {
+	fwdCache := s.fwdCachePool.Get().(*lazy.DFACache)
+	defer s.fwdCachePool.Put(fwdCache)
+	return s.findIndicesAtImpl(haystack, at, fwdCache)
+}
+
+// FindIndicesAtWithCaches is like FindIndicesAt but uses an externally provided cache
+// instead of pool.Get/Put. This eliminates per-call pool overhead in FindAll loops
+// where the caller already holds a cache for the entire iteration.
+func (s *MultilineReverseSuffixSearcher) FindIndicesAtWithCaches(haystack []byte, at int, fwdCache *lazy.DFACache) (start, end int, found bool) {
+	if fwdCache == nil {
+		return s.FindIndicesAt(haystack, at)
+	}
+	return s.findIndicesAtImpl(haystack, at, fwdCache)
+}
+
+// findIndicesAtImpl is the shared implementation for FindIndicesAt and FindIndicesAtWithCaches.
+func (s *MultilineReverseSuffixSearcher) findIndicesAtImpl(haystack []byte, at int, fwdCache *lazy.DFACache) (start, end int, found bool) {
+	if at >= len(haystack) {
 		return -1, -1, false
 	}
-	return match.start, match.end, true
+
+	pos := at
+	for {
+		// Find next suffix candidate starting from pos
+		suffixPos := s.prefilter.Find(haystack, pos)
+		if suffixPos == -1 {
+			return -1, -1, false
+		}
+
+		// Find line start (but not before 'at' for FindAt semantics)
+		lineStart := findLineStart(haystack, suffixPos)
+		if lineStart < at {
+			lineStart = at
+		}
+
+		// Fast path: simple prefix verification
+		if len(s.prefixBytes) > 0 {
+			if s.verifyPrefix(haystack, lineStart) {
+				return lineStart, suffixPos + s.suffixLen, true
+			}
+			// Prefix doesn't match - skip to next line
+			nextLine := bytes.IndexByte(haystack[suffixPos:], '\n')
+			if nextLine == -1 {
+				return -1, -1, false
+			}
+			pos = suffixPos + nextLine + 1
+		} else {
+			// Slow path: use DFA
+			endPos := s.forwardDFA.SearchAtAnchored(fwdCache, haystack, lineStart)
+			if endPos >= 0 {
+				return lineStart, endPos, true
+			}
+			// Move past this suffix candidate
+			pos = suffixPos + 1
+		}
+
+		if pos >= len(haystack) {
+			return -1, -1, false
+		}
+	}
 }
 
 // IsMatch checks if the pattern matches using suffix prefilter + line-aware verification.
@@ -297,7 +362,10 @@ func (s *MultilineReverseSuffixSearcher) IsMatch(haystack []byte) bool {
 			pos = suffixPos + nextLine + 1
 		} else {
 			// Slow path: use DFA
-			if s.forwardDFA.SearchAtAnchored(haystack, lineStart) >= 0 {
+			fwdCache := s.fwdCachePool.Get().(*lazy.DFACache)
+			matched := s.forwardDFA.SearchAtAnchored(fwdCache, haystack, lineStart) >= 0
+			s.fwdCachePool.Put(fwdCache)
+			if matched {
 				return true
 			}
 			// Move past this suffix candidate

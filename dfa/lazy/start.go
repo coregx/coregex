@@ -79,29 +79,42 @@ type StartTable struct {
 // Start states themselves are computed lazily on first access.
 func NewStartTable() *StartTable {
 	st := &StartTable{}
+	initByteMap(&st.byteMap)
+	initStartStates(st)
+	return st
+}
 
-	// Initialize byte map
+// newStartTableFromByteMap creates a StartTable that reuses an existing byteMap.
+// This avoids recomputing the byte map when clearing/resetting the cache.
+func newStartTableFromByteMap(byteMap *[256]StartKind) StartTable {
+	st := StartTable{byteMap: *byteMap}
+	initStartStates(&st)
+	return st
+}
+
+// initByteMap populates the byte-to-StartKind mapping.
+func initByteMap(byteMap *[256]StartKind) {
 	for b := 0; b < 256; b++ {
 		switch {
 		case b == '\n':
-			st.byteMap[b] = StartLineLF
+			byteMap[b] = StartLineLF
 		case b == '\r':
-			st.byteMap[b] = StartLineCR
+			byteMap[b] = StartLineCR
 		case isWordByte(byte(b)):
-			st.byteMap[b] = StartWord
+			byteMap[b] = StartWord
 		default:
-			st.byteMap[b] = StartNonWord
+			byteMap[b] = StartNonWord
 		}
 	}
+}
 
-	// Initialize all state slots to InvalidState
+// initStartStates sets all state slots to InvalidState.
+func initStartStates(st *StartTable) {
 	for i := 0; i < 2; i++ {
 		for j := 0; j < int(startKindCount); j++ {
 			st.states[i][j] = InvalidState
 		}
 	}
-
-	return st
 }
 
 // GetKind returns the StartKind for the given previous byte.

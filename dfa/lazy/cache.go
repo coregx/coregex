@@ -1,37 +1,51 @@
 package lazy
 
 import (
-	"sync"
-
 	"github.com/coregx/coregex/internal/conv"
 )
 
-// Cache provides thread-safe storage for DFA states with bounded memory.
+// DFACache holds mutable state for DFA search operations.
 //
-// The cache maps StateKey (NFA state set hash) → DFA State.
+// The DFACache is the mutable counterpart to the immutable DFA struct.
+// After DFA compilation, the DFA is fully immutable and safe to share
+// across goroutines. Each goroutine creates its own DFACache via
+// DFA.NewCache() (or reuses one from a sync.Pool in the meta layer).
+//
+// This separation is inspired by the Rust regex crate's approach where
+// the DFA configuration is immutable and per-thread cache is mutable.
+//
+// The cache maps StateKey (NFA state set hash) -> DFA State.
 // When the cache reaches maxStates, it can be cleared and rebuilt
 // (up to a configured limit) before falling back to NFA.
 //
-// Thread safety: All methods are safe for concurrent access via RWMutex.
+// Thread safety: NOT thread-safe. Each DFACache must be owned by a single
+// goroutine. No mutex is needed because there is no concurrent access.
 //
 // Memory management:
 //   - States are never evicted individually (no LRU overhead)
 //   - When cache is full, it is cleared entirely and search continues
 //   - After too many clears, falls back to NFA
 //   - Clearing keeps allocated memory to avoid re-allocation
-type Cache struct {
-	// mu protects all fields below
-	// RWMutex allows concurrent reads (common case during search)
-	mu sync.RWMutex
-
-	// states maps StateKey → DFA State
+type DFACache struct {
+	// states maps StateKey -> DFA State
 	states map[StateKey]*State
+
+	// stateList provides O(1) lookup of states by ID via direct indexing.
+	// StateIDs are sequential (0, 1, 2...), so slice indexing is faster than map.
+	// This was previously DFA.states — moved here because it grows during search.
+	stateList []*State
+
+	// startTable caches start states for different look-behind contexts.
+	// This enables correct handling of assertions (^, \b, etc.) and
+	// avoids recomputing epsilon closures on every search.
+	// Previously lived on DFA — moved here because it is populated lazily.
+	startTable StartTable
 
 	// maxStates is the capacity limit
 	maxStates uint32
 
-	// nextID is the next available state ID
-	// Start at 1 (0 is reserved for StartState)
+	// nextID is the next available state ID.
+	// Start at 1 (0 is reserved for StartState).
 	nextID StateID
 
 	// clearCount tracks how many times the cache has been cleared during
@@ -45,28 +59,12 @@ type Cache struct {
 	misses uint64 // Number of cache misses
 }
 
-// NewCache creates a new state cache with the given maximum capacity
-func NewCache(maxStates uint32) *Cache {
-	return &Cache{
-		states:    make(map[StateKey]*State, maxStates),
-		maxStates: maxStates,
-		nextID:    StartState + 1, // StartState is 0, start from 1
-		hits:      0,
-		misses:    0,
-	}
-}
-
 // Get retrieves a state by its key.
 // Returns (state, true) if found, (nil, false) if not in cache.
-//
-// This method uses RLock for read-only access, allowing concurrent Gets.
-func (c *Cache) Get(key StateKey) (*State, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
+func (c *DFACache) Get(key StateKey) (*State, bool) {
 	state, ok := c.states[key]
 	if ok {
-		c.hits++ // Tracked under read lock (slight race, but acceptable for stats)
+		c.hits++
 	}
 	return state, ok
 }
@@ -74,13 +72,8 @@ func (c *Cache) Get(key StateKey) (*State, bool) {
 // Insert adds a new state to the cache and returns its assigned ID.
 // Returns (stateID, nil) on success.
 // Returns (InvalidState, ErrCacheFull) if cache is at capacity.
-//
-// Thread-safe: uses write lock.
-func (c *Cache) Insert(key StateKey, state *State) (StateID, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Check if already exists (another goroutine may have inserted it)
+func (c *DFACache) Insert(key StateKey, state *State) (StateID, error) {
+	// Check if already exists
 	if existing, ok := c.states[key]; ok {
 		c.hits++
 		return existing.ID(), nil
@@ -112,24 +105,20 @@ func (c *Cache) Insert(key StateKey, state *State) (StateID, error) {
 //   - (state, true) if state was already in cache (cache hit)
 //   - (state, false) if state was just inserted (cache miss)
 //   - (nil, false) with ErrCacheFull if cache is full
-//
-// Thread-safe: uses appropriate locks.
-func (c *Cache) GetOrInsert(key StateKey, state *State) (*State, bool, error) {
-	// Fast path: check if exists (read lock)
+func (c *DFACache) GetOrInsert(key StateKey, state *State) (*State, bool, error) {
+	// Check if exists
 	if existing, ok := c.Get(key); ok {
 		return existing, true, nil
 	}
 
-	// Slow path: insert (write lock)
+	// Insert
 	stateID, err := c.Insert(key, state)
 	if err != nil {
 		return nil, false, err
 	}
 
 	// Retrieve the inserted state (it now has a valid ID)
-	c.mu.RLock()
 	insertedState := c.states[key]
-	c.mu.RUnlock()
 
 	// Verify ID was assigned
 	if insertedState.ID() != stateID {
@@ -140,17 +129,13 @@ func (c *Cache) GetOrInsert(key StateKey, state *State) (*State, bool, error) {
 	return insertedState, false, nil
 }
 
-// Size returns the current number of states in the cache
-func (c *Cache) Size() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+// Size returns the current number of states in the cache.
+func (c *DFACache) Size() int {
 	return len(c.states)
 }
 
-// IsFull returns true if the cache has reached its maximum capacity
-func (c *Cache) IsFull() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+// IsFull returns true if the cache has reached its maximum capacity.
+func (c *DFACache) IsFull() bool {
 	return conv.IntToUint32(len(c.states)) >= c.maxStates
 }
 
@@ -159,10 +144,7 @@ func (c *Cache) IsFull() bool {
 //
 // Hit rate = hits / (hits + misses)
 // A high hit rate (>90%) indicates good cache sizing.
-func (c *Cache) Stats() (hits, misses uint64, hitRate float64) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
+func (c *DFACache) Stats() (hits, misses uint64, hitRate float64) {
 	hits = c.hits
 	misses = c.misses
 	total := hits + misses
@@ -173,22 +155,19 @@ func (c *Cache) Stats() (hits, misses uint64, hitRate float64) {
 	return hits, misses, hitRate
 }
 
-// ResetStats resets hit/miss counters (useful for benchmarking)
-func (c *Cache) ResetStats() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// ResetStats resets hit/miss counters (useful for benchmarking).
+func (c *DFACache) ResetStats() {
 	c.hits = 0
 	c.misses = 0
 }
 
 // Clear removes all states from the cache and resets statistics.
 // This also resets the clear counter. Primarily for testing.
-func (c *Cache) Clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+func (c *DFACache) Clear() {
 	// Clear map (GC will reclaim memory)
 	c.states = make(map[StateKey]*State, c.maxStates)
+	c.stateList = c.stateList[:0]
+	c.startTable = newStartTableFromByteMap(&c.startTable.byteMap)
 	c.nextID = StartState + 1
 	c.clearCount = 0
 	c.hits = 0
@@ -204,36 +183,73 @@ func (c *Cache) Clear() {
 //   - Increments clearCount (tracks clears during a search)
 //   - Does NOT reset hit/miss statistics (they accumulate across clears)
 //   - Reuses map memory via Go's map clearing optimization
+//   - Resets stateList but keeps allocated capacity
+//   - Resets startTable initialized flags
 //
 // After calling this, all previously returned *State pointers are stale
 // and must not be used. The caller must re-obtain the start state.
 //
 // Inspired by Rust regex-automata's cache clearing strategy (hybrid/dfa.rs).
-func (c *Cache) ClearKeepMemory() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+func (c *DFACache) ClearKeepMemory() {
 	// Clear the map using Go's optimized clear-by-range idiom.
 	// This reuses the map's internal memory (buckets) instead of reallocating.
 	for k := range c.states {
 		delete(c.states, k)
 	}
+	c.stateList = c.stateList[:0]
+	c.startTable = newStartTableFromByteMap(&c.startTable.byteMap)
 	c.nextID = StartState + 1
 	c.clearCount++
 }
 
 // ClearCount returns how many times the cache has been cleared.
 // Used to check against the MaxCacheClears limit.
-func (c *Cache) ClearCount() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+func (c *DFACache) ClearCount() int {
 	return c.clearCount
 }
 
 // ResetClearCount resets the clear counter to zero.
 // Called at the start of each new search to give the DFA a fresh budget.
-func (c *Cache) ResetClearCount() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *DFACache) ResetClearCount() {
 	c.clearCount = 0
+}
+
+// getState retrieves a state from the stateList by ID.
+func (c *DFACache) getState(id StateID) *State {
+	if id == DeadState {
+		return nil
+	}
+
+	idx := int(id)
+	if idx >= len(c.stateList) {
+		return nil
+	}
+	return c.stateList[idx]
+}
+
+// registerState adds a state to the stateList for O(1) lookup by ID.
+// StateIDs are assigned sequentially, so we can use direct indexing.
+func (c *DFACache) registerState(state *State) {
+	id := int(state.ID())
+	// Grow slice if needed
+	for len(c.stateList) <= id {
+		c.stateList = append(c.stateList, nil)
+	}
+	c.stateList[id] = state
+}
+
+// Reset prepares the cache for reuse from a sync.Pool.
+// Unlike Clear(), this preserves allocated memory in slices and maps
+// for efficient reuse. The startTable byteMap is preserved (immutable).
+func (c *DFACache) Reset() {
+	// Clear map entries but keep bucket memory
+	for k := range c.states {
+		delete(c.states, k)
+	}
+	c.stateList = c.stateList[:0]
+	c.startTable = newStartTableFromByteMap(&c.startTable.byteMap)
+	c.nextID = StartState + 1
+	c.clearCount = 0
+	c.hits = 0
+	c.misses = 0
 }

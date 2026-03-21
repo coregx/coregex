@@ -132,6 +132,7 @@ func TestDFAAccelerate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to compile DFA: %v", err)
 	}
+	_ = dfa.NewCache() // accelerate is an immutable DFA method, cache not needed here
 
 	haystack := []byte("aaaaaaaaaafoobar")
 
@@ -175,6 +176,7 @@ func TestAccelerableStateInSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to compile DFA: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// Test that search still works correctly
 	tests := []struct {
@@ -188,7 +190,7 @@ func TestAccelerableStateInSearch(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := dfa.Find([]byte(tc.haystack))
+		got := dfa.Find(cache, []byte(tc.haystack))
 		if got != tc.want {
 			t.Errorf("Find(%q) = %d, want %d", tc.haystack, got, tc.want)
 		}
@@ -200,6 +202,7 @@ func BenchmarkAccelerate(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to compile DFA: %v", err)
 	}
+	_ = dfa.NewCache() // accelerate is an immutable DFA method
 
 	haystack := make([]byte, 4096)
 	for i := range haystack {

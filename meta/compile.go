@@ -480,7 +480,10 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Select strategy (pass re for anchor detection)
 	strategy := SelectStrategy(nfaEngine, re, literals, config)
 
+	pf, strategy = adjustForAnchors(pf, strategy, re)
+
 	// Build PikeVM (always needed for fallback).
+	// NOTE: hasMultilineLineAnchor and hasAnchorAssertions are defined in strategy.go
 	// Use runeNFA when available — sparse dispatch replaces ~9 split states
 	// with a single sparse state, giving PikeVM O(1) byte dispatch per '.'.
 	pikevmNFA := nfaEngine
@@ -510,8 +513,8 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Debug: log final strategy selection
 	debugStrategy(re.String(), strategy, nfaEngine.States(), literals, "")
 
-	// FatTeddy AVX2 is now correct (ORL fix for lane combining, DECQ SI for tail).
-	// No AC replacement needed for any strategy.
+	// Prefilter selection: Slim Teddy (2-32 patterns), AC DFA (>32 patterns).
+	// FatTeddy replaced by AC for >32 patterns (130x faster, zero false positives).
 
 	// Debug: log prefilter selection
 	debugPrefilter(pf)
@@ -620,9 +623,69 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		canMatchEmpty:                  canMatchEmpty,
 		isStartAnchored:                isStartAnchored,
 		fatTeddyFallback:               fatTeddyFallback,
-		statePool:                      newSearchStatePool(pikevmNFA, numCaptures),
-		stats:                          Stats{},
+		statePool: newSearchStatePool(buildSearchStateConfig(
+			pikevmNFA, numCaptures, engines, strategy,
+		)),
+		stats: Stats{},
 	}, nil
+}
+
+// adjustForAnchors fixes prefilter and strategy for patterns with anchors.
+// Anchors (^, $, \b) require verification that Teddy/AC prefilter can't provide.
+// Multiline line anchors ((?m)^) need NFA because DFA doesn't verify line positions.
+func adjustForAnchors(pf prefilter.Prefilter, strategy Strategy, re *syntax.Regexp) (prefilter.Prefilter, Strategy) {
+	if !hasAnchorAssertions(re) {
+		return pf, strategy
+	}
+	// Mark prefilter incomplete — engine must verify anchor constraints
+	if pf != nil && pf.IsComplete() {
+		pf = prefilter.WrapIncomplete(pf)
+	}
+	// DFA can't verify (?m)^ multiline line anchors — use NFA
+	if strategy == UseDFA && hasMultilineLineAnchor(re) {
+		strategy = UseNFA
+	}
+	return pf, strategy
+}
+
+// buildSearchStateConfig extracts all DFA references needed for per-search caches.
+// Strategy-specific DFAs come from reverse searchers (which have their own DFAs).
+func buildSearchStateConfig(nfaEngine *nfa.NFA, numCaptures int, engines strategyEngines, strategy Strategy) searchStateConfig {
+	cfg := searchStateConfig{
+		nfaEngine:   nfaEngine,
+		numCaptures: numCaptures,
+		forwardDFA:  engines.dfa,
+		reverseDFA:  engines.reverseDFA,
+	}
+
+	// Extract strategy-specific DFAs from reverse searchers
+	switch strategy {
+	case UseReverseSuffix:
+		if s := engines.reverseSuffixSearcher; s != nil {
+			cfg.stratFwdDFA = s.forwardDFA
+			cfg.stratRevDFA = s.reverseDFA
+		}
+	case UseReverseInner:
+		if s := engines.reverseInnerSearcher; s != nil {
+			cfg.stratFwdDFA = s.forwardDFA
+			cfg.stratRevDFA = s.reverseDFA
+		}
+	case UseReverseSuffixSet:
+		if s := engines.reverseSuffixSetSearcher; s != nil {
+			cfg.stratFwdDFA = s.forwardDFA
+			cfg.stratRevDFA = s.reverseDFA
+		}
+	case UseReverseAnchored:
+		if s := engines.reverseSearcher; s != nil {
+			cfg.stratRevDFA = s.reverseDFA
+		}
+	case UseMultilineReverseSuffix:
+		if s := engines.multilineReverseSuffixSearcher; s != nil {
+			cfg.stratFwdDFA = s.forwardDFA
+		}
+	}
+
+	return cfg
 }
 
 // CompileError represents a pattern compilation error.

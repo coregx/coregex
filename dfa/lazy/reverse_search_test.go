@@ -7,7 +7,7 @@ import (
 )
 
 // compileReverseDFA compiles a reverse DFA from a pattern for testing reverse search.
-func compileReverseDFA(t *testing.T, pattern string) *DFA {
+func compileReverseDFA(t *testing.T, pattern string) (*DFA, *DFACache) {
 	t.Helper()
 	compiler := nfa.NewDefaultCompiler()
 	fwdNFA, err := compiler.Compile(pattern)
@@ -19,7 +19,8 @@ func compileReverseDFA(t *testing.T, pattern string) *DFA {
 	if err != nil {
 		t.Fatalf("Reverse DFA compile %q error: %v", pattern, err)
 	}
-	return dfa
+	cache := dfa.NewCache()
+	return dfa, cache
 }
 
 func TestSearchReverseBasic(t *testing.T) {
@@ -75,8 +76,8 @@ func TestSearchReverseBasic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			revDFA := compileReverseDFA(t, tt.pattern)
-			got := revDFA.SearchReverse([]byte(tt.input), tt.start, tt.end)
+			revDFA, cache := compileReverseDFA(t, tt.pattern)
+			got := revDFA.SearchReverse(cache, []byte(tt.input), tt.start, tt.end)
 			if got != tt.want {
 				t.Errorf("SearchReverse(%q, %d, %d) = %d, want %d",
 					tt.input, tt.start, tt.end, got, tt.want)
@@ -86,7 +87,7 @@ func TestSearchReverseBasic(t *testing.T) {
 }
 
 func TestSearchReverseBoundary(t *testing.T) {
-	revDFA := compileReverseDFA(t, "abc")
+	revDFA, cache := compileReverseDFA(t, "abc")
 	input := []byte("xxxabcyyy")
 
 	tests := []struct {
@@ -103,7 +104,7 @@ func TestSearchReverseBoundary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := revDFA.SearchReverse(input, tt.start, tt.end)
+			got := revDFA.SearchReverse(cache, input, tt.start, tt.end)
 			if got != tt.want {
 				t.Errorf("SearchReverse(%d, %d) = %d, want %d", tt.start, tt.end, got, tt.want)
 			}
@@ -112,8 +113,8 @@ func TestSearchReverseBoundary(t *testing.T) {
 }
 
 func TestSearchReverseEmptyInput(t *testing.T) {
-	revDFA := compileReverseDFA(t, "a")
-	got := revDFA.SearchReverse([]byte{}, 0, 0)
+	revDFA, cache := compileReverseDFA(t, "a")
+	got := revDFA.SearchReverse(cache, []byte{}, 0, 0)
 	if got != -1 {
 		t.Errorf("SearchReverse on empty input = %d, want -1", got)
 	}
@@ -121,23 +122,23 @@ func TestSearchReverseEmptyInput(t *testing.T) {
 
 func TestSearchReverseWindowSliding(t *testing.T) {
 	// Test different windows into the same haystack
-	revDFA := compileReverseDFA(t, "[0-9]+")
+	revDFA, cache := compileReverseDFA(t, "[0-9]+")
 	input := []byte("aaa123bbb456ccc")
 
 	// Window covering first digit sequence: "aaa123" (positions 0-6)
-	got := revDFA.SearchReverse(input, 0, 6)
+	got := revDFA.SearchReverse(cache, input, 0, 6)
 	if got < 0 {
 		t.Errorf("SearchReverse(0, 6) = %d, want match", got)
 	}
 
 	// Window covering second digit sequence: "bbb456" (positions 6-12)
-	got = revDFA.SearchReverse(input, 6, 12)
+	got = revDFA.SearchReverse(cache, input, 6, 12)
 	if got < 0 {
 		t.Errorf("SearchReverse(6, 12) = %d, want match", got)
 	}
 
 	// Window with no digits: "aaa" (positions 0-3)
-	got = revDFA.SearchReverse(input, 0, 3)
+	got = revDFA.SearchReverse(cache, input, 0, 3)
 	if got != -1 {
 		t.Errorf("SearchReverse(0, 3) on 'aaa' = %d, want -1", got)
 	}
@@ -196,8 +197,8 @@ func TestIsMatchReverseBasic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			revDFA := compileReverseDFA(t, tt.pattern)
-			got := revDFA.IsMatchReverse([]byte(tt.input), tt.start, tt.end)
+			revDFA, cache := compileReverseDFA(t, tt.pattern)
+			got := revDFA.IsMatchReverse(cache, []byte(tt.input), tt.start, tt.end)
 			if got != tt.want {
 				t.Errorf("IsMatchReverse(%q, %d, %d) = %v, want %v",
 					tt.input, tt.start, tt.end, got, tt.want)
@@ -207,20 +208,20 @@ func TestIsMatchReverseBasic(t *testing.T) {
 }
 
 func TestIsMatchReverseBoundary(t *testing.T) {
-	revDFA := compileReverseDFA(t, "a")
+	revDFA, cache := compileReverseDFA(t, "a")
 	input := []byte("abc")
 
 	// end <= start should return false
-	if revDFA.IsMatchReverse(input, 3, 3) {
+	if revDFA.IsMatchReverse(cache, input, 3, 3) {
 		t.Error("IsMatchReverse(3, 3) should be false")
 	}
-	if revDFA.IsMatchReverse(input, 5, 3) {
+	if revDFA.IsMatchReverse(cache, input, 5, 3) {
 		t.Error("IsMatchReverse(5, 3) should be false")
 	}
 }
 
 func TestSearchReverseLimitedBasic(t *testing.T) {
-	revDFA := compileReverseDFA(t, "abc")
+	revDFA, cache := compileReverseDFA(t, "abc")
 	input := []byte("xxxabcyyy")
 
 	tests := []struct {
@@ -248,7 +249,7 @@ func TestSearchReverseLimitedBasic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := revDFA.SearchReverseLimited(input, tt.start, tt.end, tt.minStart)
+			got := revDFA.SearchReverseLimited(cache, input, tt.start, tt.end, tt.minStart)
 			if got != tt.want {
 				t.Errorf("SearchReverseLimited(%d, %d, %d) = %d, want %d",
 					tt.start, tt.end, tt.minStart, got, tt.want)
@@ -258,23 +259,23 @@ func TestSearchReverseLimitedBasic(t *testing.T) {
 }
 
 func TestSearchReverseLimitedBoundary(t *testing.T) {
-	revDFA := compileReverseDFA(t, "abc")
+	revDFA, cache := compileReverseDFA(t, "abc")
 	input := []byte("xxxabcyyy")
 
 	// Invalid bounds
-	if got := revDFA.SearchReverseLimited(input, 5, 5, 0); got != -1 {
+	if got := revDFA.SearchReverseLimited(cache, input, 5, 5, 0); got != -1 {
 		t.Errorf("end == start should return -1, got %d", got)
 	}
-	if got := revDFA.SearchReverseLimited(input, 0, 100, 0); got != -1 {
+	if got := revDFA.SearchReverseLimited(cache, input, 0, 100, 0); got != -1 {
 		t.Errorf("end > len should return -1, got %d", got)
 	}
 }
 
 func TestSearchReverseLimitedNoMatch(t *testing.T) {
-	revDFA := compileReverseDFA(t, "xyz")
+	revDFA, cache := compileReverseDFA(t, "xyz")
 	input := []byte("hello world")
 
-	got := revDFA.SearchReverseLimited(input, 0, 11, 0)
+	got := revDFA.SearchReverseLimited(cache, input, 0, 11, 0)
 	if got != -1 {
 		t.Errorf("SearchReverseLimited for non-matching pattern = %d, want -1", got)
 	}
@@ -283,12 +284,12 @@ func TestSearchReverseLimitedNoMatch(t *testing.T) {
 func TestSearchReverseLimitedQuadraticSignal(t *testing.T) {
 	// Test that SearchReverseLimited returns the quadratic signal
 	// when it hits the minStart boundary without a dead state
-	revDFA := compileReverseDFA(t, "[a-z]+")
+	revDFA, cache := compileReverseDFA(t, "[a-z]+")
 	input := []byte("abcdefghij")
 
 	// With minStart = 5, the scan will stop at position 5 going backward
 	// For [a-z]+, the DFA never reaches dead state on lowercase letters
-	got := revDFA.SearchReverseLimited(input, 0, 10, 5)
+	got := revDFA.SearchReverseLimited(cache, input, 0, 10, 5)
 	// The result should be a match position >= 5 (since all chars match),
 	// or SearchReverseLimitedQuadratic (-2) if no dead state was hit
 	if got == -1 {
@@ -319,10 +320,11 @@ func TestSearchReverseWithSmallCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reverse DFA compile error: %v", err)
 	}
+	cache := revDFA.NewCache()
 
 	input := []byte("abc123def456")
 	// Should still produce a result (either match or NFA fallback)
-	got := revDFA.SearchReverse(input, 0, 6)
+	got := revDFA.SearchReverse(cache, input, 0, 6)
 	// The exact position depends on NFA fallback behavior
 	t.Logf("SearchReverse with small cache = %d", got)
 }

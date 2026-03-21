@@ -75,8 +75,9 @@ func TestDFAWithPrefilterFind(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompileWithPrefilter error: %v", err)
 			}
+			cache := dfa.NewCache()
 
-			got := dfa.Find([]byte(tt.input))
+			got := dfa.Find(cache, []byte(tt.input))
 			if got != tt.wantPos {
 				t.Errorf("Find(%q) = %d, want %d", tt.input, got, tt.wantPos)
 			}
@@ -117,8 +118,9 @@ func TestDFAWithPrefilterIsMatch(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompileWithPrefilter error: %v", err)
 			}
+			cache := dfa.NewCache()
 
-			got := dfa.IsMatch([]byte(tt.input))
+			got := dfa.IsMatch(cache, []byte(tt.input))
 			if got != tt.wantMatch {
 				t.Errorf("IsMatch(%q) = %v, want %v", tt.input, got, tt.wantMatch)
 			}
@@ -162,12 +164,13 @@ func TestDFAWithPrefilterCorrectnessVsStdlib(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompileWithPrefilter error: %v", err)
 			}
+			cache := dfa.NewCache()
 
 			re := regexp.MustCompile(pattern)
 
 			for _, input := range inputs {
 				// IsMatch
-				dfaMatch := dfa.IsMatch([]byte(input))
+				dfaMatch := dfa.IsMatch(cache, []byte(input))
 				stdlibMatch := re.MatchString(input)
 				if dfaMatch != stdlibMatch {
 					t.Errorf("IsMatch(%q, %q): DFA=%v, stdlib=%v",
@@ -196,10 +199,11 @@ func TestDFAWithCompletePrefilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// Complete prefilter: Find uses prefilter directly
 	input := []byte("say hello there hello again")
-	got := dfa.Find(input)
+	got := dfa.Find(cache, input)
 	if got < 0 {
 		t.Errorf("Find with complete prefilter returned %d, want match", got)
 	}
@@ -223,23 +227,24 @@ func TestDFAWithPrefilterFindAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	input := []byte("hello hello")
 
 	// FindAt from position 0 should find first "hello"
-	got := dfa.FindAt(input, 0)
+	got := dfa.FindAt(cache, input, 0)
 	if got < 0 {
 		t.Errorf("FindAt(0) = %d, want match", got)
 	}
 
 	// FindAt from position 6 should find second "hello"
-	got = dfa.FindAt(input, 6)
+	got = dfa.FindAt(cache, input, 6)
 	if got < 0 {
 		t.Errorf("FindAt(6) = %d, want match", got)
 	}
 
 	// FindAt past all matches
-	got = dfa.FindAt(input, 11)
+	got = dfa.FindAt(cache, input, 11)
 	if got != -1 {
 		t.Errorf("FindAt(11) = %d, want -1", got)
 	}
@@ -267,6 +272,7 @@ func TestDFAWithPrefilterMultipleCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	tests := []struct {
 		name      string
@@ -280,7 +286,7 @@ func TestDFAWithPrefilterMultipleCandidates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dfa.Find([]byte(tt.input))
+			got := dfa.Find(cache, []byte(tt.input))
 			gotFound := got >= 0
 			if gotFound != tt.wantFound {
 				t.Errorf("Find(%q) = %d, wantFound = %v", tt.input, got, tt.wantFound)
@@ -309,16 +315,17 @@ func TestDFAWithPrefilterCacheClearing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	// This input should trigger cache pressure during DFA verification
 	input := []byte("xxxaaabbbcccxxx")
-	got := dfa.Find(input)
+	got := dfa.Find(cache, input)
 	if got == -1 {
 		t.Error("Find should find match even with cache clearing")
 	}
 
 	// Also verify IsMatch
-	if !dfa.IsMatch(input) {
+	if !dfa.IsMatch(cache, input) {
 		t.Error("IsMatch should return true even with cache clearing")
 	}
 }

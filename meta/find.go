@@ -200,8 +200,10 @@ func (e *Engine) findDFA(haystack []byte) *Match {
 		return NewMatch(start, end, haystack)
 	}
 
-	// Use DFA search
-	endPos := e.dfa.Find(haystack)
+	// Use DFA search with pooled cache
+	state := e.getSearchState()
+	endPos := e.dfa.Find(state.dfaCache, haystack)
+	e.putSearchState(state)
 	if endPos == -1 {
 		return nil
 	}
@@ -266,8 +268,10 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 	// Try DFA without prefilter
 	if e.dfa != nil {
 		atomic.AddUint64(&e.stats.DFASearches, 1)
-		endPos := e.dfa.Find(haystack)
+		state := e.getSearchState()
+		endPos := e.dfa.Find(state.dfaCache, haystack)
 		if endPos != -1 {
+			e.putSearchState(state)
 			// DFA succeeded - get exact match bounds from NFA
 			// Use estimated start position for O(m) search instead of O(n)
 			estimatedStart := 0
@@ -281,7 +285,8 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 			return NewMatch(start, end, haystack)
 		}
 		// DFA failed (might be cache full) - check cache stats
-		size, capacity, _, _, _ := e.dfa.CacheStats()
+		size, capacity, _, _, _ := e.dfa.CacheStats(state.dfaCache)
+		e.putSearchState(state)
 		if size >= int(capacity)*9/10 { // 90% full
 			atomic.AddUint64(&e.stats.DFACacheFull, 1)
 		}
@@ -329,8 +334,10 @@ func (e *Engine) findDFAAt(haystack []byte, at int) *Match {
 		return NewMatch(start, end, haystack)
 	}
 
-	// Use DFA search with FindAt
-	pos := e.dfa.FindAt(haystack, at)
+	// Use DFA search with FindAt and pooled cache
+	state := e.getSearchState()
+	pos := e.dfa.FindAt(state.dfaCache, haystack, at)
+	e.putSearchState(state)
 	if pos == -1 {
 		return nil
 	}
@@ -349,18 +356,22 @@ func (e *Engine) findAdaptiveAt(haystack []byte, at int) *Match {
 	// Try DFA first
 	if e.dfa != nil {
 		atomic.AddUint64(&e.stats.DFASearches, 1)
-		pos := e.dfa.FindAt(haystack, at)
+		state := e.getSearchState()
+		pos := e.dfa.FindAt(state.dfaCache, haystack, at)
 		if pos != -1 {
+			e.putSearchState(state)
 			// DFA succeeded - need to find start position from NFA
 			start, end, matched := e.pikevm.SearchAt(haystack, at)
 			if matched {
 				return NewMatch(start, end, haystack)
 			}
-		}
-		// DFA failed (might be cache full) - check cache stats
-		size, capacity, _, _, _ := e.dfa.CacheStats()
-		if size >= int(capacity)*9/10 { // 90% full
-			atomic.AddUint64(&e.stats.DFACacheFull, 1)
+		} else {
+			// DFA failed (might be cache full) - check cache stats
+			size, capacity, _, _, _ := e.dfa.CacheStats(state.dfaCache)
+			e.putSearchState(state)
+			if size >= int(capacity)*9/10 { // 90% full
+				atomic.AddUint64(&e.stats.DFACacheFull, 1)
+			}
 		}
 	}
 
@@ -672,6 +683,10 @@ func (e *Engine) findDigitPrefilter(haystack []byte) *Match {
 	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 	pos := 0
 
+	// Acquire pooled state once for the entire loop
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
 	for pos < len(haystack) {
 		// Use SIMD to find next digit position
 		digitPos := e.digitPrefilter.Find(haystack, pos)
@@ -682,10 +697,10 @@ func (e *Engine) findDigitPrefilter(haystack []byte) *Match {
 		// Verify match at digit position using DFA
 		if e.dfa != nil {
 			atomic.AddUint64(&e.stats.DFASearches, 1)
-			endPos := e.dfa.FindAt(haystack, digitPos)
+			endPos := e.dfa.FindAt(state.dfaCache, haystack, digitPos)
 			if endPos != -1 {
 				// DFA found potential match - get exact bounds from NFA
-				start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+				start, end, found := state.pikevm.SearchAt(haystack, digitPos)
 				if found {
 					return NewMatch(start, end, haystack)
 				}
@@ -693,7 +708,7 @@ func (e *Engine) findDigitPrefilter(haystack []byte) *Match {
 		} else {
 			// No DFA - use PikeVM directly
 			atomic.AddUint64(&e.stats.NFASearches, 1)
-			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+			start, end, found := state.pikevm.SearchAt(haystack, digitPos)
 			if found {
 				return NewMatch(start, end, haystack)
 			}
@@ -715,6 +730,10 @@ func (e *Engine) findDigitPrefilterAt(haystack []byte, at int) *Match {
 	atomic.AddUint64(&e.stats.PrefilterHits, 1)
 	pos := at
 
+	// Acquire pooled state once for the entire loop
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
 	for pos < len(haystack) {
 		digitPos := e.digitPrefilter.Find(haystack, pos)
 		if digitPos < 0 {
@@ -723,16 +742,16 @@ func (e *Engine) findDigitPrefilterAt(haystack []byte, at int) *Match {
 
 		if e.dfa != nil {
 			atomic.AddUint64(&e.stats.DFASearches, 1)
-			endPos := e.dfa.FindAt(haystack, digitPos)
+			endPos := e.dfa.FindAt(state.dfaCache, haystack, digitPos)
 			if endPos != -1 {
-				start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+				start, end, found := state.pikevm.SearchAt(haystack, digitPos)
 				if found {
 					return NewMatch(start, end, haystack)
 				}
 			}
 		} else {
 			atomic.AddUint64(&e.stats.NFASearches, 1)
-			start, end, found := e.pikevm.SearchAt(haystack, digitPos)
+			start, end, found := state.pikevm.SearchAt(haystack, digitPos)
 			if found {
 				return NewMatch(start, end, haystack)
 			}

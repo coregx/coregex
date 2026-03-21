@@ -55,60 +55,17 @@ func (b *Builder) Build() (*DFA, error) {
 		return nil, err
 	}
 
-	// Create cache
-	cache := NewCache(b.config.MaxStates)
-
 	// Build prefilter if enabled
 	var pf prefilter.Prefilter
 	if b.config.UsePrefilter {
 		pf = b.buildPrefilter()
 	}
 
-	// Get alphabet size from ByteClasses for memory-efficient states
-	// Typical patterns have 4-64 equivalence classes (vs 256 without compression)
-	byteClasses := b.nfa.ByteClasses()
-	stride := defaultStride
-	if byteClasses != nil {
-		stride = byteClasses.AlphabetLen()
-	}
-
-	// Create start state from NFA unanchored start (for O(n) unanchored search)
-	// Use StartUnanchored() which includes the implicit (?s:.)*? prefix
-	//
-	// For the default start state (StartText), both \A and ^ are satisfied.
-	// This enables proper handling of patterns like "^abc" - the DFA will
-	// only match at the true start of input because the StateLook for ^
-	// will only be followed when LookStartLine is in the LookSet.
-	//
-	// Word context: At StartText (position 0), there's no previous byte,
-	// so isFromWord = false. Word boundary assertions will be resolved
-	// when the first byte is consumed via move().
-	startLook := LookSetFromStartKind(StartText)
-	startStateSet := b.epsilonClosure([]nfa.StateID{b.nfa.StartUnanchored()}, startLook)
-	isMatch := b.containsMatchState(startStateSet)
-	isFromWord := false // StartText: no previous byte → not from word
-	startState := NewStateWithStride(StartState, startStateSet, isMatch, isFromWord, stride)
-
-	// Insert start state into cache
-	// Key includes word context for proper state identity
-	key := ComputeStateKeyWithWord(startStateSet, isFromWord)
-	_, err := cache.Insert(key, startState)
-	if err != nil {
-		// This should never happen for start state (cache is empty)
-		return nil, &DFAError{
-			Kind:    InvalidConfig,
-			Message: "failed to insert start state",
-			Cause:   err,
-		}
-	}
-
-	// Create StartTable for caching start states by look-behind context
-	startTable := NewStartTable()
-
 	// Compute fresh start states: epsilon closure of anchored start.
 	// These are states that get re-introduced via unanchored machinery after each position.
 	// Used for leftmost matching: when all remaining states are in this set plus unanchored
 	// machinery, the committed match is final.
+	startLook := LookSetFromStartKind(StartText)
 	anchoredStartClosure := b.epsilonClosure([]nfa.StateID{b.nfa.StartAnchored()}, startLook)
 	freshStartStates := make(map[nfa.StateID]bool, len(anchoredStartClosure))
 	for _, stateID := range anchoredStartClosure {
@@ -121,28 +78,23 @@ func (b *Builder) Build() (*DFA, error) {
 	// Check if the pattern is always anchored (has ^ prefix)
 	isAlwaysAnchored := b.nfa.IsAlwaysAnchored()
 
-	// Create DFA
+	// Build the immutable start byte map
+	var startByteMap [256]StartKind
+	initByteMap(&startByteMap)
+
+	// Create DFA — fully immutable after this point
 	dfa := &DFA{
 		nfa:              b.nfa,
-		cache:            cache,
 		config:           b.config,
 		prefilter:        pf,
 		pikevm:           nfa.NewPikeVM(b.nfa),
-		states:           make([]*State, 0, b.config.MaxStates),
-		startTable:       startTable,
 		byteClasses:      b.nfa.ByteClasses(),
 		freshStartStates: freshStartStates,
 		unanchoredStart:  b.nfa.StartUnanchored(),
 		hasWordBoundary:  hasWordBoundary,
 		isAlwaysAnchored: isAlwaysAnchored,
+		startByteMap:     startByteMap,
 	}
-
-	// Register start state in ID lookup map
-	dfa.registerState(startState)
-
-	// Cache the default start state (StartText, unanchored) in StartTable
-	// This is the most common start configuration
-	startTable.Set(StartText, false, startState.ID())
 
 	return dfa, nil
 }

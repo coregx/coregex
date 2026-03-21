@@ -46,6 +46,7 @@ func TestDetectAccelFromCachedWithClassesByteMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DFA compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	bc := d.ByteClasses()
 	if bc == nil {
@@ -53,10 +54,10 @@ func TestDetectAccelFromCachedWithClassesByteMapping(t *testing.T) {
 	}
 
 	// Warm up the DFA by searching
-	_ = d.Find([]byte(strings.Repeat("a", 100) + "!"))
+	_ = d.Find(cache, []byte(strings.Repeat("a", 100)+"!"))
 
 	// Try detection with classes on each state
-	for _, s := range d.states {
+	for _, s := range cache.stateList {
 		if s != nil {
 			result := DetectAccelerationFromCachedWithClasses(s, bc)
 			if len(result) > 0 {
@@ -168,6 +169,7 @@ func TestSearchEarliestMatchAnchoredCacheClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DFA compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// Input that should match and exercises cache clearing path
 	input := []byte("abc123")
@@ -182,12 +184,12 @@ func TestSearchEarliestMatchAnchoredCacheClear(t *testing.T) {
 	// IsMatch exercises searchEarliestMatchAnchored via isMatchWithPrefilter.
 	// The key goal is exercising the cache-clear path without panicking.
 	// With tiny cache, NFA fallback may or may not match depending on internal state.
-	got := d.IsMatch(input)
+	got := d.IsMatch(cache, input)
 	t.Logf("IsMatch with tiny cache (cache-clear path exercised) = %v", got)
 
 	// Also exercise with a slightly larger input to ensure more cache clears
 	largeInput := []byte(strings.Repeat("a", 20) + "123")
-	got2 := d.IsMatch(largeInput)
+	got2 := d.IsMatch(cache, largeInput)
 	t.Logf("IsMatch with larger input = %v", got2)
 }
 
@@ -197,9 +199,10 @@ func TestSearchEarliestMatchAnchoredStartPastEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// Directly call searchEarliestMatchAnchored with startPos past end
-	got := d.searchEarliestMatchAnchored([]byte("abc"), 10)
+	got := d.searchEarliestMatchAnchored(cache, []byte("abc"), 10)
 	if got {
 		t.Error("searchEarliestMatchAnchored should return false when startPos > len")
 	}
@@ -212,6 +215,7 @@ func TestSearchEarliestMatchAnchoredWordBoundary(t *testing.T) {
 	if err != nil {
 		t.Skipf("pattern not supported: %v", err)
 	}
+	cache := d.NewCache()
 
 	tests := []struct {
 		name  string
@@ -226,7 +230,7 @@ func TestSearchEarliestMatchAnchoredWordBoundary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := d.searchEarliestMatchAnchored([]byte(tt.input), tt.at)
+			got := d.searchEarliestMatchAnchored(cache, []byte(tt.input), tt.at)
 			if got != tt.want {
 				t.Errorf("searchEarliestMatchAnchored(%q, %d) = %v, want %v",
 					tt.input, tt.at, got, tt.want)
@@ -252,17 +256,18 @@ func TestSearchAtAnchoredCacheClearRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DFA compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// Input with many distinct characters to exercise cache clearing.
 	// The key goal is exercising the cache-clear recovery path without panicking.
 	input := []byte("abcdef12345")
-	got := d.SearchAtAnchored(input, 0)
+	got := d.SearchAtAnchored(cache, input, 0)
 	t.Logf("SearchAtAnchored with small cache = %d", got)
 
 	// Verify the function does not panic with various inputs
-	_ = d.SearchAtAnchored([]byte("x1"), 0)
-	_ = d.SearchAtAnchored([]byte("abcdefghijklmnop123"), 0)
-	_ = d.SearchAtAnchored([]byte("nomatch"), 0)
+	_ = d.SearchAtAnchored(cache, []byte("x1"), 0)
+	_ = d.SearchAtAnchored(cache, []byte("abcdefghijklmnop123"), 0)
+	_ = d.SearchAtAnchored(cache, []byte("nomatch"), 0)
 }
 
 // TestSearchAtAnchoredEmptyHaystack tests anchored search on empty input.
@@ -271,9 +276,10 @@ func TestSearchAtAnchoredEmptyHaystack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// Empty haystack with empty-matching pattern
-	got := d.SearchAtAnchored([]byte(""), 0)
+	got := d.SearchAtAnchored(cache, []byte(""), 0)
 	if got != 0 {
 		t.Errorf("SearchAtAnchored(empty, 0) = %d, want 0 (empty match)", got)
 	}
@@ -283,7 +289,8 @@ func TestSearchAtAnchoredEmptyHaystack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile error: %v", err)
 	}
-	got = d2.SearchAtAnchored([]byte(""), 0)
+	cache2 := d2.NewCache()
+	got = d2.SearchAtAnchored(cache2, []byte(""), 0)
 	if got != -1 {
 		t.Errorf("SearchAtAnchored(empty, 0) for 'abc' = %d, want -1", got)
 	}
@@ -304,6 +311,7 @@ func TestIsMatchReverseWordBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reverse DFA compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	tests := []struct {
 		name  string
@@ -322,7 +330,7 @@ func TestIsMatchReverseWordBoundary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := d.IsMatchReverse([]byte(tt.input), tt.start, tt.end)
+			got := d.IsMatchReverse(cache, []byte(tt.input), tt.start, tt.end)
 			if got != tt.want {
 				t.Errorf("IsMatchReverse(%q, %d, %d) = %v, want %v",
 					tt.input, tt.start, tt.end, got, tt.want)
@@ -344,16 +352,17 @@ func TestIsMatchReverseCacheClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reverse DFA compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// Input with varied chars to force cache clears
 	input := []byte("aBcDeFgHiJkLmN")
-	got := d.IsMatchReverse(input, 0, len(input))
+	got := d.IsMatchReverse(cache, input, 0, len(input))
 	// Result depends on NFA fallback after cache exhaustion
 	t.Logf("IsMatchReverse with tiny cache = %v", got)
 }
 
 // TestIsMatchReverseFinalStateMatch tests the final state check at the end
-// of the IsMatchReverse loop (line ~1811: return currentState.IsMatch()).
+// of the IsMatchReverse loop (line ~1811: return currentState.IsMatch(cache, )).
 func TestIsMatchReverseFinalStateMatch(t *testing.T) {
 	// Pattern "0?0" reversed: after processing "0" from right,
 	// the optional "0?" already matched at the final state check.
@@ -367,9 +376,10 @@ func TestIsMatchReverseFinalStateMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reverse DFA compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// "a" should match because a?a can match with 0 occurrences of a?
-	got := d.IsMatchReverse([]byte("a"), 0, 1)
+	got := d.IsMatchReverse(cache, []byte("a"), 0, 1)
 	t.Logf("IsMatchReverse('a') for a?a = %v", got)
 }
 
@@ -389,10 +399,11 @@ func TestSearchReverseCacheClearSlowPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reverse DFA compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// Diverse input to force cache clearing in reverse
 	input := []byte("aB1cD2eF3gH4iJ5kL6")
-	got := d.SearchReverse(input, 0, len(input))
+	got := d.SearchReverse(cache, input, 0, len(input))
 	t.Logf("SearchReverse with cache clearing = %d", got)
 }
 
@@ -409,6 +420,7 @@ func TestSearchReverseUnrolledLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reverse DFA compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	tests := []struct {
 		name  string
@@ -427,7 +439,7 @@ func TestSearchReverseUnrolledLoop(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := d.SearchReverse([]byte(tt.input), tt.start, tt.end)
+			got := d.SearchReverse(cache, []byte(tt.input), tt.start, tt.end)
 			if got != tt.want {
 				t.Errorf("SearchReverse(%q, %d, %d) = %d, want %d",
 					tt.input, tt.start, tt.end, got, tt.want)
@@ -452,9 +464,10 @@ func TestSearchReverseLimitedCacheClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reverse DFA compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	input := []byte("aBcDeFgHiJkLmN")
-	got := d.SearchReverseLimited(input, 0, len(input), 5)
+	got := d.SearchReverseLimited(cache, input, 0, len(input), 5)
 	t.Logf("SearchReverseLimited with tiny cache = %d", got)
 }
 
@@ -471,11 +484,12 @@ func TestSearchReverseLimitedQuadraticSignalExtended(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reverse DFA compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// All lowercase input matches [a-z]+, so no dead state is reached.
 	// With minStart > start and no match, should return quadratic signal.
 	input := []byte("abcdefghijklmnopqrstuvwxyz")
-	got := d.SearchReverseLimited(input, 0, len(input), 20)
+	got := d.SearchReverseLimited(cache, input, 0, len(input), 20)
 
 	// Should return a match position or the quadratic signal
 	if got == -1 {
@@ -496,11 +510,12 @@ func TestSearchReverseLimitedMinStartAboveStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reverse DFA compile error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// start=0, end=10, minStart=8
 	// Only scans positions 9, 8 then hits lowerBound
 	input := []byte("abcdefghij")
-	got := d.SearchReverseLimited(input, 0, len(input), 8)
+	got := d.SearchReverseLimited(cache, input, 0, len(input), 8)
 	t.Logf("SearchReverseLimited(start=0, end=10, minStart=8) = %d", got)
 }
 
@@ -525,6 +540,7 @@ func TestFindWithPrefilterAtWordBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := d.NewCache()
 
 	tests := []struct {
 		name      string
@@ -539,7 +555,7 @@ func TestFindWithPrefilterAtWordBoundary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := d.Find([]byte(tt.input))
+			got := d.Find(cache, []byte(tt.input))
 			gotMatch := got != -1
 			if gotMatch != tt.wantMatch {
 				t.Errorf("Find(%q) match=%v (pos=%d), want match=%v",
@@ -569,10 +585,11 @@ func TestFindWithPrefilterAtCacheClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// Input with prefilter candidate that matches after diverse transitions
 	input := []byte("xxx abc123 yyy")
-	got := d.Find(input)
+	got := d.Find(cache, input)
 	if got == -1 {
 		t.Error("Find should match 'abc123' in input")
 	}
@@ -597,18 +614,19 @@ func TestFindWithPrefilterAtDeadStateRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// Multiple 'a' candidates, first few lead to dead states,
 	// final one leads to a match
 	input := []byte("ax ay az ab999 end")
-	got := d.Find(input)
+	got := d.Find(cache, input)
 	if got == -1 {
 		t.Error("Find should match 'ab999'")
 	}
 
 	// All candidates lead to dead states
 	input2 := []byte("ax ay az")
-	got2 := d.Find(input2)
+	got2 := d.Find(cache, input2)
 	if got2 != -1 {
 		t.Errorf("Find should return -1 for no match, got %d", got2)
 	}
@@ -633,10 +651,11 @@ func TestFindWithPrefilterAtStartReturnsToStartState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// Multiple 'f' positions with varying distances
 	input := []byte("f x f y foo123 f z")
-	got := d.Find(input)
+	got := d.Find(cache, input)
 	if got == -1 {
 		t.Error("Find should match 'foo123'")
 	}
@@ -661,10 +680,11 @@ func TestFindWithPrefilterAtMatchFromStartAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := d.NewCache()
 
 	input := []byte("foo bar foo baz")
 	// Find starting at position 4 (past first "foo")
-	got := d.FindAt(input, 4)
+	got := d.FindAt(cache, input, 4)
 	if got == -1 {
 		t.Error("FindAt(4) should find second 'foo'")
 	}
@@ -689,9 +709,10 @@ func TestFindWithPrefilterAtEOIWordBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// "test" at end of input -- \b is satisfied at EOI
-	got := d.Find([]byte("xxtest"))
+	got := d.Find(cache, []byte("xxtest"))
 	if got == -1 {
 		t.Error("Find should match 'test' at EOI with \\b")
 	}
@@ -716,6 +737,7 @@ func TestFindWithPrefilterAtCompletePrefilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := d.NewCache()
 
 	tests := []struct {
 		name  string
@@ -731,7 +753,7 @@ func TestFindWithPrefilterAtCompletePrefilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := d.FindAt([]byte(tt.input), tt.at)
+			got := d.FindAt(cache, []byte(tt.input), tt.at)
 			if tt.want == -1 {
 				if got != -1 {
 					t.Errorf("FindAt(%q, %d) = %d, want -1", tt.input, tt.at, got)
@@ -765,10 +787,11 @@ func TestFindWithPrefilterAtCommittedMatchLeftmost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWithPrefilter error: %v", err)
 	}
+	cache := d.NewCache()
 
 	// "abc" followed by space -- committed match ends at space
 	input := []byte("abc 123")
-	got := d.Find(input)
+	got := d.Find(cache, input)
 	if got == -1 {
 		t.Error("Find should match 'abc'")
 	}

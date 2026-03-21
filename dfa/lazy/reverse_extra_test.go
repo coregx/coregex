@@ -69,8 +69,8 @@ func TestSearchReverseMultipleMatches(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			revDFA := compileReverseDFA(t, tt.pattern)
-			got := revDFA.SearchReverse([]byte(tt.input), tt.start, tt.end)
+			revDFA, cache := compileReverseDFA(t, tt.pattern)
+			got := revDFA.SearchReverse(cache, []byte(tt.input), tt.start, tt.end)
 			if got != tt.want {
 				t.Errorf("SearchReverse(%q, %d, %d) = %d, want %d",
 					tt.input, tt.start, tt.end, got, tt.want)
@@ -81,23 +81,23 @@ func TestSearchReverseMultipleMatches(t *testing.T) {
 
 // TestSearchReverseMatchAtBoundaries tests matches at various boundary positions.
 func TestSearchReverseMatchAtBoundaries(t *testing.T) {
-	revDFA := compileReverseDFA(t, "a")
+	revDFA, cache := compileReverseDFA(t, "a")
 	input := []byte("abcda")
 
 	// Match at start (position 0)
-	got := revDFA.SearchReverse(input, 0, 1)
+	got := revDFA.SearchReverse(cache, input, 0, 1)
 	if got != 0 {
 		t.Errorf("SearchReverse for 'a' at start = %d, want 0", got)
 	}
 
 	// Match at end
-	got = revDFA.SearchReverse(input, 0, 5)
+	got = revDFA.SearchReverse(cache, input, 0, 5)
 	if got != 4 {
 		t.Errorf("SearchReverse for 'a' at end = %d, want 4", got)
 	}
 
 	// Single byte window that matches
-	got = revDFA.SearchReverse(input, 4, 5)
+	got = revDFA.SearchReverse(cache, input, 4, 5)
 	if got != 4 {
 		t.Errorf("SearchReverse for 'a' single byte window = %d, want 4", got)
 	}
@@ -126,8 +126,8 @@ func TestIsMatchReverseMatchBehavior(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			revDFA := compileReverseDFA(t, tt.pattern)
-			got := revDFA.IsMatchReverse([]byte(tt.input), tt.start, tt.end)
+			revDFA, cache := compileReverseDFA(t, tt.pattern)
+			got := revDFA.IsMatchReverse(cache, []byte(tt.input), tt.start, tt.end)
 			if got != tt.want {
 				t.Errorf("IsMatchReverse(%q, %d, %d) = %v, want %v",
 					tt.input, tt.start, tt.end, got, tt.want)
@@ -139,11 +139,11 @@ func TestIsMatchReverseMatchBehavior(t *testing.T) {
 // TestSearchReverseLimitedAntiQuadraticGuard validates the anti-quadratic behavior.
 func TestSearchReverseLimitedAntiQuadraticGuard(t *testing.T) {
 	// Use a pattern that matches everywhere to trigger the quadratic signal
-	revDFA := compileReverseDFA(t, "[a-z]+")
+	revDFA, cache := compileReverseDFA(t, "[a-z]+")
 	input := []byte("abcdefghijklmnopqrstuvwxyz")
 
 	// With minStart near the end, the search is limited
-	got := revDFA.SearchReverseLimited(input, 0, len(input), 20)
+	got := revDFA.SearchReverseLimited(cache, input, 0, len(input), 20)
 
 	// Should either find a match or return quadratic signal
 	if got == -1 {
@@ -154,12 +154,12 @@ func TestSearchReverseLimitedAntiQuadraticGuard(t *testing.T) {
 
 // TestSearchReverseLimitedMinStartAtStart ensures minStart=0 behaves like unlimited.
 func TestSearchReverseLimitedMinStartAtStart(t *testing.T) {
-	revDFA := compileReverseDFA(t, "abc")
+	revDFA, cache := compileReverseDFA(t, "abc")
 	input := []byte("xxxabcyyy")
 
 	// minStart = 0 should be equivalent to SearchReverse
-	limited := revDFA.SearchReverseLimited(input, 0, 6, 0)
-	unlimited := revDFA.SearchReverse(input, 0, 6)
+	limited := revDFA.SearchReverseLimited(cache, input, 0, 6, 0)
+	unlimited := revDFA.SearchReverse(cache, input, 0, 6)
 
 	if limited != unlimited {
 		t.Errorf("SearchReverseLimited(minStart=0) = %d, SearchReverse = %d; should be equal",
@@ -170,11 +170,11 @@ func TestSearchReverseLimitedMinStartAtStart(t *testing.T) {
 // TestSearchReverseLimitedNoMatchBeyondMinStart tests that when the pattern has no match
 // above the minStart, SearchReverseLimited returns -1 not -2.
 func TestSearchReverseLimitedNoMatchBeyondMinStart(t *testing.T) {
-	revDFA := compileReverseDFA(t, "xyz")
+	revDFA, cache := compileReverseDFA(t, "xyz")
 	input := []byte("abcdefghij")
 
 	// No match at all -> should return -1 (dead state reached before minStart)
-	got := revDFA.SearchReverseLimited(input, 0, 10, 5)
+	got := revDFA.SearchReverseLimited(cache, input, 0, 10, 5)
 	if got != -1 {
 		t.Errorf("SearchReverseLimited for non-matching pattern = %d, want -1", got)
 	}
@@ -193,10 +193,11 @@ func TestSearchReverseWithCacheClearing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reverse DFA compile error: %v", err)
 	}
+	cache := revDFA.NewCache()
 
 	// This input should trigger cache clears during reverse search
 	input := []byte("abc123")
-	got := revDFA.SearchReverse(input, 0, 6)
+	got := revDFA.SearchReverse(cache, input, 0, 6)
 	// Should find some match (exact position depends on NFA fallback)
 	t.Logf("SearchReverse with cache clearing = %d", got)
 }
@@ -221,11 +222,11 @@ func TestSearchReverseConsistency(t *testing.T) {
 	for _, pattern := range patterns {
 		for _, input := range inputs {
 			t.Run(pattern+"_"+input, func(t *testing.T) {
-				revDFA := compileReverseDFA(t, pattern)
+				revDFA, cache := compileReverseDFA(t, pattern)
 				haystack := []byte(input)
 
-				searchResult := revDFA.SearchReverse(haystack, 0, len(haystack))
-				isMatchResult := revDFA.IsMatchReverse(haystack, 0, len(haystack))
+				searchResult := revDFA.SearchReverse(cache, haystack, 0, len(haystack))
+				isMatchResult := revDFA.IsMatchReverse(cache, haystack, 0, len(haystack))
 
 				searchFound := searchResult >= 0
 				if searchFound != isMatchResult {

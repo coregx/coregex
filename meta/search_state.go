@@ -3,6 +3,7 @@ package meta
 import (
 	"sync"
 
+	"github.com/coregx/coregex/dfa/lazy"
 	"github.com/coregx/coregex/dfa/onepass"
 	"github.com/coregx/coregex/nfa"
 )
@@ -29,6 +30,29 @@ type SearchState struct {
 	// so we pool entire PikeVM instances for thread-safety.
 	pikevm *nfa.PikeVM
 
+	// dfaCache holds per-search mutable state for lazy DFA searches.
+	// Each goroutine gets its own cache, eliminating the data race on shared
+	// DFA state construction that previously required PikeVM workarounds.
+	// Nil if no forward DFA was compiled (e.g., NFA-only strategies).
+	dfaCache *lazy.DFACache
+
+	// revDFACache holds per-search mutable state for reverse lazy DFA searches.
+	// Used by bidirectional DFA strategies (ReverseSuffix, ReverseInner, etc.)
+	// to find match start positions. Nil if no reverse DFA was compiled.
+	revDFACache *lazy.DFACache
+
+	// stratFwdCache holds per-search cache for strategy-specific forward DFA.
+	// Used by ReverseSuffix, ReverseInner, MultilineReverseSuffix searchers
+	// which have their own DFAs separate from e.dfa.
+	// Nil if strategy doesn't use a strategy-specific forward DFA.
+	stratFwdCache *lazy.DFACache
+
+	// stratRevCache holds per-search cache for strategy-specific reverse DFA.
+	// Used by ReverseSuffix, ReverseInner, ReverseSuffixSet, ReverseAnchored
+	// searchers which have their own reverse DFAs.
+	// Nil if strategy doesn't use a strategy-specific reverse DFA.
+	stratRevCache *lazy.DFACache
+
 	// onepassSlots holds capture slot storage for OnePass DFA searches.
 	// Pre-allocated to avoid allocation per search.
 	onepassSlots []int
@@ -37,18 +61,41 @@ type SearchState struct {
 	onepassCache *onepass.Cache
 }
 
+// searchStateConfig holds all DFA references needed to create per-search caches.
+type searchStateConfig struct {
+	nfaEngine   *nfa.NFA
+	numCaptures int
+	forwardDFA  *lazy.DFA // e.dfa (main engine DFA)
+	reverseDFA  *lazy.DFA // e.reverseDFA (main engine reverse DFA)
+	stratFwdDFA *lazy.DFA // strategy-specific forward DFA (reverse searchers)
+	stratRevDFA *lazy.DFA // strategy-specific reverse DFA (reverse searchers)
+}
+
 // newSearchState creates a new SearchState with pre-allocated buffers.
-// nfaEngine is required to create a new PikeVM instance.
-func newSearchState(nfaEngine *nfa.NFA, numCaptures int) *SearchState {
+func newSearchState(cfg searchStateConfig) *SearchState {
 	state := &SearchState{
 		backtracker: nfa.NewBacktrackerState(),
-		pikevm:      nfa.NewPikeVM(nfaEngine), // Create per-search PikeVM instance
+		pikevm:      nfa.NewPikeVM(cfg.nfaEngine),
+	}
+
+	// Create per-search DFA caches for thread-safe concurrent access.
+	if cfg.forwardDFA != nil {
+		state.dfaCache = cfg.forwardDFA.NewCache()
+	}
+	if cfg.reverseDFA != nil {
+		state.revDFACache = cfg.reverseDFA.NewCache()
+	}
+	if cfg.stratFwdDFA != nil {
+		state.stratFwdCache = cfg.stratFwdDFA.NewCache()
+	}
+	if cfg.stratRevDFA != nil {
+		state.stratRevCache = cfg.stratRevDFA.NewCache()
 	}
 
 	// Pre-allocate onepass slots if captures are present
-	if numCaptures > 0 {
-		state.onepassSlots = make([]int, numCaptures*2)
-		state.onepassCache = onepass.NewCache(numCaptures)
+	if cfg.numCaptures > 0 {
+		state.onepassSlots = make([]int, cfg.numCaptures*2)
+		state.onepassCache = onepass.NewCache(cfg.numCaptures)
 	}
 
 	return state
@@ -80,21 +127,15 @@ func (s *SearchState) reset() {
 // This follows the stdlib regexp pattern of using sync.Pool for concurrent safety.
 type searchStatePool struct {
 	pool sync.Pool
-
-	// Configuration for creating new states
-	nfaEngine   *nfa.NFA
-	numCaptures int
+	cfg  searchStateConfig
 }
 
 // newSearchStatePool creates a pool configured for the given engine parameters.
-func newSearchStatePool(nfaEngine *nfa.NFA, numCaptures int) *searchStatePool {
-	p := &searchStatePool{
-		nfaEngine:   nfaEngine,
-		numCaptures: numCaptures,
-	}
+func newSearchStatePool(cfg searchStateConfig) *searchStatePool {
+	p := &searchStatePool{cfg: cfg}
 	p.pool = sync.Pool{
 		New: func() any {
-			return newSearchState(p.nfaEngine, p.numCaptures)
+			return newSearchState(p.cfg)
 		},
 	}
 	return p

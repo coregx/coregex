@@ -1,6 +1,8 @@
 package meta
 
 import (
+	"sync"
+
 	"github.com/coregx/coregex/dfa/lazy"
 	"github.com/coregx/coregex/nfa"
 )
@@ -33,6 +35,7 @@ type ReverseAnchoredSearcher struct {
 	reverseDFA    *lazy.DFA
 	pikevm        *nfa.PikeVM
 	forwardPikevm *nfa.PikeVM // For empty string matching (reverse NFA has issues with empty)
+	revCachePool  sync.Pool   // Pool of *lazy.DFACache for thread-safe reverse DFA access
 }
 
 // NewReverseAnchoredSearcher creates a reverse searcher from forward NFA.
@@ -60,12 +63,16 @@ func NewReverseAnchoredSearcher(forwardNFA *nfa.NFA, config lazy.Config) (*Rever
 	// Reverse NFA has issues with empty strings and certain alternations
 	forwardPikevm := nfa.NewPikeVM(forwardNFA)
 
-	return &ReverseAnchoredSearcher{
+	s := &ReverseAnchoredSearcher{
 		reverseNFA:    reverseNFA,
 		reverseDFA:    reverseDFA,
 		pikevm:        pikevm,
 		forwardPikevm: forwardPikevm,
-	}, nil
+	}
+	s.revCachePool = sync.Pool{
+		New: func() any { return s.reverseDFA.NewCache() },
+	}
+	return s, nil
 }
 
 // Find searches backward from end of haystack and returns the match.
@@ -97,7 +104,9 @@ func (s *ReverseAnchoredSearcher) Find(haystack []byte) *Match {
 
 	// Use SearchReverse to find match START (zero-allocation backward scan)
 	// For $-anchored patterns, the END is always len(haystack)
-	matchStart := s.reverseDFA.SearchReverse(haystack, 0, len(haystack))
+	cache := s.revCachePool.Get().(*lazy.DFACache)
+	matchStart := s.reverseDFA.SearchReverse(cache, haystack, 0, len(haystack))
+	s.revCachePool.Put(cache)
 	if matchStart < 0 {
 		return nil
 	}
@@ -123,5 +132,8 @@ func (s *ReverseAnchoredSearcher) IsMatch(haystack []byte) bool {
 
 	// Use reverse DFA to scan backward from end to start
 	// ZERO-ALLOCATION: IsMatchReverse scans backward without byte reversal
-	return s.reverseDFA.IsMatchReverse(haystack, 0, len(haystack))
+	cache := s.revCachePool.Get().(*lazy.DFACache)
+	result := s.reverseDFA.IsMatchReverse(cache, haystack, 0, len(haystack))
+	s.revCachePool.Put(cache)
+	return result
 }

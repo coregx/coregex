@@ -219,6 +219,7 @@ func TestStartStateContextAwareness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to compile pattern: %v", err)
 	}
+	cache := dfa.NewCache()
 
 	tests := []struct {
 		name      string
@@ -233,7 +234,7 @@ func TestStartStateContextAwareness(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := dfa.IsMatch([]byte(tc.haystack))
+			got := dfa.IsMatch(cache, []byte(tc.haystack))
 			if got != tc.wantMatch {
 				t.Errorf("IsMatch(%q) = %v, want %v", tc.haystack, got, tc.wantMatch)
 			}
