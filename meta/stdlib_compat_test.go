@@ -67,19 +67,17 @@ func TestStdlibCompatibility(t *testing.T) {
 		{"multiline_anchor", `(?m)^line`},
 	}
 
-	// Pre-existing divergence: .* FindAll empty match handling.
-	// Pattern `.*` can match empty string. stdlib alternates: non-empty match →
-	// empty match at \n → advance. coregex skips empty matches after \n.
-	// This is a FindAll loop issue, not a strategy bug.
+	// PikeVM bug: complex (?i) alternation with overlapping prefixes (exec/execute)
+	// causes FindAll to miss subsequent alternation branches after matching
+	// a prefix branch. NFA compilation or PikeVM priority issue.
 	knownIssues := map[string]string{
-		"dot_star":      "FindAll empty match semantics differ for .* (pre-existing, exists on main)",
-		"la_suspicious": "(?i) case-insensitive DFA FindAll misses alternation branches (pre-existing)",
+		"la_suspicious": "PikeVM (?i) alternation: exec prefix overlaps execute, misses later branches",
 	}
 
 	for _, p := range patterns {
 		t.Run(p.name, func(t *testing.T) {
 			if reason, ok := knownIssues[p.name]; ok {
-				t.Skipf("pre-existing divergence (exists on main too): %s", reason)
+				t.Skipf("known bug (needs PikeVM fix): %s", reason)
 			}
 
 			stdRe, err := regexp.Compile(p.pattern)

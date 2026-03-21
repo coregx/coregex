@@ -1187,6 +1187,48 @@ func hasAnchorAssertions(re *syntax.Regexp) bool {
 	return false
 }
 
+// canMatchEmpty returns true if the regex can match the empty string.
+// Patterns like `.*`, `a*`, `(a|)`, `\d*` can match empty.
+// Used to prevent DFA-based strategies for these patterns in FindAll,
+// where DFA cache clear causes incorrect positions for empty matches.
+func canMatchEmpty(re *syntax.Regexp) bool {
+	if re == nil {
+		return true
+	}
+	switch re.Op {
+	case syntax.OpEmptyMatch, syntax.OpNoMatch:
+		return true
+	case syntax.OpLiteral, syntax.OpCharClass, syntax.OpAnyCharNotNL, syntax.OpAnyChar:
+		return false
+	case syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText,
+		syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		return true // assertions match without consuming
+	case syntax.OpCapture:
+		return canMatchEmpty(re.Sub[0])
+	case syntax.OpStar, syntax.OpQuest:
+		return true // zero repetitions match empty
+	case syntax.OpPlus:
+		return canMatchEmpty(re.Sub[0])
+	case syntax.OpRepeat:
+		return re.Min == 0 || canMatchEmpty(re.Sub[0])
+	case syntax.OpConcat:
+		for _, sub := range re.Sub {
+			if !canMatchEmpty(sub) {
+				return false
+			}
+		}
+		return true
+	case syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if canMatchEmpty(sub) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
 // analyzeLiterals checks if literals are suitable for prefiltering.
 // This is a helper function to reduce cyclomatic complexity in SelectStrategy.
 func analyzeLiterals(literals *literal.Seq, config Config) literalAnalysis {
@@ -1411,13 +1453,25 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return UseNFA
 	}
 
+	// Patterns that can match empty string (e.g., `.*`, `a*`, `(a|)`) must use
+	// NFA for FindAll correctness. DFA cache clear during FindAll loop causes
+	// incorrect match positions when the pattern matches empty strings at
+	// arbitrary positions. PikeVM handles this correctly.
+	if !litAnalysis.hasGoodLiterals && !litAnalysis.hasTeddyLiterals && canMatchEmpty(re) {
+		return UseNFA
+	}
+
 	// Good literals on larger NFA → use prefilter + DFA (best performance)
 	// Patterns like "ABXBYXCX" or "(foo|foobar)\d+" benefit massively from:
 	//  1. Prefilter finds literal candidates quickly (5-50x speedup)
 	//  2. DFA verifies with O(n) deterministic scan
-	// Also covers Teddy multi-pattern prefilter for alternation patterns where
-	// literals are not complete (e.g., "(foo|bar)\d+" needs DFA verification).
+	// BUT: very large NFAs (>200 states, e.g., (?i) case-fold expansions)
+	// cause DFA cache thrashing even with prefilter — incomplete literals
+	// mean DFA must explore many states per candidate. Fall back to NFA.
 	if litAnalysis.hasGoodLiterals || litAnalysis.hasTeddyLiterals {
+		if nfaSize > 200 && !literals.AllComplete() {
+			return UseNFA
+		}
 		return UseDFA
 	}
 
