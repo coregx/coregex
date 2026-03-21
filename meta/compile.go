@@ -480,7 +480,10 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Select strategy (pass re for anchor detection)
 	strategy := SelectStrategy(nfaEngine, re, literals, config)
 
+	pf, strategy = adjustForAnchors(pf, strategy, re)
+
 	// Build PikeVM (always needed for fallback).
+	// NOTE: hasMultilineLineAnchor and hasAnchorAssertions are defined in strategy.go
 	// Use runeNFA when available — sparse dispatch replaces ~9 split states
 	// with a single sparse state, giving PikeVM O(1) byte dispatch per '.'.
 	pikevmNFA := nfaEngine
@@ -625,6 +628,24 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		)),
 		stats: Stats{},
 	}, nil
+}
+
+// adjustForAnchors fixes prefilter and strategy for patterns with anchors.
+// Anchors (^, $, \b) require verification that Teddy/AC prefilter can't provide.
+// Multiline line anchors ((?m)^) need NFA because DFA doesn't verify line positions.
+func adjustForAnchors(pf prefilter.Prefilter, strategy Strategy, re *syntax.Regexp) (prefilter.Prefilter, Strategy) {
+	if !hasAnchorAssertions(re) {
+		return pf, strategy
+	}
+	// Mark prefilter incomplete — engine must verify anchor constraints
+	if pf != nil && pf.IsComplete() {
+		pf = prefilter.WrapIncomplete(pf)
+	}
+	// DFA can't verify (?m)^ multiline line anchors — use NFA
+	if strategy == UseDFA && hasMultilineLineAnchor(re) {
+		strategy = UseNFA
+	}
+	return pf, strategy
 }
 
 // buildSearchStateConfig extracts all DFA references needed for per-search caches.

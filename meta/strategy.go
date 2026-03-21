@@ -1187,6 +1187,24 @@ func hasAnchorAssertions(re *syntax.Regexp) bool {
 	return false
 }
 
+// hasMultilineLineAnchor returns true if the pattern has (?m)^ or (?m)$ —
+// multiline line anchors that DFA can't verify (needs NFA).
+// Single-line ^ (BeginText) and $ (EndText) are handled by DFA.
+func hasMultilineLineAnchor(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+	if re.Op == syntax.OpBeginLine || re.Op == syntax.OpEndLine {
+		return true // BeginLine/EndLine = multiline anchors
+	}
+	for _, sub := range re.Sub {
+		if hasMultilineLineAnchor(sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // canMatchEmpty returns true if the regex can match the empty string.
 // Patterns like `.*`, `a*`, `(a|)`, `\d*` can match empty.
 // Used to prevent DFA-based strategies for these patterns in FindAll,
