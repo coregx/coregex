@@ -67,13 +67,13 @@ func TestStdlibCompatibility(t *testing.T) {
 		{"multiline_anchor", `(?m)^line`},
 	}
 
-	// Pre-existing divergences from stdlib (exist on main, not from this PR).
-	// Tracked for fix in separate PRs.
+	// Pre-existing divergence: .* FindAll empty match handling.
+	// Pattern `.*` can match empty string. stdlib alternates: non-empty match →
+	// empty match at \n → advance. coregex skips empty matches after \n.
+	// This is a FindAll loop issue, not a strategy bug.
 	knownIssues := map[string]string{
-		"http_methods":  "capture group affects FindAll count (600 vs 900)",
-		"la_suspicious": "case-insensitive capture group FindAll mismatch",
-		"la_methods":    "capture group affects FindAll count (800 vs 1000)",
-		"dot_star":      ".* FindAll returns 4 matches vs stdlib 1000",
+		"dot_star":      "FindAll empty match semantics differ for .* (pre-existing, exists on main)",
+		"la_suspicious": "(?i) case-insensitive DFA FindAll misses alternation branches (pre-existing)",
 	}
 
 	for _, p := range patterns {

@@ -1133,6 +1133,7 @@ type literalAnalysis struct {
 	hasGoodLiterals        bool // Good prefix literal (LCP >= MinLiteralLen)
 	hasTeddyLiterals       bool // Suitable for Teddy (2-32 patterns, each >= 3 bytes)
 	hasAhoCorasickLiterals bool // Suitable for Aho-Corasick (>32 patterns, each >= 1 byte)
+	hasAnchors             bool // Pattern has anchors (^, $, \b) that Teddy can't verify
 }
 
 // selectLiteralStrategy selects strategy based on literal analysis.
@@ -1147,7 +1148,9 @@ func selectLiteralStrategy(literals *literal.Seq, litAnalysis literalAnalysis) S
 	// Patterns like "(foo|bar|baz)" where all literals are complete don't need
 	// DFA verification - Teddy.Find() returns exact matches.
 	// Speedup: 50-250x by skipping all DFA/NFA construction overhead.
-	if litAnalysis.hasTeddyLiterals && literals.AllComplete() {
+	// BUT: patterns with anchors (e.g., (?m)^GET|POST) need DFA to verify
+	// that the match position satisfies the anchor constraint.
+	if litAnalysis.hasTeddyLiterals && literals.AllComplete() && !litAnalysis.hasAnchors {
 		return UseTeddy
 	}
 
@@ -1160,6 +1163,28 @@ func selectLiteralStrategy(literals *literal.Seq, litAnalysis literalAnalysis) S
 	}
 
 	return 0
+}
+
+// hasAnchorAssertions checks if the regex AST contains position assertions
+// (^, $, \b, \B) that require verification beyond literal matching.
+// When anchors are present, UseTeddy (literal-only engine) cannot be used
+// because it doesn't verify anchor constraints.
+func hasAnchorAssertions(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+	switch re.Op {
+	case syntax.OpBeginLine, syntax.OpEndLine,
+		syntax.OpBeginText, syntax.OpEndText,
+		syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		return true
+	}
+	for _, sub := range re.Sub {
+		if hasAnchorAssertions(sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // analyzeLiterals checks if literals are suitable for prefiltering.
@@ -1332,6 +1357,7 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	// Analyze NFA size and literals
 	nfaSize := n.States()
 	litAnalysis := analyzeLiterals(literals, config)
+	litAnalysis.hasAnchors = hasAnchorAssertions(re)
 
 	// Check for simple char_class+ patterns (HIGHEST priority for character class patterns)
 	// Patterns like [\w]+, [a-z]+, \d+ use CharClassSearcher: 14-17x faster than BoundedBacktracker
