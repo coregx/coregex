@@ -637,15 +637,48 @@ func adjustForAnchors(pf prefilter.Prefilter, strategy Strategy, re *syntax.Rege
 	if !hasAnchorAssertions(re) {
 		return pf, strategy
 	}
-	// Mark prefilter incomplete — engine must verify anchor constraints
+
+	hasMultilineAnchor := hasMultilineLineAnchor(re)
+
 	if pf != nil && pf.IsComplete() {
-		pf = prefilter.WrapIncomplete(pf)
+		if hasMultilineAnchor && !hasNonLineAnchors(re) {
+			// (?m)^ with complete literals and NO other anchors (\b, $):
+			// Use line-anchor wrapper — O(1) line-start check per candidate.
+			// This keeps IsComplete()=true so Teddy can return matches directly
+			// without expensive NFA verification.
+			pf = prefilter.WrapLineAnchor(pf)
+		} else {
+			// Other anchors (\b, $) or mixed anchors:
+			// Mark incomplete — engine must verify with NFA/DFA.
+			pf = prefilter.WrapIncomplete(pf)
+		}
 	}
+
 	// DFA can't verify (?m)^ multiline line anchors — use NFA
-	if strategy == UseDFA && hasMultilineLineAnchor(re) {
+	if strategy == UseDFA && hasMultilineAnchor {
 		strategy = UseNFA
 	}
 	return pf, strategy
+}
+
+// hasNonLineAnchors checks if the pattern has anchors other than (?m)^ line start.
+// Returns true for \b, $, \A, \z, or non-multiline ^.
+func hasNonLineAnchors(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+	switch re.Op {
+	case syntax.OpBeginLine:
+		return false // (?m)^ is fine
+	case syntax.OpEndLine, syntax.OpEndText, syntax.OpBeginText, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		return true
+	}
+	for _, sub := range re.Sub {
+		if hasNonLineAnchors(sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildSearchStateConfig extracts all DFA references needed for per-search caches.
