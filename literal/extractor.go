@@ -264,14 +264,20 @@ func (e *Extractor) extractPrefixesAlternate(re *syntax.Regexp, depth int) *Seq 
 		}
 	}
 
+	// If overflow occurred, NOT all alternation branches are represented.
+	// A partial prefilter would miss matches for unrepresented branches.
+	// Return empty Seq so no prefilter is built — NFA handles all branches.
+	// This matches Rust's approach: overflowed literal sets → no prefilter.
+	if overflowed {
+		return NewSeq()
+	}
+
 	result := NewSeq(allLits...)
 
-	if overflowed || result.Len() > e.config.MaxLiterals {
-		// Too many literals: trim to 3-byte prefixes, dedup, mark inexact.
-		// This mirrors Rust's optimize_for_prefix_by_preference:
-		// 250 variants → trim to 3 bytes → ~60 unique prefixes.
-		// Use 3 bytes (not 4) because Teddy requires minimum 3-byte patterns,
-		// and shorter prefixes yield better deduplication across alternation branches.
+	if result.Len() > e.config.MaxLiterals {
+		// Too many literals but all branches represented: trim to 3-byte
+		// prefixes, dedup, mark inexact. After trim, all alternation branches
+		// have at least one prefix in the set (unlike overflow truncation).
 		result.KeepFirstBytes(3)
 		e.markAllInexact(result)
 		result.Dedup()
@@ -840,9 +846,11 @@ func (e *Extractor) expandCaseFoldLiteral(runes []rune) *Seq {
 	// Build per-position fold sets
 	foldSets := make([][]rune, len(runes))
 	totalProduct := 1
+	filledCount := 0
 	for i, r := range runes {
 		folds := caseFolds(r)
 		foldSets[i] = folds
+		filledCount = i + 1
 		totalProduct *= len(folds)
 		// Early exit if cross-product would be too large even before trimming
 		if totalProduct > crossLimit {
@@ -850,9 +858,10 @@ func (e *Extractor) expandCaseFoldLiteral(runes []rune) *Seq {
 		}
 	}
 
-	// If cross-product fits within limits, generate all variants
-	if totalProduct <= e.config.MaxLiterals {
-		return e.generateCaseFoldVariants(foldSets, len(runes))
+	// If cross-product fits within limits, generate all variants.
+	// Use filledCount (not len(runes)) — early exit may leave trailing nil entries.
+	if totalProduct <= e.config.MaxLiterals && filledCount == len(runes) {
+		return e.generateCaseFoldVariants(foldSets, filledCount)
 	}
 
 	// Cross-product too large: trim to shorter prefix and deduplicate.

@@ -67,19 +67,8 @@ func TestStdlibCompatibility(t *testing.T) {
 		{"multiline_anchor", `(?m)^line`},
 	}
 
-	// PikeVM bug: complex (?i) alternation with overlapping prefixes (exec/execute)
-	// causes FindAll to miss subsequent alternation branches after matching
-	// a prefix branch. NFA compilation or PikeVM priority issue.
-	knownIssues := map[string]string{
-		"la_suspicious": "PikeVM (?i) alternation: exec prefix overlaps execute, misses later branches",
-	}
-
 	for _, p := range patterns {
 		t.Run(p.name, func(t *testing.T) {
-			if reason, ok := knownIssues[p.name]; ok {
-				t.Skipf("known bug (needs PikeVM fix): %s", reason)
-			}
-
 			stdRe, err := regexp.Compile(p.pattern)
 			if err != nil {
 				t.Skipf("stdlib can't compile: %v", err)
