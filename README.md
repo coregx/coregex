@@ -64,16 +64,16 @@ Cross-language benchmarks on 6MB input, AMD EPYC ([source](https://github.com/ko
 
 | Pattern | Go stdlib | coregex | Rust regex | vs stdlib | vs Rust |
 |---------|-----------|---------|------------|-----------|---------|
-| Literal alternation | 483 ms | 4.6 ms | 0.6 ms | **104x** | 7.8x slower |
-| Multi-literal | 1401 ms | 12.7 ms | 4.6 ms | **110x** | 2.7x slower |
-| Inner `.*keyword.*` | 232 ms | 0.25 ms | 0.28 ms | **926x** | **1.1x faster** |
-| Suffix `.*\.txt` | 234 ms | 0.88 ms | 1.07 ms | **266x** | **1.2x faster** |
-| Multiline `(?m)^/.*\.php` | 103 ms | 0.65 ms | 0.66 ms | **159x** | **~parity** |
-| Email validation | 261 ms | 0.58 ms | 0.21 ms | **449x** | 2.7x slower |
-| URL extraction | 258 ms | 0.63 ms | 0.34 ms | **409x** | 1.8x slower |
-| IP address | 495 ms | 2.2 ms | 12.0 ms | **230x** | **5.5x faster** |
-| Char class `[\w]+` | 525 ms | 40.7 ms | 50.3 ms | **12x** | **1.2x faster** |
-| Word repeat `(\w{2,8})+` | 659 ms | 187 ms | 48.3 ms | **3.5x** | 3.8x slower |
+| Literal alternation | 475 ms | 4.4 ms | 0.6 ms | **108x** | 7.1x slower |
+| Multi-literal | 1412 ms | 12.8 ms | 4.7 ms | **110x** | 2.7x slower |
+| Inner `.*keyword.*` | 234 ms | 0.35 ms | 0.28 ms | **667x** | 1.2x slower |
+| Suffix `.*\.txt` | 236 ms | 1.83 ms | 1.08 ms | **128x** | 1.6x slower |
+| Multiline `(?m)^/.*\.php` | 104 ms | 0.50 ms | 0.68 ms | **207x** | **1.3x faster** |
+| Email validation | 262 ms | 0.50 ms | 0.23 ms | **523x** | 2.1x slower |
+| URL extraction | 258 ms | 0.61 ms | 0.35 ms | **422x** | 1.7x slower |
+| IP address | 497 ms | 2.2 ms | 12.0 ms | **229x** | **5.5x faster** |
+| Char class `[\w]+` | 579 ms | 41.0 ms | 50.1 ms | **14x** | **1.2x faster** |
+| Word repeat `(\w{2,8})+` | 652 ms | 186 ms | 48.3 ms | **3x** | 3.8x slower |
 
 **Where coregex excels:**
 - Multiline patterns (`(?m)^/.*\.php`) — near Rust parity, 100x+ vs stdlib
