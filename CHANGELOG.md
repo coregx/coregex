@@ -12,6 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.16] - 2026-03-21
+
+### Performance
+- **`WrapLineAnchor` for `(?m)^` patterns** — `WrapIncomplete` forced NFA
+  verification for every prefilter candidate on multiline line-anchor patterns,
+  causing 7x regression on ARM64 (LogParser 2s → 14s, reported by @kostya).
+  `WrapLineAnchor` checks line-start position in O(1) (`pos==0 || haystack[pos-1]=='\n'`),
+  keeping `IsComplete()=true` so Teddy returns matches directly without NFA.
+  LangArena `methods`: 755ms → **<1ms**. `multiline_php` on macOS ARM64:
+  63ms → **1.55ms** (41x faster).
+
+### Fixed
+- **Stdlib compatibility** — `WrapLineAnchor` also fixes 4 previously skipped
+  stdlib compat test patterns (`http_methods`, `la_methods`, `la_suspicious`,
+  `dot_star`). Test now **38/38 PASS, 0 SKIP**.
+
 ## [0.12.15] - 2026-03-21
 
 ### Performance
