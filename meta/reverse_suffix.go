@@ -15,6 +15,20 @@ import (
 // This is not a fatal error - it just means ReverseSuffix optimization cannot be used.
 var ErrNoPrefilter = errors.New("no prefilter available for suffix literals")
 
+// lineStartBefore returns the position of the start of the line containing pos.
+// For .* (AnyCharNotNL) patterns, match cannot cross \n boundaries.
+// Returns at if no \n found between at and pos.
+func lineStartBefore(haystack []byte, at, pos int) int {
+	if at >= pos {
+		return at
+	}
+	idx := bytes.LastIndexByte(haystack[at:pos], '\n')
+	if idx >= 0 {
+		return at + idx + 1
+	}
+	return at
+}
+
 // ReverseSuffixSearcher performs suffix literal prefilter + reverse DFA search.
 //
 // This strategy is used for patterns with literal suffixes like `.*\.txt` where:
@@ -170,8 +184,8 @@ func (s *ReverseSuffixSearcher) Find(haystack []byte) *Match {
 		return nil
 	}
 
-	// For matchStartZero (unanchored .* prefix), match starts at 0 and extends
-	// to the LAST suffix — use LastIndex for greedy O(n) scan.
+	// For matchStartZero (unanchored .* prefix), match starts at the beginning
+	// of the line containing the LAST suffix — .* (AnyCharNotNL) cannot cross \n.
 	if s.matchStartZero {
 		lastPos := bytes.LastIndex(haystack, s.suffixBytes)
 		if lastPos == -1 {
@@ -181,7 +195,8 @@ func (s *ReverseSuffixSearcher) Find(haystack []byte) *Match {
 		if revEnd > len(haystack) {
 			revEnd = len(haystack)
 		}
-		return NewMatch(0, revEnd, haystack)
+		matchStart := lineStartBefore(haystack, 0, lastPos)
+		return NewMatch(matchStart, revEnd, haystack)
 	}
 
 	// For bounded wildcards (e.g., \d+\.\d+\.35), find the FIRST suffix
@@ -272,20 +287,13 @@ func (s *ReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match {
 			suffixEnd = len(haystack)
 		}
 
-		// For unanchored patterns (like .*@suffix), match starts at 'at'.
-		// Prefilter found suffix at 'pos'. For correct greedy semantics,
-		// find the LAST suffix before the next newline (`.` doesn't match `\n`).
+		// For unanchored patterns (like .*@suffix), .* cannot cross \n.
+		// Match starts at the beginning of the line containing 'pos'.
+		// For greedy semantics, find the LAST suffix on that line.
 		if s.matchStartZero {
-			// Find the line containing this match (from 'at' to next '\n')
-			matchLineStart := at
-			// Skip leading newlines to find actual content start
-			for matchLineStart < len(haystack) && haystack[matchLineStart] == '\n' {
-				matchLineStart++
-			}
-			if matchLineStart >= len(haystack) {
-				return nil
-			}
-			// pos is within this line — find line end
+			// Find start of the line containing the suffix candidate
+			matchLineStart := lineStartBefore(haystack, at, pos)
+			// Find end of this line
 			lineEnd := bytes.IndexByte(haystack[pos:], '\n')
 			var lineEndAbs int
 			if lineEnd == -1 {
@@ -293,7 +301,7 @@ func (s *ReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match {
 			} else {
 				lineEndAbs = pos + lineEnd
 			}
-			// Find LAST suffix in this line for greedy match
+			// Find LAST suffix on this line for greedy match
 			lastPos := bytes.LastIndex(haystack[matchLineStart:lineEndAbs], s.suffixBytes)
 			if lastPos >= 0 {
 				matchEnd := matchLineStart + lastPos + s.suffixLen
@@ -381,13 +389,9 @@ func (s *ReverseSuffixSearcher) findIndicesAtImpl(haystack []byte, at int, fwdCa
 		}
 
 		if s.matchStartZero {
-			matchLineStart := at
-			for matchLineStart < len(haystack) && haystack[matchLineStart] == '\n' {
-				matchLineStart++
-			}
-			if matchLineStart >= len(haystack) {
-				return -1, -1, false
-			}
+			// .* (AnyCharNotNL) cannot cross \n boundaries.
+			// Find the line containing the suffix candidate.
+			lineStart := lineStartBefore(haystack, at, pos)
 			lineEnd := bytes.IndexByte(haystack[pos:], '\n')
 			var lineEndAbs int
 			if lineEnd == -1 {
@@ -395,13 +399,14 @@ func (s *ReverseSuffixSearcher) findIndicesAtImpl(haystack []byte, at int, fwdCa
 			} else {
 				lineEndAbs = pos + lineEnd
 			}
-			lastPos := bytes.LastIndex(haystack[matchLineStart:lineEndAbs], s.suffixBytes)
+			// Find LAST suffix on this line for greedy match
+			lastPos := bytes.LastIndex(haystack[lineStart:lineEndAbs], s.suffixBytes)
 			if lastPos >= 0 {
-				matchEnd := matchLineStart + lastPos + s.suffixLen
+				matchEnd := lineStart + lastPos + s.suffixLen
 				if matchEnd > len(haystack) {
 					matchEnd = len(haystack)
 				}
-				return matchLineStart, matchEnd, true
+				return lineStart, matchEnd, true
 			}
 			return -1, -1, false
 		}

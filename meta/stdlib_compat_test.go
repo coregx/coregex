@@ -1,6 +1,7 @@
 package meta_test
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"strings"
@@ -66,21 +67,19 @@ func TestStdlibCompatibility(t *testing.T) {
 		{"multiline_anchor", `(?m)^line`},
 	}
 
-	// Known pre-existing divergences from stdlib (tracked as issues).
-	// These are NOT regressions — they fail on main too.
+	// Pre-existing divergences from stdlib (exist on main, not from this PR).
+	// Tracked for fix in separate PRs.
 	knownIssues := map[string]string{
-		"inner_literal": "greedy .* match boundaries differ from stdlib",
-		"suffix":        "greedy .* match boundaries differ from stdlib",
-		"http_methods":  "(?m) capture group FindAll boundaries differ",
-		"la_suspicious": "case-insensitive alternation FindAll boundaries differ",
-		"la_methods":    "(?m) capture group FindAll boundaries differ",
-		"dot_star":      ".* newline handling differs from stdlib",
+		"http_methods":  "capture group affects FindAll count (600 vs 900)",
+		"la_suspicious": "case-insensitive capture group FindAll mismatch",
+		"la_methods":    "capture group affects FindAll count (800 vs 1000)",
+		"dot_star":      ".* FindAll returns 4 matches vs stdlib 1000",
 	}
 
 	for _, p := range patterns {
 		t.Run(p.name, func(t *testing.T) {
 			if reason, ok := knownIssues[p.name]; ok {
-				t.Skipf("known divergence: %s", reason)
+				t.Skipf("pre-existing divergence (exists on main too): %s", reason)
 			}
 
 			stdRe, err := regexp.Compile(p.pattern)
@@ -105,7 +104,7 @@ func TestStdlibCompatibility(t *testing.T) {
 			ourFind := engine.Find(input)
 			if ourFind != nil {
 				ourFindBytes := ourFind.Bytes()
-				if string(stdFind) != string(ourFindBytes) {
+				if !bytes.Equal(stdFind, ourFindBytes) {
 					t.Errorf("Find: stdlib=%q coregex=%q", stdFind, ourFindBytes)
 				}
 			} else if stdFind != nil {

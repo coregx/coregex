@@ -6,6 +6,7 @@ package meta
 // See docs/OPTIMIZATIONS.md for algorithm details and benchmark data.
 
 import (
+	"bytes"
 	"errors"
 	"sync"
 
@@ -164,9 +165,11 @@ func (s *ReverseSuffixSetSearcher) Find(haystack []byte) *Match {
 			suffixEnd = len(haystack)
 		}
 
-		// For unanchored patterns, match starts at 0
+		// For unanchored patterns, .* cannot cross \n boundaries.
+		// Match starts at the beginning of the line containing the suffix.
 		if s.matchStartZero {
-			lastMatch = NewMatch(0, suffixEnd, haystack)
+			matchStart := lineStartBefore(haystack, 0, pos)
+			lastMatch = NewMatch(matchStart, suffixEnd, haystack)
 		} else {
 			// Use reverse DFA with anti-quadratic guard to find match start
 			matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, 0, suffixEnd, minStart)
@@ -231,9 +234,37 @@ func (s *ReverseSuffixSetSearcher) FindAt(haystack []byte, at int) *Match {
 			suffixEnd = len(haystack)
 		}
 
-		// For unanchored patterns, match starts at 'at'
+		// For unanchored patterns, .* cannot cross \n boundaries.
+		// Match starts at the beginning of the line containing the suffix.
+		// For greedy semantics, find the LAST suffix on this line.
 		if s.matchStartZero {
-			return NewMatch(at, suffixEnd, haystack)
+			matchStart := lineStartBefore(haystack, at, pos)
+			// Find line end
+			lineEndRel := bytes.IndexByte(haystack[pos:], '\n')
+			var lineEnd int
+			if lineEndRel == -1 {
+				lineEnd = len(haystack)
+			} else {
+				lineEnd = pos + lineEndRel
+			}
+			// Scan line for the last valid suffix candidate
+			lastSuffixEnd := suffixEnd
+			scan := pos + 1
+			for scan < lineEnd {
+				nextPos := s.prefilter.Find(haystack, scan)
+				if nextPos == -1 || nextPos >= lineEnd {
+					break
+				}
+				nextLen := s.getSuffixLen(haystack, nextPos)
+				if nextLen > 0 {
+					nextEnd := nextPos + nextLen
+					if nextEnd <= lineEnd {
+						lastSuffixEnd = nextEnd
+					}
+				}
+				scan = nextPos + 1
+			}
+			return NewMatch(matchStart, lastSuffixEnd, haystack)
 		}
 
 		// Use reverse DFA with anti-quadratic guard to find match start
@@ -310,9 +341,35 @@ func (s *ReverseSuffixSetSearcher) findIndicesAtImpl(haystack []byte, at int, re
 			suffixEnd = len(haystack)
 		}
 
-		// For unanchored patterns, match starts at 'at'
+		// For unanchored patterns, .* cannot cross \n boundaries.
+		// Match starts at the beginning of the line containing the suffix.
+		// For greedy semantics, find the LAST suffix on this line.
 		if s.matchStartZero {
-			return at, suffixEnd, true
+			matchStart := lineStartBefore(haystack, at, pos)
+			lineEndRel := bytes.IndexByte(haystack[pos:], '\n')
+			var lineEnd int
+			if lineEndRel == -1 {
+				lineEnd = len(haystack)
+			} else {
+				lineEnd = pos + lineEndRel
+			}
+			lastSuffixEnd := suffixEnd
+			scan := pos + 1
+			for scan < lineEnd {
+				nextPos := s.prefilter.Find(haystack, scan)
+				if nextPos == -1 || nextPos >= lineEnd {
+					break
+				}
+				nextLen := s.getSuffixLen(haystack, nextPos)
+				if nextLen > 0 {
+					nextEnd := nextPos + nextLen
+					if nextEnd <= lineEnd {
+						lastSuffixEnd = nextEnd
+					}
+				}
+				scan = nextPos + 1
+			}
+			return matchStart, lastSuffixEnd, true
 		}
 
 		// Use reverse DFA with anti-quadratic guard to find match start
