@@ -106,9 +106,13 @@ func (d *DFA) NewCache() *DFACache {
 	// Start small — grow on demand. Pre-allocating MaxStates (10,000) wastes
 	// ~400KB per cache and dominates cold-start cost for pooled caches.
 	const initCap = 64
+	stride := d.AlphabetLen()
 	return &DFACache{
 		states:     make(map[StateKey]*State, initCap),
 		stateList:  make([]*State, 0, initCap),
+		flatTrans:  make([]StateID, 0, initCap*stride),
+		matchFlags: make([]bool, 0, initCap),
+		stride:     stride,
 		startTable: newStartTableFromByteMap(&d.startByteMap),
 		maxStates:  d.config.MaxStates,
 		nextID:     StartState + 1,
@@ -353,12 +357,12 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 		return -1
 	}
 
-	currentState := d.getStartStateForUnanchored(cache, haystack, startPos)
-	if currentState == nil {
+	startState := d.getStartStateForUnanchored(cache, haystack, startPos)
+	if startState == nil {
 		return d.nfaFallback(haystack, startPos)
 	}
 
-	if currentState.IsMatch() {
+	if startState.IsMatch() {
 		return startPos
 	}
 
@@ -367,47 +371,75 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 	committed := false
 	lastMatch := -1
 
-	for pos < end {
-		b := haystack[pos]
+	// Hot loop: flat transition table (Rust approach).
+	// Work with state ID only — no *State pointer chase in fast path.
+	// State struct needed only for: determinize (slow), word boundary (guarded).
+	sid := startState.id
+	ft := cache.flatTrans
+	stride := cache.stride
 
-		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
-			return pos
+	// Bounds hint for compiler — eliminates repeated len checks in loop.
+	if len(ft) > 0 {
+		_ = ft[len(ft)-1]
+	}
+
+	for pos < end {
+		// Word boundary check (slow path, guarded by d.hasWordBoundary)
+		if d.hasWordBoundary {
+			st := cache.getState(sid)
+			if st != nil && st.checkWordBoundaryFast(haystack[pos]) {
+				return pos
+			}
 		}
 
-		classIdx := d.byteToClass(b)
-		nextID, ok := currentState.Transition(classIdx)
-		switch {
-		case !ok:
-			nextState, err := d.determinize(cache, currentState, b)
+		classIdx := int(d.byteToClass(haystack[pos]))
+		offset := int(sid)*stride + classIdx
+
+		// Fast path: flat table lookup — ONE slice access
+		var nextID StateID
+		if offset < len(ft) {
+			nextID = ft[offset]
+		} else {
+			nextID = InvalidState
+		}
+
+		switch nextID {
+		case InvalidState:
+			// Unknown transition — determinize on demand (slow path)
+			currentState := cache.getState(sid)
+			if currentState == nil {
+				return d.nfaFallback(haystack, startPos)
+			}
+			nextState, err := d.determinize(cache, currentState, haystack[pos])
 			if err != nil {
 				return d.nfaFallback(haystack, startPos)
 			}
 			if nextState == nil {
-				return lastMatch
+				return lastMatch // dead state
 			}
-			currentState = nextState
-		case nextID == DeadState:
+			sid = nextState.id
+			// flatTrans may have grown — refresh pointer
+			ft = cache.flatTrans
+		case DeadState:
 			return lastMatch
 		default:
-			currentState = cache.getState(nextID)
-			if currentState == nil {
-				return d.nfaFallback(haystack, startPos)
-			}
+			sid = nextID // Fast path: just update state ID, no pointer chase
 		}
 
 		pos++
 
-		if currentState.IsMatch() {
+		// Match check via compact bool slice — no pointer chase
+		if cache.IsMatchState(sid) {
 			lastMatch = pos
 			committed = true
 		} else if committed {
-			// First match is committed and we left the match state.
-			// Return immediately — don't extend for longest match.
 			return lastMatch
 		}
 	}
 
-	if d.checkEOIMatch(currentState) {
+	// EOI match check (needs State struct — slow path)
+	eoi := cache.getState(sid)
+	if eoi != nil && d.checkEOIMatch(eoi) {
 		return len(haystack)
 	}
 
@@ -1308,9 +1340,7 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 		// Cache the dead state transition to avoid re-computation
 		// Use classIdx for transition storage (compressed alphabet)
 		current.AddTransition(classIdx, DeadState)
-		// Return nil state with NO error - dead state is NOT an error condition.
-		// This follows the documented behavior: (nil, nil) for dead state.
-		// Returning an error here would incorrectly trigger NFA fallback.
+		cache.SetFlatTransition(current.id, int(classIdx), DeadState)
 		return nil, nil //nolint:nilnil // dead state is valid, not an error
 	}
 
@@ -1337,6 +1367,7 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 		// Cache hit: reuse existing state
 		// Use classIdx for transition storage (compressed alphabet)
 		current.AddTransition(classIdx, existing.ID())
+		cache.SetFlatTransition(current.id, int(classIdx), existing.ID())
 		return existing, nil
 	}
 
@@ -1375,6 +1406,7 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	// Add transition from current state to new state
 	// Use classIdx for transition storage (compressed alphabet)
 	current.AddTransition(classIdx, newState.ID())
+	cache.SetFlatTransition(current.id, int(classIdx), newState.ID())
 
 	return newState, nil
 }
