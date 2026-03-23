@@ -352,7 +352,7 @@ func (d *DFA) SearchFirstAt(cache *DFACache, haystack []byte, at int) int {
 
 // searchFirstAt is the core DFA search with early termination after first match.
 // Returns the end of the first match found, without extending for longest match.
-func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int {
+func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int { //nolint:funlen // 4x unrolled hot loop requires many statements
 	if d.isAlwaysAnchored && startPos > 0 {
 		return -1
 	}
@@ -383,8 +383,97 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 		_ = ft[len(ft)-1]
 	}
 
+	// 4x unrolled hot loop (Rust approach: hybrid/search.rs:195-221).
+	// Process 4 bytes per iteration when all transitions are in flat table
+	// (no unknown/dead/special states). Falls to slow path on any special case.
+	canUnroll := !d.hasWordBoundary
+	ftLen := len(ft)
+
 	for pos < end {
-		// Word boundary check (slow path, guarded by d.hasWordBoundary)
+		// === 4x UNROLLED FAST PATH ===
+		if canUnroll && pos+3 < end {
+			sidInt := int(sid)
+
+			// Transition 1
+			o1 := sidInt*stride + int(d.byteToClass(haystack[pos]))
+			if o1 >= ftLen {
+				goto searchFirstSlowPath
+			}
+			n1 := ft[o1]
+			if n1 >= DeadState { // DeadState or InvalidState
+				goto searchFirstSlowPath
+			}
+			pos++
+			if cache.matchFlags[int(n1)] {
+				lastMatch = pos
+				committed = true
+			} else if committed {
+				return lastMatch
+			}
+
+			// Transition 2
+			o2 := int(n1)*stride + int(d.byteToClass(haystack[pos]))
+			if o2 >= ftLen {
+				sid = n1
+				goto searchFirstSlowPath
+			}
+			n2 := ft[o2]
+			if n2 >= DeadState {
+				sid = n1
+				goto searchFirstSlowPath
+			}
+			pos++
+			if cache.matchFlags[int(n2)] {
+				lastMatch = pos
+				committed = true
+			} else if committed {
+				return lastMatch
+			}
+
+			// Transition 3
+			o3 := int(n2)*stride + int(d.byteToClass(haystack[pos]))
+			if o3 >= ftLen {
+				sid = n2
+				goto searchFirstSlowPath
+			}
+			n3 := ft[o3]
+			if n3 >= DeadState {
+				sid = n2
+				goto searchFirstSlowPath
+			}
+			pos++
+			if cache.matchFlags[int(n3)] {
+				lastMatch = pos
+				committed = true
+			} else if committed {
+				return lastMatch
+			}
+
+			// Transition 4
+			o4 := int(n3)*stride + int(d.byteToClass(haystack[pos]))
+			if o4 >= ftLen {
+				sid = n3
+				goto searchFirstSlowPath
+			}
+			n4 := ft[o4]
+			if n4 >= DeadState {
+				sid = n3
+				goto searchFirstSlowPath
+			}
+			pos++
+			sid = n4
+			if cache.matchFlags[int(n4)] {
+				lastMatch = pos
+				committed = true
+			} else if committed {
+				return lastMatch
+			}
+
+			continue
+		}
+
+	searchFirstSlowPath:
+		// === SINGLE-BYTE SLOW PATH ===
 		if d.hasWordBoundary {
 			st := cache.getState(sid)
 			if st != nil && st.checkWordBoundaryFast(haystack[pos]) {
@@ -395,9 +484,8 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 		classIdx := int(d.byteToClass(haystack[pos]))
 		offset := int(sid)*stride + classIdx
 
-		// Fast path: flat table lookup — ONE slice access
 		var nextID StateID
-		if offset < len(ft) {
+		if offset < ftLen {
 			nextID = ft[offset]
 		} else {
 			nextID = InvalidState
@@ -405,7 +493,6 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 
 		switch nextID {
 		case InvalidState:
-			// Unknown transition — determinize on demand (slow path)
 			currentState := cache.getState(sid)
 			if currentState == nil {
 				return d.nfaFallback(haystack, startPos)
@@ -415,20 +502,19 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 				return d.nfaFallback(haystack, startPos)
 			}
 			if nextState == nil {
-				return lastMatch // dead state
+				return lastMatch
 			}
 			sid = nextState.id
-			// flatTrans may have grown — refresh pointer
 			ft = cache.flatTrans
+			ftLen = len(ft)
 		case DeadState:
 			return lastMatch
 		default:
-			sid = nextID // Fast path: just update state ID, no pointer chase
+			sid = nextID
 		}
 
 		pos++
 
-		// Match check via compact bool slice — no pointer chase
 		if cache.IsMatchState(sid) {
 			lastMatch = pos
 			committed = true
