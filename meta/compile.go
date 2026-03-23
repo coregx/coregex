@@ -617,6 +617,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		ahoCorasick:                    engines.ahoCorasick,
 		anchoredLiteralInfo:            anchoredLiteralInfo,
 		prefilter:                      pf,
+		prefilterPartialCoverage:       literals != nil && literals.IsPartialCoverage(),
 		strategy:                       strategy,
 		config:                         config,
 		onepass:                        onePassRes,
