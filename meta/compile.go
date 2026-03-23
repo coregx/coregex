@@ -492,6 +492,11 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	}
 	pikevm := nfa.NewPikeVM(pikevmNFA)
 
+	// Set prefilter as skip-ahead inside PikeVM (Rust approach: pikevm.rs:1293).
+	// When NFA has no active threads, PikeVM skips to next candidate position.
+	// Safe for partial-coverage prefilters — NFA processes all branches.
+	configurePikeVMSkipAhead(pikevm, pf, isStartAnchored)
+
 	// Build OnePass DFA for anchored patterns with captures (optional optimization)
 	onePassRes := buildOnePassDFA(re, nfaEngine, config)
 
@@ -680,6 +685,13 @@ func hasNonLineAnchors(re *syntax.Regexp) bool {
 		}
 	}
 	return false
+}
+
+// configurePikeVMSkipAhead sets prefilter as skip-ahead inside PikeVM.
+func configurePikeVMSkipAhead(pikevm *nfa.PikeVM, pf prefilter.Prefilter, isStartAnchored bool) {
+	if pf != nil && !isStartAnchored {
+		pikevm.SetSkipAhead(pf)
+	}
 }
 
 // buildSearchStateConfig extracts all DFA references needed for per-search caches.

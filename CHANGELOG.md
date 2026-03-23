@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.18] - 2026-03-23
+
+### Performance
+- **PikeVM integrated prefilter skip-ahead** (Rust approach) — prefilter is now
+  integrated inside PikeVM search loop as skip-ahead (`pikevm.rs:1293`). When NFA
+  has no active threads, PikeVM jumps to next candidate via `prefilter.Find()`
+  instead of scanning byte-by-byte. Safe for partial-coverage prefilters — NFA
+  processes all branches from each candidate position.
+
+### Fixed
+- **NFA candidate loop guard** — replaced `IsComplete()` guard with `partialCoverage`
+  flag. `IsComplete()` blocked prefilter candidate loop for ALL incomplete prefilters,
+  including prefix-only ones where all branches are represented. Now only blocks
+  overflow partial-coverage prefilters. `errors` pattern: 1984ms → **120ms**.
+
 ## [0.12.17] - 2026-03-23
 
 ### Fixed
