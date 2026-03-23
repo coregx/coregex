@@ -12,6 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.17] - 2026-03-23
+
+### Fixed
+- **Remove false DFA downgrade for `(?m)^` patterns** — `adjustForAnchors()`
+  incorrectly routed `(?m)^` multiline patterns from UseDFA to UseNFA, claiming
+  "DFA can't verify multiline line anchors". This is false — the lazy DFA already
+  handles `(?m)^` correctly via StartByteMap/StartLineLF (identical to Rust regex).
+  The downgrade caused 4 LangArena patterns (`api_calls`, `post_requests`,
+  `passwords`, `sessions`) to fall back to byte-by-byte NFA scan — catastrophic
+  on ARM64 without SIMD. LangArena total: 2335ms → **185ms** (12.6x faster).
+  Root cause analysis: `docs/dev/research/v01216-arm64-regression.md`.
+
 ## [0.12.16] - 2026-03-21
 
 ### Performance

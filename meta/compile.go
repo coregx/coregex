@@ -630,9 +630,13 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	}, nil
 }
 
-// adjustForAnchors fixes prefilter and strategy for patterns with anchors.
+// adjustForAnchors fixes prefilter for patterns with anchors.
 // Anchors (^, $, \b) require verification that Teddy/AC prefilter can't provide.
-// Multiline line anchors ((?m)^) need NFA because DFA doesn't verify line positions.
+//
+// Note: the lazy DFA correctly handles (?m)^ via StartByteMap — after \n it
+// selects StartLineLF which includes LookStartLine in the epsilon closure.
+// Verified with direct DFA tests and Rust source analysis (identical approach).
+// See docs/dev/research/v01216-arm64-regression.md for details.
 func adjustForAnchors(pf prefilter.Prefilter, strategy Strategy, re *syntax.Regexp) (prefilter.Prefilter, Strategy) {
 	if !hasAnchorAssertions(re) {
 		return pf, strategy
@@ -654,10 +658,6 @@ func adjustForAnchors(pf prefilter.Prefilter, strategy Strategy, re *syntax.Rege
 		}
 	}
 
-	// DFA can't verify (?m)^ multiline line anchors — use NFA
-	if strategy == UseDFA && hasMultilineAnchor {
-		strategy = UseNFA
-	}
 	return pf, strategy
 }
 
