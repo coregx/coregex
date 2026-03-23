@@ -12,6 +12,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.17] - 2026-03-23
+
+### Fixed
+- **Remove false DFA downgrade for `(?m)^` patterns** — `adjustForAnchors()`
+  incorrectly routed `(?m)^` multiline patterns from UseDFA to UseNFA, claiming
+  "DFA can't verify multiline line anchors". This is false — the lazy DFA already
+  handles `(?m)^` correctly via StartByteMap/StartLineLF (identical to Rust regex).
+  The downgrade caused 4 LangArena patterns (`api_calls`, `post_requests`,
+  `passwords`, `sessions`) to fall back to byte-by-byte NFA scan — catastrophic
+  on ARM64 without SIMD. LangArena total: 2335ms → **185ms** (12.6x faster).
+
+- **Restore partial prefilter for `(?i)` alternation overflow** — literal
+  extractor returned empty Seq on cross-product overflow (>250 variants),
+  killing all prefilter literals for patterns like `(?i)(eval|system|exec|...)`.
+  Now trims to 3-byte prefixes + dedup (Rust approach) and marks inexact.
+  Also guards NFA candidate loop with `IsComplete()` check — incomplete
+  prefilters skip candidate loop (NFA scans full input), preventing
+  correctness bugs from partial branch coverage.
+  `suspicious` pattern: UseNFA without prefilter (113ms) → UseNFA with
+  FatTeddy skip-ahead (**1ms**).
+
+- **Restore UseTeddy for `(?m)^` multiline patterns** — `selectLiteralStrategy`
+  blocked UseTeddy for any pattern with anchors. But `adjustForAnchors()` already
+  wraps the prefilter with `WrapLineAnchor` for `(?m)^`, making Teddy safe.
+  Now allows UseTeddy when anchors are only `(?m)^` (no \b, $, etc).
+  `http_methods` on macOS ARM64: 89ms → **<1ms** (restored to v0.12.14 level).
+
 ## [0.12.16] - 2026-03-21
 
 ### Performance

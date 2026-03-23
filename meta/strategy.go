@@ -1133,7 +1133,8 @@ type literalAnalysis struct {
 	hasGoodLiterals        bool // Good prefix literal (LCP >= MinLiteralLen)
 	hasTeddyLiterals       bool // Suitable for Teddy (2-32 patterns, each >= 3 bytes)
 	hasAhoCorasickLiterals bool // Suitable for Aho-Corasick (>32 patterns, each >= 1 byte)
-	hasAnchors             bool // Pattern has anchors (^, $, \b) that Teddy can't verify
+	hasAnchors             bool // Pattern has any anchors (^, $, \b)
+	hasNonLineAnchors      bool // Pattern has anchors other than (?m)^ (\b, $, \A, \z)
 }
 
 // selectLiteralStrategy selects strategy based on literal analysis.
@@ -1148,9 +1149,12 @@ func selectLiteralStrategy(literals *literal.Seq, litAnalysis literalAnalysis) S
 	// Patterns like "(foo|bar|baz)" where all literals are complete don't need
 	// DFA verification - Teddy.Find() returns exact matches.
 	// Speedup: 50-250x by skipping all DFA/NFA construction overhead.
-	// BUT: patterns with anchors (e.g., (?m)^GET|POST) need DFA to verify
-	// that the match position satisfies the anchor constraint.
-	if litAnalysis.hasTeddyLiterals && literals.AllComplete() && !litAnalysis.hasAnchors {
+	//
+	// For (?m)^ multiline anchors: adjustForAnchors() wraps the prefilter with
+	// WrapLineAnchor which adds O(1) line-start verification. This makes Teddy
+	// safe for (?m)^ patterns — no DFA needed.
+	// Only block Teddy for non-line anchors (\b, $, \A, \z) that need DFA verify.
+	if litAnalysis.hasTeddyLiterals && literals.AllComplete() && !litAnalysis.hasNonLineAnchors {
 		return UseTeddy
 	}
 
@@ -1418,6 +1422,7 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	nfaSize := n.States()
 	litAnalysis := analyzeLiterals(literals, config)
 	litAnalysis.hasAnchors = hasAnchorAssertions(re)
+	litAnalysis.hasNonLineAnchors = litAnalysis.hasAnchors && hasNonLineAnchors(re)
 
 	// Check for simple char_class+ patterns (HIGHEST priority for character class patterns)
 	// Patterns like [\w]+, [a-z]+, \d+ use CharClassSearcher: 14-17x faster than BoundedBacktracker
