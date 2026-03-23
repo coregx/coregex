@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `suspicious` pattern: UseNFA without prefilter (113ms) → UseNFA with
   FatTeddy skip-ahead (**1ms**).
 
+- **Restore UseTeddy for `(?m)^` multiline patterns** — `selectLiteralStrategy`
+  blocked UseTeddy for any pattern with anchors. But `adjustForAnchors()` already
+  wraps the prefilter with `WrapLineAnchor` for `(?m)^`, making Teddy safe.
+  Now allows UseTeddy when anchors are only `(?m)^` (no \b, $, etc).
+  `http_methods` on macOS ARM64: 89ms → **<1ms** (restored to v0.12.14 level).
+
 ## [0.12.16] - 2026-03-21
 
 ### Performance
