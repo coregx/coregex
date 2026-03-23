@@ -216,10 +216,10 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 }
 
 // findIndicesDFA searches using DFA with prefilter - zero alloc.
-func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
+func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) { //nolint:cyclop // DFA with prefilter paths
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 
-	// Literal fast path — requires complete prefilter
+	// Literal fast path — complete prefilter returns match directly
 	if e.prefilter != nil && e.prefilter.IsComplete() {
 		pos := e.prefilter.Find(haystack, 0)
 		if pos == -1 {
@@ -231,6 +231,20 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
 			return pos, pos + literalLen, true
 		}
 		return e.pikevm.Search(haystack)
+	}
+
+	// Prefilter skip-ahead for DFA — safe even with incomplete prefilter.
+	// DFA verifies full pattern at candidate position; prefilter just skips.
+	if e.prefilter != nil && !e.prefilter.IsComplete() {
+		pos := e.prefilter.Find(haystack, 0)
+		if pos == -1 {
+			return -1, -1, false
+		}
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		if e.reverseDFA != nil {
+			return e.findIndicesBidirectionalDFA(haystack, pos)
+		}
+		return e.pikevm.SearchAt(haystack, pos)
 	}
 
 	// Prefilter-accelerated search: find candidate, verify with anchored DFA.
@@ -314,22 +328,8 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
 func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 
-	// Literal fast path — requires complete prefilter
-	if e.prefilter != nil && e.prefilter.IsComplete() {
-		pos := e.prefilter.Find(haystack, at)
-		if pos == -1 {
-			return -1, -1, false
-		}
-		atomic.AddUint64(&e.stats.PrefilterHits, 1)
-		literalLen := e.prefilter.LiteralLen()
-		if literalLen > 0 {
-			return pos, pos + literalLen, true
-		}
-		return e.pikevm.SearchAt(haystack, at)
-	}
-
-	// Prefilter skip: use prefix prefilter to jump to candidate position.
-	if e.prefilter != nil && e.prefilter.IsComplete() {
+	// Prefilter skip-ahead — safe for all prefilters, DFA verifies.
+	if e.prefilter != nil {
 		pos := e.prefilter.Find(haystack, at)
 		if pos == -1 {
 			return -1, -1, false
