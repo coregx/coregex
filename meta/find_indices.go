@@ -119,8 +119,11 @@ func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 	state := e.getSearchState()
 	defer e.putSearchState(state)
 
-	// Use prefilter for skip-ahead if available
-	if e.prefilter != nil {
+	// Use prefilter candidate loop for skip-ahead — but ONLY when prefilter
+	// covers all possible match positions (IsComplete or all branches represented).
+	// Incomplete prefilters (partial case-fold coverage) cannot be used as
+	// correctness gates — they'd miss branches whose literals were truncated.
+	if e.prefilter != nil && e.prefilter.IsComplete() {
 		at := 0
 		for at < len(haystack) {
 			// Find next candidate position via prefilter
@@ -172,17 +175,15 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 	state := e.getSearchState()
 	defer e.putSearchState(state)
 
-	// Use prefilter for skip-ahead if available
-	if e.prefilter != nil {
+	// Use prefilter candidate loop — only safe with complete prefilter
+	if e.prefilter != nil && e.prefilter.IsComplete() {
 		for at < len(haystack) {
-			// Find next candidate position via prefilter
 			pos := e.prefilter.Find(haystack, at)
 			if pos == -1 {
-				return -1, -1, false // No more candidates
+				return -1, -1, false
 			}
 			atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
-			// Try to match at candidate position
 			var start, end int
 			var found bool
 			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
@@ -194,14 +195,13 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 				return start, end, true
 			}
 
-			// Move past this position
 			atomic.AddUint64(&e.stats.PrefilterMisses, 1)
 			at = pos + 1
 		}
 		return -1, -1, false
 	}
 
-	// No prefilter: use BoundedBacktracker if available and safe
+	// No prefilter or incomplete: use BoundedBacktracker if available and safe
 	if useBT && e.boundedBacktracker.CanHandle(len(haystack)-at) {
 		return e.boundedBacktracker.SearchAtWithState(haystack, at, state.backtracker)
 	}
@@ -1028,17 +1028,16 @@ func (e *Engine) findIndicesNFAAtWithState(haystack []byte, at int, state *Searc
 	// BoundedBacktracker can be used for Find operations only when safe
 	useBT := e.boundedBacktracker != nil && !e.canMatchEmpty
 
-	// Use prefilter for skip-ahead if available
-	if e.prefilter != nil {
+	// Use prefilter candidate loop — only safe with complete prefilter.
+	// Incomplete prefilters (partial case-fold coverage) would miss branches.
+	if e.prefilter != nil && e.prefilter.IsComplete() {
 		for at < len(haystack) {
-			// Find next candidate position via prefilter
 			pos := e.prefilter.Find(haystack, at)
 			if pos == -1 {
-				return -1, -1, false // No more candidates
+				return -1, -1, false
 			}
 			atomic.AddUint64(&e.stats.PrefilterHits, 1)
 
-			// Try to match at candidate position
 			var start, end int
 			var found bool
 			if useBT && e.boundedBacktracker.CanHandle(len(haystack)-pos) {
@@ -1050,14 +1049,13 @@ func (e *Engine) findIndicesNFAAtWithState(haystack []byte, at int, state *Searc
 				return start, end, true
 			}
 
-			// Move past this position
 			atomic.AddUint64(&e.stats.PrefilterMisses, 1)
 			at = pos + 1
 		}
 		return -1, -1, false
 	}
 
-	// No prefilter: use BoundedBacktracker if available and safe
+	// No prefilter or incomplete: use BoundedBacktracker if available and safe
 	if useBT && e.boundedBacktracker.CanHandle(len(haystack)-at) {
 		return e.boundedBacktracker.SearchAtWithState(haystack, at, state.backtracker)
 	}

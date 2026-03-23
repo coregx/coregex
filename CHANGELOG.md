@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on ARM64 without SIMD. LangArena total: 2335ms → **185ms** (12.6x faster).
   Root cause analysis: `docs/dev/research/v01216-arm64-regression.md`.
 
+- **Restore partial prefilter for `(?i)` alternation overflow** — literal
+  extractor returned empty Seq on cross-product overflow (>250 variants),
+  killing all prefilter literals for patterns like `(?i)(eval|system|exec|...)`.
+  Now trims to 3-byte prefixes + dedup (Rust approach) and marks inexact.
+  Also guards NFA candidate loop with `IsComplete()` check — incomplete
+  prefilters skip candidate loop (NFA scans full input), preventing
+  correctness bugs from partial branch coverage.
+  `suspicious` pattern: UseNFA without prefilter (113ms) → UseNFA with
+  FatTeddy skip-ahead (**1ms**).
+
 ## [0.12.16] - 2026-03-21
 
 ### Performance

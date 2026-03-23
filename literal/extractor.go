@@ -264,20 +264,17 @@ func (e *Extractor) extractPrefixesAlternate(re *syntax.Regexp, depth int) *Seq 
 		}
 	}
 
-	// If overflow occurred, NOT all alternation branches are represented.
-	// A partial prefilter would miss matches for unrepresented branches.
-	// Return empty Seq so no prefilter is built — NFA handles all branches.
-	// This matches Rust's approach: overflowed literal sets → no prefilter.
-	if overflowed {
-		return NewSeq()
-	}
-
 	result := NewSeq(allLits...)
 
-	if result.Len() > e.config.MaxLiterals {
-		// Too many literals but all branches represented: trim to 3-byte
-		// prefixes, dedup, mark inexact. After trim, all alternation branches
-		// have at least one prefix in the set (unlike overflow truncation).
+	if overflowed || result.Len() > e.config.MaxLiterals {
+		// Either not all branches are represented (overflow) or too many literals.
+		// Trim to 3-byte prefixes + dedup to fit prefilter capacity.
+		// Mark ALL as inexact — prefilter is used for skip-ahead only,
+		// DFA/NFA verifies each candidate (safe with partial coverage).
+		//
+		// Rust does the same: optimize_for_prefix_by_preference trims and deduplicates.
+		// A partial prefilter is much better than no prefilter — DFA with skip-ahead
+		// vs NFA byte-by-byte on 549 states is 100x+ difference on ARM64.
 		result.KeepFirstBytes(3)
 		e.markAllInexact(result)
 		result.Dedup()
