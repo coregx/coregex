@@ -39,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Now allows UseTeddy when anchors are only `(?m)^` (no \b, $, etc).
   `http_methods` on macOS ARM64: 89ms → **<1ms** (restored to v0.12.14 level).
 
+- **Fix NFA candidate loop guard** — `IsComplete()` guard blocked prefilter
+  candidate loop for ALL incomplete prefilters, including prefix-only ones
+  where all alternation branches are represented. Now uses `partialCoverage`
+  flag (set only on overflow truncation) instead of `IsComplete()`. Pattern
+  ` [5][0-9]{2} | [4][0-9]{2} ` (Kostya's `errors`): 1984ms → **109ms**.
+  Rust handles this by integrating prefilter as skip-ahead inside PikeVM
+  (not as an external correctness gate) — see `pikevm.rs:1293-1299`.
+
 ## [0.12.16] - 2026-03-21
 
 ### Performance

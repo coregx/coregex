@@ -91,7 +91,21 @@ func (l Literal) String() string {
 //	)
 //	fmt.Printf("Sequence has %d literals\n", seq.Len()) // Output: Sequence has 2 literals
 type Seq struct {
-	literals []Literal
+	literals        []Literal
+	partialCoverage bool // True when alternation overflow truncated branches
+}
+
+// IsPartialCoverage returns true if the literal set doesn't cover all
+// alternation branches (due to overflow truncation). A partial-coverage
+// prefilter cannot be used as a correctness gate in candidate loops —
+// it would miss branches whose literals were not extracted.
+// Rust avoids this by integrating prefilter as skip-ahead inside PikeVM,
+// not as an external candidate loop.
+func (s *Seq) IsPartialCoverage() bool {
+	if s == nil {
+		return false
+	}
+	return s.partialCoverage
 }
 
 // NewSeq creates a new sequence from the given literals.
