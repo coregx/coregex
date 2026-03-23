@@ -22,7 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The downgrade caused 4 LangArena patterns (`api_calls`, `post_requests`,
   `passwords`, `sessions`) to fall back to byte-by-byte NFA scan — catastrophic
   on ARM64 without SIMD. LangArena total: 2335ms → **185ms** (12.6x faster).
-  Root cause analysis: `docs/dev/research/v01216-arm64-regression.md`.
 
 - **Restore partial prefilter for `(?i)` alternation overflow** — literal
   extractor returned empty Seq on cross-product overflow (>250 variants),
