@@ -149,6 +149,9 @@ func (c *DFACache) FlatNext(sid StateID, classIdx int) StateID {
 // IsMatchState returns whether the given state ID is a match state.
 // Uses compact matchFlags slice — no pointer chase.
 func (c *DFACache) IsMatchState(sid StateID) bool {
+	if sid >= DeadState {
+		return false
+	}
 	id := int(sid)
 	if id >= len(c.matchFlags) {
 		return false
@@ -278,6 +281,11 @@ func (c *DFACache) getState(id StateID) *State {
 		return nil
 	}
 
+	// Guard against special state IDs (DeadState=0xFFFFFFFE, InvalidState=0xFFFFFFFF).
+	// On 386, int(uint32(0xFFFFFFFF)) = -1, causing negative index panic.
+	if id >= DeadState {
+		return nil
+	}
 	idx := int(id)
 	if idx >= len(c.stateList) {
 		return nil
