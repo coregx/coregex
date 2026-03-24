@@ -139,7 +139,7 @@ func (c *DFACache) Insert(key StateKey, state *State) (StateID, error) {
 // safeOffset computes flat table offset from premultiplied StateID.
 // For tagged states (dead/invalid/match-only), returns MaxInt so bounds
 // check always fails safely. For normal states, returns sid.Offset() + classIdx.
-func safeOffset(sid StateID, stride int, classIdx int) int {
+func safeOffset(sid StateID, _ int, classIdx int) int {
 	if sid.IsTagged() {
 		// Tagged states with dead/invalid bits are not in flatTrans
 		if sid.IsDeadTag() || sid.IsInvalidTag() {

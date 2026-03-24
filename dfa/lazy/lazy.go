@@ -444,7 +444,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 				goto searchFirstSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n1)] {
+			if n1.IsMatchTag() {
 				lastMatch = pos
 				committed = true
 			} else if committed {
@@ -463,7 +463,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 				goto searchFirstSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n2)] {
+			if n2.IsMatchTag() {
 				lastMatch = pos
 				committed = true
 			} else if committed {
@@ -482,7 +482,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 				goto searchFirstSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n3)] {
+			if n3.IsMatchTag() {
 				lastMatch = pos
 				committed = true
 			} else if committed {
@@ -502,7 +502,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 			}
 			pos++
 			sid = n4
-			if cache.matchFlags[int(n4)] {
+			if n4.IsMatchTag() {
 				lastMatch = pos
 				committed = true
 			} else if committed {
@@ -819,7 +819,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 				goto earliestSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n1)] {
+			if n1.IsMatchTag() {
 				return true
 			}
 
@@ -841,7 +841,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 				goto earliestSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n2)] {
+			if n2.IsMatchTag() {
 				return true
 			}
 
@@ -862,7 +862,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 				goto earliestSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n3)] {
+			if n3.IsMatchTag() {
 				return true
 			}
 
@@ -879,7 +879,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			}
 			pos++
 			sid = n4
-			if cache.matchFlags[int(n4)] {
+			if n4.IsMatchTag() {
 				return true
 			}
 
@@ -1371,9 +1371,9 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			}
 			pos++
 
-			if cache.matchFlags[int(n1)] || pos+2 >= end {
+			if n1.IsMatchTag() || pos+2 >= end {
 				sid = n1
-				if cache.matchFlags[int(n1)] {
+				if n1.IsMatchTag() {
 					lastMatch = pos
 					committed = true
 				}
@@ -1393,9 +1393,9 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			}
 			pos++
 
-			if cache.matchFlags[int(n2)] || pos+1 >= end {
+			if n2.IsMatchTag() || pos+1 >= end {
 				sid = n2
-				if cache.matchFlags[int(n2)] {
+				if n2.IsMatchTag() {
 					lastMatch = pos
 					committed = true
 				}
@@ -1415,7 +1415,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			}
 			pos++
 
-			if cache.matchFlags[int(n3)] {
+			if n3.IsMatchTag() {
 				sid = n3
 				lastMatch = pos
 				committed = true
@@ -1436,7 +1436,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			pos++
 			sid = n4
 
-			if cache.matchFlags[int(n4)] {
+			if n4.IsMatchTag() {
 				lastMatch = pos
 				committed = true
 			}
@@ -1968,7 +1968,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		if nextSID >= DeadState {
 			goto reverseSlowPath
 		}
-		if cache.matchFlags[int(nextSID)] {
+		if nextSID.IsMatchTag() {
 			lastMatch = at
 		}
 		sid = nextSID
@@ -1983,7 +1983,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		if nextSID >= DeadState {
 			goto reverseSlowPath
 		}
-		if cache.matchFlags[int(nextSID)] {
+		if nextSID.IsMatchTag() {
 			lastMatch = at
 		}
 		sid = nextSID
@@ -1998,7 +1998,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		if nextSID >= DeadState {
 			goto reverseSlowPath
 		}
-		if cache.matchFlags[int(nextSID)] {
+		if nextSID.IsMatchTag() {
 			lastMatch = at
 		}
 		sid = nextSID
@@ -2013,7 +2013,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		if nextSID >= DeadState {
 			goto reverseSlowPath
 		}
-		if cache.matchFlags[int(nextSID)] {
+		if nextSID.IsMatchTag() {
 			lastMatch = at
 		}
 		sid = nextSID
