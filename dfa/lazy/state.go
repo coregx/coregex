@@ -53,14 +53,7 @@ type State struct {
 	// id uniquely identifies this state in the cache
 	id StateID
 
-	// transitions maps equivalence class → next state ID.
-	// The slice length equals the alphabet size (ByteClasses.AlphabetLen()).
-	// InvalidState means no transition for that equivalence class.
-	// Lookup: transitions[byteClasses.Get(byte)]
-	transitions []StateID
-
-	// transitionCount tracks how many valid transitions exist (for statistics/debugging)
-	transitionCount int
+	// Note: transitions removed — stored in DFACache.flatTrans only.
 
 	// isMatch indicates if this is an accepting state
 	isMatch bool
@@ -126,18 +119,13 @@ func NewStateWithStride(id StateID, nfaStates []nfa.StateID, isMatch bool, isFro
 	nfaStatesCopy := make([]nfa.StateID, len(nfaStates))
 	copy(nfaStatesCopy, nfaStates)
 
-	// Create transitions slice initialized to InvalidState
-	transitions := make([]StateID, stride)
-	for i := range transitions {
-		transitions[i] = InvalidState
-	}
-
+	// Note: transitions stored in DFACache.flatTrans (single source of truth).
+	// State struct keeps only metadata.
 	return &State{
-		id:          id,
-		transitions: transitions,
-		isMatch:     isMatch,
-		isFromWord:  isFromWord,
-		nfaStates:   nfaStatesCopy,
+		id:         id,
+		isMatch:    isMatch,
+		isFromWord: isFromWord,
+		nfaStates:  nfaStatesCopy,
 	}
 }
 
@@ -157,20 +145,6 @@ func (s *State) IsFromWord() bool {
 	return s.isFromWord
 }
 
-// Transition returns the next state for the given equivalence class index.
-// Returns (InvalidState, false) if no transition exists.
-// This is the hot path - O(1) slice lookup.
-//
-// IMPORTANT: The caller must convert the input byte to an equivalence class
-// index via byteClasses.Get(byte) before calling this method.
-func (s *State) Transition(classIdx byte) (StateID, bool) {
-	if int(classIdx) >= len(s.transitions) {
-		return InvalidState, false
-	}
-	next := s.transitions[classIdx]
-	return next, next != InvalidState
-}
-
 // checkWordBoundaryFast checks if consuming byte b would produce a match
 // via word boundary resolution. Uses pre-computed flags — O(1), no allocation.
 // Replaces the expensive checkWordBoundaryMatch (30% CPU) which created Builder
@@ -186,42 +160,15 @@ func (s *State) checkWordBoundaryFast(b byte) bool {
 	return s.matchAtNonWordBoundary
 }
 
-// AddTransition adds a transition from this state to another on equivalence class classIdx.
-// Overwrites any existing transition for this class.
-//
-// IMPORTANT: The caller must convert the input byte to an equivalence class
-// index via byteClasses.Get(byte) before calling this method.
-func (s *State) AddTransition(classIdx byte, next StateID) {
-	if int(classIdx) >= len(s.transitions) {
-		return // Ignore out-of-bounds (shouldn't happen with correct stride)
-	}
-	if s.transitions[classIdx] == InvalidState && next != InvalidState {
-		s.transitionCount++
-	} else if s.transitions[classIdx] != InvalidState && next == InvalidState {
-		s.transitionCount--
-	}
-	s.transitions[classIdx] = next
-}
-
-// Stride returns the alphabet size (number of equivalence classes).
-func (s *State) Stride() int {
-	return len(s.transitions)
-}
-
 // NFAStates returns the NFA states represented by this DFA state
 func (s *State) NFAStates() []nfa.StateID {
 	return s.nfaStates
 }
 
-// TransitionCount returns the number of valid transitions from this state
-func (s *State) TransitionCount() int {
-	return s.transitionCount
-}
-
 // String returns a human-readable representation of the state
 func (s *State) String() string {
-	return fmt.Sprintf("DFAState(id=%d, isMatch=%v, transitions=%d, nfaStates=%v)",
-		s.id, s.isMatch, s.transitionCount, s.nfaStates)
+	return fmt.Sprintf("DFAState(id=%d, isMatch=%v, nfaStates=%v)",
+		s.id, s.isMatch, s.nfaStates)
 }
 
 // IsAccelerable returns true if this state can use SIMD acceleration.

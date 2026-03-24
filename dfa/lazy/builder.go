@@ -213,12 +213,6 @@ func (b *Builder) epsilonClosure(states []nfa.StateID, lookHave LookSet) []nfa.S
 	return closure.ToSlice()
 }
 
-// move computes the set of NFA states reachable from the given states on input byte b.
-// This version does not track word context - use moveWithWordContext for patterns with \b/\B.
-func (b *Builder) move(states []nfa.StateID, input byte) []nfa.StateID {
-	return b.moveWithWordContext(states, input, false)
-}
-
 // moveWithWordContext computes the set of NFA states reachable from the given states on input byte b,
 // with full word boundary tracking.
 //
@@ -605,33 +599,51 @@ func DetectAccelerationFromCached(state *State) []byte {
 //
 // When byteClasses is nil, falls back to identity mapping (no compression).
 func DetectAccelerationFromCachedWithClasses(state *State, byteClasses *nfa.ByteClasses) []byte {
-	if state == nil {
-		return nil
-	}
+	// State no longer stores transitions — they live in DFACache.flatTrans.
+	// This function cannot detect acceleration without the flat table.
+	// Use DetectAccelerationFromFlat() instead.
+	return nil
+}
 
-	stride := state.Stride()
-	// Need most transitions cached to detect accurately
-	// For compressed alphabet, we need most of stride, not 240
-	minCachedRequired := stride - stride/16 // At least ~94% cached
+// DetectAccelerationFromFlat analyzes transitions from the flat table.
+// Used by tryDetectAcceleration when State.transitions will be removed.
+func DetectAccelerationFromFlat(sid StateID, flatTrans []StateID, stride int, byteClasses *nfa.ByteClasses) []byte {
+	ftLen := len(flatTrans)
+	return detectAccelFromTransitions(sid, stride, func(classIdx int) (StateID, bool) {
+		offset := safeOffset(sid, stride, classIdx)
+		if offset >= ftLen {
+			return InvalidState, false
+		}
+		next := flatTrans[offset]
+		return next, next != InvalidState
+	}, byteClasses)
+}
+
+// detectAccelFromTransitions is the shared implementation for acceleration detection.
+// transitionFn returns (nextID, cached) for a given class index.
+func detectAccelFromTransitions(selfID StateID, stride int, transitionFn func(int) (StateID, bool), byteClasses *nfa.ByteClasses) []byte {
+	// Count cached transitions first
+	cachedCount := 0
+	for classIdx := 0; classIdx < stride; classIdx++ {
+		if _, ok := transitionFn(classIdx); ok {
+			cachedCount++
+		}
+	}
+	minCachedRequired := stride - stride/16
 	if minCachedRequired < 1 {
 		minCachedRequired = 1
 	}
-	transitionCount := state.TransitionCount()
-	if transitionCount < minCachedRequired {
+	if cachedCount < minCachedRequired {
 		return nil
 	}
 
-	selfID := state.ID()
 	var exitClasses []byte
 	uncachedCount := 0
 
-	// Scan only the CACHED transitions by equivalence class
 	for classIdx := 0; classIdx < stride; classIdx++ {
-		nextID, ok := state.Transition(byte(classIdx))
+		nextID, ok := transitionFn(classIdx)
 		if !ok {
-			// Not cached yet - count as unknown
 			uncachedCount++
-			// Too many unknowns means we can't detect reliably
 			maxUncached := stride / 16
 			if maxUncached < 1 {
 				maxUncached = 1
@@ -642,16 +654,12 @@ func DetectAccelerationFromCachedWithClasses(state *State, byteClasses *nfa.Byte
 			continue
 		}
 
-		// Transition is cached
 		if nextID == selfID || nextID == DeadState {
-			// Self-loop or dead - counts as "skip"
 			continue
 		}
 
-		// This class causes exit - record it
 		exitClasses = append(exitClasses, byte(classIdx))
 		if len(exitClasses) > 3 {
-			// Too many exit classes - not accelerable
 			return nil
 		}
 	}
@@ -696,85 +704,10 @@ func DetectAccelerationFromCachedWithClasses(state *State, byteClasses *nfa.Byte
 //
 // Returns the exit bytes (1-3) or nil if not accelerable.
 func (b *Builder) DetectAcceleration(state *State) []byte {
-	if state == nil {
-		return nil
-	}
-
-	byteClasses := b.nfa.ByteClasses()
-	selfID := state.ID()
-	var exitClasses []byte
-	stride := state.Stride()
-
-	// Check all equivalence classes
-	for classIdx := 0; classIdx < stride; classIdx++ {
-		// Check if transition is already cached
-		nextID, ok := state.Transition(byte(classIdx))
-		if !ok {
-			// Need to compute this transition
-			// Find a representative byte for this class to use with move()
-			var repByte byte
-			if byteClasses == nil {
-				repByte = byte(classIdx)
-			} else {
-				repByte = byte(classIdx) // Default to class index
-				for bi := 0; bi < 256; bi++ {
-					if byteClasses.Get(byte(bi)) == byte(classIdx) {
-						repByte = byte(bi)
-						break
-					}
-				}
-			}
-
-			nextNFAStates := b.move(state.NFAStates(), repByte)
-			if len(nextNFAStates) == 0 {
-				// Dead state - counts as "skip"
-				continue
-			}
-
-			// This leads to a non-dead state - it's an exit class
-			exitClasses = append(exitClasses, byte(classIdx))
-			if len(exitClasses) > 3 {
-				// Too many exit classes - not accelerable
-				return nil
-			}
-			continue
-		}
-
-		// Transition is cached
-		if nextID == selfID || nextID == DeadState {
-			// Self-loop or dead - counts as "skip"
-			continue
-		}
-
-		// Transition to a different state - it's an exit class
-		exitClasses = append(exitClasses, byte(classIdx))
-		if len(exitClasses) > 3 {
-			// Too many exit classes - not accelerable
-			return nil
-		}
-	}
-
-	// Accelerable if we have 1-3 exit classes
-	if len(exitClasses) < 1 || len(exitClasses) > 3 {
-		return nil
-	}
-
-	// Convert class indices back to representative bytes for memchr
-	if byteClasses == nil {
-		return exitClasses
-	}
-
-	exitBytes := make([]byte, 0, len(exitClasses))
-	for _, classIdx := range exitClasses {
-		for bi := 0; bi < 256; bi++ {
-			if byteClasses.Get(byte(bi)) == classIdx {
-				exitBytes = append(exitBytes, byte(bi))
-				break
-			}
-		}
-	}
-
-	return exitBytes
+	// State no longer stores transitions — they live in DFACache.flatTrans.
+	// This method cannot detect acceleration without the flat table.
+	// Use DetectAccelerationFromFlat() instead.
+	return nil
 }
 
 // checkHasWordBoundary checks if the NFA contains any word boundary assertions (\b or \B).

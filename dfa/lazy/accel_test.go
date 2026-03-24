@@ -87,37 +87,37 @@ func TestDetectAcceleration(t *testing.T) {
 }
 
 func TestDetectAccelerationFromCached(t *testing.T) {
-	// Test the lazy detection that only uses cached transitions
+	// State no longer stores transitions — DetectAccelerationFromCached returns nil.
+	// Acceleration is now detected via DetectAccelerationFromFlat using flatTrans.
 	state := NewState(StateID(1), []nfa.StateID{0}, false)
-
-	// Initially no cached transitions - should return nil
 	exitBytes := DetectAccelerationFromCached(state)
 	if exitBytes != nil {
-		t.Errorf("Expected nil with no cached transitions, got %v", exitBytes)
+		t.Errorf("Expected nil (State has no transitions), got %v", exitBytes)
 	}
+}
 
-	// Add 250 self-loop transitions
+func TestDetectAccelerationFromFlat(t *testing.T) {
+	// Test acceleration detection via flat transition table
+	stride := 256
+	sid := StateID(1)
+	flatTrans := make([]StateID, 2*stride) // 2 states
+
+	// State 1: 250 self-loops, 3 exits to state 2, 3 dead
+	base := int(sid) * stride
 	for i := 0; i < 250; i++ {
-		state.AddTransition(byte(i), StateID(1)) // Self-loop
+		flatTrans[base+i] = sid // Self-loop
 	}
+	flatTrans[base+250] = StateID(2)
+	flatTrans[base+251] = StateID(2)
+	flatTrans[base+252] = StateID(2)
+	flatTrans[base+253] = DeadState
+	flatTrans[base+254] = DeadState
+	flatTrans[base+255] = DeadState
 
-	// Add 3 exit bytes
-	state.AddTransition(byte(250), StateID(2)) // Exit to state 2
-	state.AddTransition(byte(251), StateID(2)) // Exit to state 2
-	state.AddTransition(byte(252), StateID(2)) // Exit to state 2
-
-	// Add 3 dead transitions
-	state.AddTransition(byte(253), DeadState)
-	state.AddTransition(byte(254), DeadState)
-	state.AddTransition(byte(255), DeadState)
-
-	// Now should detect as accelerable
-	exitBytes = DetectAccelerationFromCached(state)
+	exitBytes := DetectAccelerationFromFlat(sid, flatTrans, stride, nil)
 	if len(exitBytes) != 3 {
 		t.Errorf("Expected 3 exit bytes, got %v", exitBytes)
 	}
-
-	// Verify the exit bytes are correct
 	expected := map[byte]bool{250: true, 251: true, 252: true}
 	for _, b := range exitBytes {
 		if !expected[b] {

@@ -12,6 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.19] - 2026-03-24
+
+### Performance
+- **Rust-aligned BoundedBacktracker visited limit for UseNFA** — reduced visited
+  table capacity from 32M entries (64MB) to 128K entries (256KB) for UseNFA paths,
+  matching Rust regex's `visited_capacity` default. On Kostya's LangArena LogParser
+  (7MB log, 13 patterns): total alloc **89MB → 25MB** (-72%), RSS **353MB → 41MB**
+  (-88%). `errors` pattern: **66MB → 2.4MB** (-96%). No speed regression.
+  `UseBoundedBacktracker` strategy retains full 32M limit for POSIX longest-match
+  correctness (Go stdlib compatibility).
+
+- **Remove dual transition storage** — eliminated `transitions []StateID` and
+  `transitionCount` from `State` struct. Transitions now stored exclusively in
+  `DFACache.flatTrans`. Acceleration detection migrated to `DetectAccelerationFromFlat()`
+  reading directly from flat table.
+
 ## [0.12.18] - 2026-03-24
 
 ### Performance

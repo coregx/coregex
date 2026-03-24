@@ -898,7 +898,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			start, end, matched := d.pikevm.SearchAt(haystack, startPos)
 			return matched && start >= 0 && end >= start
 		}
-		d.tryDetectAcceleration(currentState)
+		d.tryDetectAccelerationWithCache(currentState, cache)
 
 		// State acceleration: if current state is accelerable, use SIMD to skip ahead
 		if exitBytes := currentState.AccelExitBytes(); len(exitBytes) > 0 {
@@ -1454,7 +1454,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 		if currentState == nil {
 			return d.nfaFallback(haystack, startPos)
 		}
-		d.tryDetectAcceleration(currentState)
+		d.tryDetectAccelerationWithCache(currentState, cache)
 
 		if exitBytes := currentState.AccelExitBytes(); len(exitBytes) > 0 {
 			nextPos := d.accelerate(haystack, pos, exitBytes)
@@ -1558,7 +1558,6 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	if len(nextNFAStates) == 0 {
 		// Cache the dead state transition to avoid re-computation
 		// Use classIdx for transition storage (compressed alphabet)
-		current.AddTransition(classIdx, DeadState)
 		cache.SetFlatTransition(current.id, int(classIdx), DeadState)
 		return nil, nil //nolint:nilnil // dead state is valid, not an error
 	}
@@ -1585,7 +1584,6 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	if existing, ok := cache.Get(key); ok {
 		// Cache hit: reuse existing state
 		// Use classIdx for transition storage (compressed alphabet)
-		current.AddTransition(classIdx, existing.ID())
 		cache.SetFlatTransition(current.id, int(classIdx), existing.ID())
 		return existing, nil
 	}
@@ -1624,7 +1622,6 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 
 	// Add transition from current state to new state
 	// Use classIdx for transition storage (compressed alphabet)
-	current.AddTransition(classIdx, newState.ID())
 	cache.SetFlatTransition(current.id, int(classIdx), newState.ID())
 
 	return newState, nil
@@ -1808,16 +1805,17 @@ func (d *DFA) matchesEmpty(cache *DFACache) bool {
 	return matched && start == 0 && end == 0
 }
 
-// tryDetectAcceleration attempts lazy acceleration detection for a state.
-// This is called when a state has enough cached transitions to detect reliably.
-// It only runs once per state (tracked via AccelChecked flag).
-func (d *DFA) tryDetectAcceleration(state *State) {
+// tryDetectAccelerationWithCache attempts acceleration detection using flatTrans.
+func (d *DFA) tryDetectAccelerationWithCache(state *State, cache *DFACache) {
 	if state == nil || state.AccelChecked() {
 		return
 	}
 
-	// Try lazy detection from cached transitions with ByteClasses support
-	if exitBytes := DetectAccelerationFromCachedWithClasses(state, d.byteClasses); len(exitBytes) > 0 {
+	var exitBytes []byte
+	if cache != nil && cache.stride > 0 {
+		exitBytes = DetectAccelerationFromFlat(state.ID(), cache.flatTrans, cache.stride, d.byteClasses)
+	}
+	if len(exitBytes) > 0 {
 		state.SetAccelBytes(exitBytes)
 	} else {
 		state.MarkAccelChecked()
