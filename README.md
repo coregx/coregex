@@ -20,7 +20,7 @@ High-performance regex engine for Go. Drop-in replacement for `regexp` with **3-
 Go's stdlib `regexp` is intentionally simple — single NFA engine, no optimizations. This guarantees O(n) time but leaves performance on the table.
 
 coregex brings Rust regex-crate architecture to Go:
-- **Multi-engine**: Lazy DFA, PikeVM, OnePass, BoundedBacktracker
+- **Multi-engine**: 17 strategies — Lazy DFA, PikeVM, OnePass, BoundedBacktracker, and more
 - **SIMD prefilters**: AVX2/SSSE3 for fast candidate rejection
 - **Reverse search**: Suffix/inner literal patterns run 1000x+ faster
 - **O(n) guarantee**: No backtracking, no ReDoS vulnerabilities
@@ -187,19 +187,22 @@ Uses Go's `regexp/syntax` parser:
 ```
 Pattern → Parse → NFA → Literal Extract → Strategy Select
                                                ↓
-                         ┌─────────────────────────────────┐
-                         │ Engines (17 strategies):        │
-                         │  LazyDFA, PikeVM, OnePass,      │
-                         │  BoundedBacktracker,            │
-                         │  ReverseInner, ReverseSuffix,   │
-                         │  ReverseSuffixSet, AnchoredLiteral, │
-                         │  CharClassSearcher, Teddy,      │
-                         │  DigitPrefilter, AhoCorasick,   │
-                         │  CompositeSearcher, BranchDispatch │
-                         └─────────────────────────────────┘
+                  ┌────────────────────────────────────────────┐
+                  │ Engines (17 strategies):                   │
+                  │  LazyDFA, PikeVM, OnePass,                 │
+                  │  BoundedBacktracker, ReverseAnchored,      │
+                  │  ReverseInner, ReverseSuffix,              │
+                  │  ReverseSuffixSet, MultilineReverseSuffix, │
+                  │  AnchoredLiteral, CharClassSearcher,       │
+                  │  Teddy, DigitPrefilter, AhoCorasick,       │
+                  │  CompositeSearcher, BranchDispatch, Both   │
+                  └────────────────────────────────────────────┘
                                                ↓
 Input → Prefilter (SIMD) → Engine → Match Result
 ```
+
+> For detailed architecture documentation, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+> For optimization details, see [docs/OPTIMIZATIONS.md](docs/OPTIMIZATIONS.md).
 
 **SIMD Primitives** (AMD64):
 - `memchr` — single byte search (AVX2)

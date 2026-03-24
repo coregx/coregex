@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.12.19] - 2026-03-24
 
 ### Performance
+- **Zero-alloc FindSubmatch via dual SlotTable** (Rust approach) — replaced per-thread
+  COW capture allocation with Rust-style flat SlotTable. Two SlotTables (curr/next)
+  swap between byte generations. Stack-based epsilon closure with RestoreCapture
+  frames preserves capture context through greedy loops. FindAllSubmatch (5 patterns,
+  50K matches, 800KB input): alloc **554MB → 26MB** (-95%), mallocs **12.5M → 440K**
+  (-96%), time **1.48s → 0.45s** (3.3x faster). Reference: Rust `pikevm.rs`
+  `ActiveStates` + `SlotTable` + `FollowEpsilon::RestoreCapture`.
+
 - **Rust-aligned BoundedBacktracker visited limit for UseNFA** — reduced visited
   table capacity from 32M entries (64MB) to 128K entries (256KB) for UseNFA paths,
   matching Rust regex's `visited_capacity` default. On Kostya's LangArena LogParser
