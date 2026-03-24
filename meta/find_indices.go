@@ -328,21 +328,19 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) { //nolint:cyc
 func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 
-	// Prefilter skip-ahead — safe for all prefilters, DFA verifies.
+	// Prefilter candidate position for DFA start.
+	// DFA also has integrated prefilter at start state, so this is
+	// complementary — meta prefilter jumps to first candidate,
+	// DFA prefilter handles subsequent candidates within the DFA loop.
 	if e.prefilter != nil {
 		pos := e.prefilter.Find(haystack, at)
 		if pos == -1 {
 			return -1, -1, false
 		}
 		atomic.AddUint64(&e.stats.PrefilterHits, 1)
-		// Bidirectional DFA: forward DFA → end, reverse DFA → start. O(n) total.
-		if e.reverseDFA != nil {
-			return e.findIndicesBidirectionalDFA(haystack, pos)
-		}
-		return e.pikevm.SearchAt(haystack, pos)
+		at = pos // Start DFA from candidate position
 	}
 
-	// No prefilter: bidirectional DFA or DFA + PikeVM fallback.
 	if e.reverseDFA != nil {
 		return e.findIndicesBidirectionalDFA(haystack, at)
 	}

@@ -624,6 +624,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		anchoredLiteralInfo:            anchoredLiteralInfo,
 		prefilter:                      pf,
 		prefilterPartialCoverage:       literals != nil && literals.IsPartialCoverage(),
+		prefilterGivesStart:            pf != nil && literals != nil, // prefix prefilter → position = match start
 		strategy:                       strategy,
 		config:                         config,
 		onepass:                        onePassRes,
