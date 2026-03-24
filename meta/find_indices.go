@@ -588,7 +588,7 @@ func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int,
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 	state := e.getSearchState()
 	defer e.putSearchState(state)
-	// Phase 1: find first match end (leftmost-first, not leftmost-longest)
+	// Phase 1: find first match end (forward DFA)
 	end := e.dfa.SearchFirstAt(state.dfaCache, haystack, at)
 	if end == -1 {
 		return -1, -1, false
@@ -596,14 +596,18 @@ func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int,
 	if end == at {
 		return at, at, true // Empty match
 	}
+	// Skip reverse search if anchored (Rust hybrid/regex.rs:467)
+	if e.nfa.IsAlwaysAnchored() {
+		return at, end, true
+	}
 	// Phase 2: reverse DFA to find match start
 	start := e.reverseDFA.SearchReverse(state.revDFACache, haystack, at, end)
 	if start < 0 {
 		return -1, -1, false // Reverse DFA failed (cache full)
 	}
 	// Phase 3: anchored greedy forward DFA from start → correct end.
-	// SearchFirstAt may undercount for greedy patterns (e.g., ".*" stops at first ").
-	// Anchored DFA from start gives the correct greedy end for this specific match.
+	// SearchFirstAt gives leftmost-first end, but we need leftmost-longest
+	// (greedy) end for POSIX/Go stdlib compatibility.
 	exactEnd := e.dfa.SearchAtAnchored(state.dfaCache, haystack, start)
 	if exactEnd > start {
 		end = exactEnd
