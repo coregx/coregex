@@ -652,6 +652,14 @@ func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool)
 		}
 	}
 
+	// For always-anchored patterns (^) on large inputs where BT can't handle
+	// the full haystack, use PikeVM directly. PikeVM memory is O(states) per
+	// step, not O(states × haystack) like BT visited table.
+	if e.nfa.IsAlwaysAnchored() && !e.boundedBacktracker.CanHandle(len(haystack)) {
+		atomic.AddUint64(&e.stats.NFASearches, 1)
+		return e.pikevm.SearchWithSlotTable(haystack, nfa.SearchModeFind)
+	}
+
 	atomic.AddUint64(&e.stats.NFASearches, 1)
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		// Bidirectional DFA: O(n) vs PikeVM's O(n*states) for large inputs
