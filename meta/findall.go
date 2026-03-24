@@ -194,6 +194,16 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 	pos := 0
 	lastMatchEnd := -1
 
+	// Fast path: start-anchored patterns (^) match at most once at position 0.
+	// Skip pool Get/Put overhead entirely — use non-pooled FindIndices.
+	if e.nfa.IsAlwaysAnchored() {
+		start, end, found := e.FindIndices(haystack)
+		if found {
+			results = append(results, [2]int{start, end})
+		}
+		return results
+	}
+
 	// Get state ONCE for entire iteration - eliminates 1.29M sync.Pool ops for FindAll
 	state := e.getSearchState()
 	defer e.putSearchState(state)
