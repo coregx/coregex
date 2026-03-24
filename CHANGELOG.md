@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.19] - 2026-03-24
+
+### Performance
+- **Remove dual transition storage** — eliminated `transitions []StateID` and
+  `transitionCount` from `State` struct. Transitions now stored exclusively in
+  `DFACache.flatTrans`. Removes ~93MB of redundant per-state transition slices
+  (222MB → ~150MB). Acceleration detection migrated to `DetectAccelerationFromFlat()`
+  reading directly from flat table.
+
 ## [0.12.18] - 2026-03-24
 
 ### Performance
