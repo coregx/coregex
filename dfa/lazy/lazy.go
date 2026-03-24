@@ -810,41 +810,36 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 				goto earliestSlowPath
 			}
 
-			// Transition 1
-			o1 := safeOffset(sid, stride, int(d.byteToClass(haystack[pos])))
-			if o1 >= ftLen {
+			// Bounds hint for 4x unrolled transitions
+			if sid.Offset()+stride > ftLen {
 				goto earliestSlowPath
 			}
-			n1 := ft[o1]
-			if n1 >= DeadState {
+
+			// Transition 1
+			n1 := ft[sid.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n1.IsTagged() {
+				if n1.IsMatchTag() {
+					return true
+				}
 				goto earliestSlowPath
 			}
 			pos++
-			if n1.IsMatchTag() {
-				return true
-			}
 
-			// Check remaining bounds for subsequent transitions
 			if pos+2 >= endPos {
 				sid = n1
 				goto earliestSlowPath
 			}
 
 			// Transition 2
-			o2 := safeOffset(n1, stride, int(d.byteToClass(haystack[pos])))
-			if o2 >= ftLen {
-				sid = n1
-				goto earliestSlowPath
-			}
-			n2 := ft[o2]
-			if n2 >= DeadState {
+			n2 := ft[n1.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n2.IsTagged() {
+				if n2.IsMatchTag() {
+					return true
+				}
 				sid = n1
 				goto earliestSlowPath
 			}
 			pos++
-			if n2.IsMatchTag() {
-				return true
-			}
 
 			if pos+1 >= endPos {
 				sid = n2
@@ -852,37 +847,27 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			}
 
 			// Transition 3
-			o3 := safeOffset(n2, stride, int(d.byteToClass(haystack[pos])))
-			if o3 >= ftLen {
-				sid = n2
-				goto earliestSlowPath
-			}
-			n3 := ft[o3]
-			if n3 >= DeadState {
+			n3 := ft[n2.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n3.IsTagged() {
+				if n3.IsMatchTag() {
+					return true
+				}
 				sid = n2
 				goto earliestSlowPath
 			}
 			pos++
-			if n3.IsMatchTag() {
-				return true
-			}
 
 			// Transition 4
-			o4 := safeOffset(n3, stride, int(d.byteToClass(haystack[pos])))
-			if o4 >= ftLen {
-				sid = n3
-				goto earliestSlowPath
-			}
-			n4 := ft[o4]
-			if n4 >= DeadState {
+			n4 := ft[n3.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n4.IsTagged() {
+				if n4.IsMatchTag() {
+					return true
+				}
 				sid = n3
 				goto earliestSlowPath
 			}
 			pos++
 			sid = n4
-			if n4.IsMatchTag() {
-				return true
-			}
 
 			continue
 		}
@@ -1361,86 +1346,74 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 				goto slowPath
 			}
 
-			// Transition 1
-			o1 := safeOffset(sid, stride, int(d.byteToClass(haystack[pos])))
-			if o1 >= ftLen {
+			// Bounds hint for 4x unrolled transitions
+			if sid.Offset()+stride > ftLen {
 				goto slowPath
 			}
-			n1 := ft[o1]
-			if n1 >= DeadState {
-				goto slowPath
-			}
-			pos++
 
-			if n1.IsMatchTag() || pos+2 >= end {
-				sid = n1
+			// Transition 1
+			n1 := ft[sid.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n1.IsTagged() {
 				if n1.IsMatchTag() {
+					pos++
+					sid = n1
 					lastMatch = pos
 					committed = true
 				}
+				goto slowPath
+			}
+			pos++
+			if pos+2 >= end {
+				sid = n1
 				goto slowPath
 			}
 
 			// Transition 2
-			o2 := safeOffset(n1, stride, int(d.byteToClass(haystack[pos])))
-			if o2 >= ftLen {
+			n2 := ft[n1.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n2.IsTagged() {
 				sid = n1
-				goto slowPath
-			}
-			n2 := ft[o2]
-			if n2 >= DeadState {
-				sid = n1
-				goto slowPath
-			}
-			pos++
-
-			if n2.IsMatchTag() || pos+1 >= end {
-				sid = n2
 				if n2.IsMatchTag() {
+					pos++
+					sid = n2
 					lastMatch = pos
 					committed = true
 				}
 				goto slowPath
 			}
-
-			// Transition 3
-			o3 := safeOffset(n2, stride, int(d.byteToClass(haystack[pos])))
-			if o3 >= ftLen {
+			pos++
+			if pos+1 >= end {
 				sid = n2
 				goto slowPath
 			}
-			n3 := ft[o3]
-			if n3 >= DeadState {
+
+			// Transition 3
+			n3 := ft[n2.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n3.IsTagged() {
 				sid = n2
+				if n3.IsMatchTag() {
+					pos++
+					sid = n3
+					lastMatch = pos
+					committed = true
+				}
 				goto slowPath
 			}
 			pos++
 
-			if n3.IsMatchTag() {
-				sid = n3
-				lastMatch = pos
-				committed = true
-				goto slowPath
-			}
-
 			// Transition 4
-			o4 := safeOffset(n3, stride, int(d.byteToClass(haystack[pos])))
-			if o4 >= ftLen {
+			n4 := ft[n3.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n4.IsTagged() {
 				sid = n3
-				goto slowPath
-			}
-			n4 := ft[o4]
-			if n4 >= DeadState {
-				sid = n3
+				if n4.IsMatchTag() {
+					pos++
+					sid = n4
+					lastMatch = pos
+					committed = true
+				}
 				goto slowPath
 			}
 			pos++
 			sid = n4
-
-			if n4.IsMatchTag() {
-				lastMatch = pos
-				committed = true
-			}
 
 			continue
 		}
