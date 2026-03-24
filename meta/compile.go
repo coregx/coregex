@@ -365,9 +365,10 @@ func buildCharClassSearchers(
 	// For UseNFA with small NFAs, also create BoundedBacktracker as fallback.
 	// BoundedBacktracker is 2-3x faster than PikeVM on small inputs due to
 	// generation-based visited tracking (O(1) reset) vs PikeVM's thread queues.
-	// This is similar to how stdlib uses backtracking for simple patterns.
+	// Use small capacity (256KB like Rust) — for UseNFA, BT is optional;
+	// PikeVM handles large inputs correctly. This prevents 37MB+ visited allocations.
 	if result.finalStrategy == UseNFA && result.boundedBT == nil && nfaEngine.States() < 50 {
-		result.boundedBT = nfa.NewBoundedBacktracker(btNFA)
+		result.boundedBT = nfa.NewBoundedBacktrackerSmall(btNFA)
 	}
 
 	return result

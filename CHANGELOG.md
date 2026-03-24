@@ -12,6 +12,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.19] - 2026-03-24
+
+### Performance
+- **Zero-alloc FindSubmatch via dual SlotTable** (Rust approach) — replaced per-thread
+  COW capture allocation with Rust-style flat SlotTable. Two SlotTables (curr/next)
+  swap between byte generations. Stack-based epsilon closure with RestoreCapture
+  frames preserves capture context through greedy loops. FindAllSubmatch (5 patterns,
+  50K matches, 800KB input): alloc **554MB → 26MB** (-95%), mallocs **12.5M → 440K**
+  (-96%), time **1.48s → 0.45s** (3.3x faster). Reference: Rust `pikevm.rs`
+  `ActiveStates` + `SlotTable` + `FollowEpsilon::RestoreCapture`.
+
+- **Rust-aligned BoundedBacktracker visited limit for UseNFA** — reduced visited
+  table capacity from 32M entries (64MB) to 128K entries (256KB) for UseNFA paths,
+  matching Rust regex's `visited_capacity` default. On Kostya's LangArena LogParser
+  (7MB log, 13 patterns): total alloc **89MB → 25MB** (-72%), RSS **353MB → 41MB**
+  (-88%). `errors` pattern: **66MB → 2.4MB** (-96%). No speed regression.
+  `UseBoundedBacktracker` strategy retains full 32M limit for POSIX longest-match
+  correctness (Go stdlib compatibility).
+
+- **Byte-based DFA cache limit** (Rust approach) — replaced `MaxStates` count limit
+  with `CacheCapacityBytes` (default 2MB, matching Rust's `hybrid_cache_capacity`).
+  Cache limit is now self-adjusting: fewer states for large alphabets, more for small.
+  Added `MemoryUsage()` method for runtime cache introspection.
+
+- **Remove dual transition storage** — eliminated `transitions []StateID` and
+  `transitionCount` from `State` struct. Transitions now stored exclusively in
+  `DFACache.flatTrans`. Acceleration detection migrated to `DetectAccelerationFromFlat()`
+  reading directly from flat table.
+
 ## [0.12.18] - 2026-03-24
 
 ### Performance

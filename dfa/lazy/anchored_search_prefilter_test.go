@@ -73,82 +73,39 @@ func TestDetectAccelFromCachedWithClassesByteMapping(t *testing.T) {
 
 // TestDetectAccelFromCachedWithClassesNilClasses verifies the nil byteClasses fallback.
 func TestDetectAccelFromCachedWithClassesNilClasses(t *testing.T) {
-	// Create a state with known transitions (stride=256, no compression)
+	// State no longer stores transitions — DetectAccelerationFromCachedWithClasses returns nil.
+	// Use DetectAccelerationFromFlat for flat table detection.
 	state := NewState(StateID(1), []nfa.StateID{0}, false)
-
-	// Fill 253 self-loop transitions
-	for i := 0; i < 253; i++ {
-		state.AddTransition(byte(i), StateID(1))
-	}
-	// Add 3 exit transitions to a different state
-	state.AddTransition(253, StateID(2))
-	state.AddTransition(254, StateID(2))
-	state.AddTransition(255, StateID(2))
-
-	// nil byteClasses -> exit class indices ARE the bytes (identity)
 	result := DetectAccelerationFromCachedWithClasses(state, nil)
-	if len(result) != 3 {
-		t.Fatalf("expected 3 exit bytes with nil classes, got %v", result)
-	}
-	expected := map[byte]bool{253: true, 254: true, 255: true}
-	for _, b := range result {
-		if !expected[b] {
-			t.Errorf("unexpected exit byte %d", b)
-		}
+	if result != nil {
+		t.Errorf("expected nil (State has no transitions), got %v", result)
 	}
 }
 
-// TestDetectAccelFromCachedInsufficientTransitions tests that when too few
-// transitions are cached, acceleration detection returns nil.
+// TestDetectAccelFromCachedInsufficientTransitions tests that State-based detection returns nil.
 func TestDetectAccelFromCachedInsufficientTransitions(t *testing.T) {
 	state := NewState(StateID(1), []nfa.StateID{0}, false)
-	// Only add a few transitions (way below 94% threshold)
-	state.AddTransition(0, StateID(1))
-	state.AddTransition(1, StateID(2))
-
 	result := DetectAccelerationFromCachedWithClasses(state, nil)
 	if result != nil {
-		t.Errorf("expected nil for insufficient cached transitions, got %v", result)
+		t.Errorf("expected nil (State has no transitions), got %v", result)
 	}
 }
 
-// TestDetectAccelFromCachedTooManyExitClasses tests that >3 exit classes returns nil.
+// TestDetectAccelFromCachedTooManyExitClasses tests that State-based detection returns nil.
 func TestDetectAccelFromCachedTooManyExitClasses(t *testing.T) {
 	state := NewState(StateID(1), []nfa.StateID{0}, false)
-	// Fill 250 self-loops
-	for i := 0; i < 250; i++ {
-		state.AddTransition(byte(i), StateID(1))
-	}
-	// Add 4 distinct exit transitions (> 3 limit)
-	state.AddTransition(250, StateID(2))
-	state.AddTransition(251, StateID(3))
-	state.AddTransition(252, StateID(4))
-	state.AddTransition(253, StateID(5))
-	// Fill remaining with dead
-	state.AddTransition(254, DeadState)
-	state.AddTransition(255, DeadState)
-
 	result := DetectAccelerationFromCachedWithClasses(state, nil)
 	if result != nil {
-		t.Errorf("expected nil for >3 exit classes, got %v", result)
+		t.Errorf("expected nil (State has no transitions), got %v", result)
 	}
 }
 
-// TestDetectAccelFromCachedZeroExitClasses tests that 0 exit classes returns nil.
+// TestDetectAccelFromCachedZeroExitClasses tests that State-based detection returns nil.
 func TestDetectAccelFromCachedZeroExitClasses(t *testing.T) {
 	state := NewState(StateID(1), []nfa.StateID{0}, false)
-	// All transitions are self-loops or dead
-	for i := 0; i < 256; i++ {
-		if i < 200 {
-			state.AddTransition(byte(i), StateID(1)) // self-loop
-		} else {
-			state.AddTransition(byte(i), DeadState) // dead
-		}
-	}
-
 	result := DetectAccelerationFromCachedWithClasses(state, nil)
 	if result != nil {
-		t.Errorf("expected nil for 0 exit classes, got %v", result)
+		t.Errorf("expected nil (State has no transitions), got %v", result)
 	}
 }
 

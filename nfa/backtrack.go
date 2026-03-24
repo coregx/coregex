@@ -67,14 +67,37 @@ type BacktrackerState struct {
 }
 
 // NewBoundedBacktracker creates a new bounded backtracker for the given NFA.
-// Default maxVisitedSize is 32M entries (32MB memory with uint8), allowing
+// Default maxVisitedSize is 32M entries (64MB memory with uint16), allowing
 // ~900KB inputs for patterns with 35 states like (\w{2,8})+.
-// Uses uint8 generation tracking (4x memory savings vs uint32, O(1) reset).
+//
+// This large limit is required for UseBoundedBacktracker strategy where BT
+// is the primary engine with leftmost-longest semantics. PikeVM fallback
+// gives leftmost-first results which would break correctness.
+//
+// For UseNFA strategy (where BT is optional), use NewBoundedBacktrackerSmall.
 func NewBoundedBacktracker(nfa *NFA) *BoundedBacktracker {
 	return &BoundedBacktracker{
 		nfa:            nfa,
 		numStates:      nfa.States(),
-		maxVisitedSize: 32 * 1024 * 1024, // 32M entries = 64MB memory (2 bytes per entry)
+		maxVisitedSize: 32 * 1024 * 1024, // 32M entries = 64MB (unchanged for BT strategy)
+	}
+}
+
+// NewBoundedBacktrackerSmall creates a BoundedBacktracker with Rust-aligned
+// visited capacity (128K entries = 256KB). Use for UseNFA paths where BT
+// is an optional optimization and PikeVM is the correct fallback.
+//
+// This prevents massive visited table allocations (37MB+) for patterns like
+// ` [5][0-9]{2} | [4][0-9]{2} ` on large inputs. When BT can't handle
+// the input size, the caller falls back to PikeVM which is O(n*states)
+// memory per step, not O(n*states) total.
+//
+// Matches Rust regex's default visited_capacity of 256KB.
+func NewBoundedBacktrackerSmall(nfa *NFA) *BoundedBacktracker {
+	return &BoundedBacktracker{
+		nfa:            nfa,
+		numStates:      nfa.States(),
+		maxVisitedSize: 128 * 1024, // 128K entries × 2 bytes = 256KB (Rust default)
 	}
 }
 

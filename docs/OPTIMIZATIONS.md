@@ -1,6 +1,6 @@
 # coregex Optimizations that Beat Rust regex
 
-This document describes the 9 key optimizations in coregex that outperform the Rust regex crate.
+This document describes the 10 key optimizations in coregex that outperform the Rust regex crate.
 These algorithms are critical to coregex's competitive advantage and **MUST NOT REGRESS**.
 
 ## Summary
@@ -8,6 +8,7 @@ These algorithms are critical to coregex's competitive advantage and **MUST NOT 
 | Optimization | File | Pattern Type | vs stdlib | Benchmark |
 |--------------|------|--------------|-----------|-----------|
 | **AnchoredLiteral** | `meta/anchored_literal.go` | `^prefix.*suffix$` | **32-133x faster** | anchored_literal |
+| **Flat SlotTable** | `nfa/pikevm.go`, `nfa/slot_table.go` | FindSubmatch | **-95% memory** | submatch |
 | CharClassSearcher | `nfa/charclass_searcher.go` | `[\w]+`, `[a-z]+` | **23x faster** | char_class |
 | CompositeSearcher | `nfa/composite.go` | `[a-zA-Z]+[0-9]+` | **5x faster** | composite |
 | BranchDispatch | `nfa/branch_dispatch.go` | `^(\d+\|UUID\|hex32)` | **5-20x faster** | anchored_alt |
@@ -593,6 +594,58 @@ bash scripts/bench.sh --compare baseline current
 
 ---
 
+## 10. Dual SlotTable Capture Tracking (95% less memory) - NEW in v0.12.19
+
+**Files**: `nfa/pikevm.go`, `nfa/slot_table.go`
+
+**Pattern types**: All FindSubmatch/FindAllSubmatch patterns with capture groups
+
+### Architecture
+
+Replaces per-thread COW (copy-on-write) capture allocation with Rust-style flat
+SlotTable indexed by NFA state ID. Two SlotTables (curr/next) swap between byte
+generations — matching Rust's `ActiveStates` pattern.
+
+```
+SlotTable layout: table[stateID * slotsPerState + slotIndex]
+Each NFA state owns a row of slots: [g0_start, g0_end, g1_start, g1_end, ...]
+
+Epsilon closure: stack-based with RestoreCapture frames
+  Explore(sid)          → process state, push children
+  RestoreCapture(slot)  → undo capture write after subtree processed
+```
+
+Key invariant: Visited sparse set guarantees each NFA state is visited at most
+once per generation → one thread per state → per-state storage is correct.
+
+### Why faster than COW approach
+
+| | COW (old) | SlotTable (new) |
+|---|---|---|
+| Thread fork | `make([]int, numSlots)` — heap alloc | `copy(row, currSlots)` — no alloc |
+| Capture update | COW copy if shared — heap alloc | `currSlots[i] = pos` — in-place |
+| Match save | `copyData()` — heap alloc | `copy(bestSlots, row)` — one copy |
+| Memory per search | O(threads × slots) | O(states × slots) — fixed |
+
+### Benchmark data
+
+```
+FindAllSubmatch: 5 patterns, 50K matches, 800KB input
+
+Metric          COW (old)     SlotTable (new)   Improvement
+Alloc           554 MB        26 MB             -95%
+Mallocs         12,500,000    440,000           -96%
+Time            1.48s         0.45s             3.3x faster
+```
+
+### Reference
+
+- Rust: `regex-automata/src/nfa/thompson/pikevm.rs:2065` (SlotTable struct)
+- Rust: `regex-automata/src/nfa/thompson/pikevm.rs:1611` (FollowEpsilon::RestoreCapture)
+- Rust: `regex-automata/src/nfa/thompson/pikevm.rs:1878` (Cache with curr/next ActiveStates)
+
+---
+
 ## References
 
 - **Rust regex crate**: Architecture inspiration for multi-engine design
@@ -603,6 +656,6 @@ bash scripts/bench.sh --compare baseline current
 
 ---
 
-*Document version: 1.2.0*
-*Last updated: 2026-01-15*
-*Benchmark data: regex-bench v0.11.0*
+*Document version: 1.3.0*
+*Last updated: 2026-03-24*
+*Benchmark data: regex-bench v0.12.19*
