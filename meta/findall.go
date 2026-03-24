@@ -90,7 +90,7 @@ func (e *Engine) findSubmatchAtWithState(haystack []byte, at int, state *SearchS
 	case UseBoundedBacktracker, UseNFA,
 		UseDFA, UseBoth, UseDigitPrefilter:
 		atomic.AddUint64(&e.stats.NFASearches, 1)
-		nfaMatch := state.pikevm.SearchWithCapturesAt(haystack, at)
+		nfaMatch := state.pikevm.SearchWithSlotTableCapturesAt(haystack, at)
 		if nfaMatch == nil {
 			return nil
 		}
@@ -118,7 +118,7 @@ func (e *Engine) findSubmatchAtWithState(haystack []byte, at int, state *SearchS
 	nfaMatch := state.pikevm.SearchWithCapturesInSpan(haystack, start, end)
 	if nfaMatch == nil {
 		// Defensive fallback: DFA found a match but PikeVM disagrees.
-		nfaMatch = state.pikevm.SearchWithCapturesAt(haystack, at)
+		nfaMatch = state.pikevm.SearchWithSlotTableCapturesAt(haystack, at)
 		if nfaMatch == nil {
 			return nil
 		}
