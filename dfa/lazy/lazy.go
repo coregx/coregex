@@ -645,48 +645,59 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 		return true
 	}
 
-	// Integrated prefilter+DFA loop: single scan, prefilter on dead state
+	// Integrated prefilter+DFA loop with flat table (Rust approach)
 	endPos := len(haystack)
-	for pos < endPos {
-		b := haystack[pos]
+	sid := currentState.id
+	ft := cache.flatTrans
+	stride := cache.stride
+	ftLen := len(ft)
 
-		// Word boundary check
-		if d.hasWordBoundary && currentState.checkWordBoundaryFast(b) {
-			return true
+	for pos < endPos {
+		// Word boundary check (slow path)
+		if d.hasWordBoundary {
+			st := cache.getState(sid)
+			if st != nil && st.checkWordBoundaryFast(haystack[pos]) {
+				return true
+			}
 		}
 
-		// Get next state
-		classIdx := d.byteToClass(b)
-		nextID, ok := currentState.Transition(classIdx)
-		switch {
-		case !ok:
-			// Determinize on demand
-			nextState, err := d.determinize(cache, currentState, b)
-			if err != nil {
-				// Cache error — NFA fallback from current position
-				start, end, matched := d.pikevm.SearchAt(haystack, pos)
-				return matched && start >= 0 && end >= start
-			}
-			if nextState == nil {
-				// Dead state — skip ahead with prefilter
-				goto pfSkip
-			}
-			currentState = nextState
+		classIdx := int(d.byteToClass(haystack[pos]))
+		offset := int(sid)*stride + classIdx
+		var nextID StateID
+		if offset < ftLen {
+			nextID = ft[offset]
+		} else {
+			nextID = InvalidState
+		}
 
-		case nextID == DeadState:
-			// Dead state — skip ahead with prefilter
-			goto pfSkip
-
-		default:
-			currentState = cache.getState(nextID)
+		switch nextID {
+		case InvalidState:
+			currentState = cache.getState(sid)
 			if currentState == nil {
 				start, end, matched := d.pikevm.SearchAt(haystack, pos)
 				return matched && start >= 0 && end >= start
 			}
+			nextState, err := d.determinize(cache, currentState, haystack[pos])
+			if err != nil {
+				start, end, matched := d.pikevm.SearchAt(haystack, pos)
+				return matched && start >= 0 && end >= start
+			}
+			if nextState == nil {
+				goto pfSkip
+			}
+			sid = nextState.id
+			ft = cache.flatTrans
+			ftLen = len(ft)
+
+		case DeadState:
+			goto pfSkip
+
+		default:
+			sid = nextID
 		}
 
 		pos++
-		if currentState.IsMatch() {
+		if cache.IsMatchState(sid) {
 			return true
 		}
 		continue
@@ -701,16 +712,23 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 		pos = candidate
 
 		// Restart DFA at new candidate with anchored start state
-		currentState = d.getStartState(cache, haystack, pos, true)
-		if currentState == nil {
+		newStart := d.getStartState(cache, haystack, pos, true)
+		if newStart == nil {
 			return d.isMatchWithPrefilterFallback(cache, haystack, pos)
 		}
-		if currentState.IsMatch() {
+		sid = newStart.id
+		ft = cache.flatTrans
+		ftLen = len(ft)
+		if newStart.IsMatch() {
 			return true
 		}
 	}
 
-	return d.checkEOIMatch(currentState)
+	eoi := cache.getState(sid)
+	if eoi != nil {
+		return d.checkEOIMatch(eoi)
+	}
+	return false
 }
 
 // isMatchWithPrefilterFallback is the old two-pass approach used when
@@ -1091,121 +1109,134 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 	lastMatch := -1
 	committed := false // True once we've entered a match state
 
+	sid := currentState.id
+	ft := cache.flatTrans
+	stride := cache.stride
+	ftLen := len(ft)
+	startSID := sid
+
 	if currentState.IsMatch() {
-		lastMatch = pos // Empty match at start
+		lastMatch = pos
 		committed = true
 	}
 
 	for pos < len(haystack) {
-		b := haystack[pos]
-
-		// Check if word boundary would result in a match BEFORE consuming the byte.
-		// This handles patterns like `test\b` where after matching "test",
-		// the next byte '!' creates a word boundary that satisfies \b.
-		// Skip this expensive check for patterns without word boundaries.
-		if d.hasWordBoundary && d.checkWordBoundaryMatch(currentState, b) {
-			return pos // Return current position as match end
+		if d.hasWordBoundary {
+			st := cache.getState(sid)
+			if st != nil && d.checkWordBoundaryMatch(st, haystack[pos]) {
+				return pos
+			}
 		}
 
-		// Get next state (convert byte to class for transition lookup)
-		classIdx := d.byteToClass(b)
-		nextID, ok := currentState.Transition(classIdx)
-		var nextState *State
-		switch {
-		case !ok:
-			// Determinize on demand
-			var err error
-			nextState, err = d.determinize(cache, currentState, b)
+		classIdx := int(d.byteToClass(haystack[pos]))
+		offset := int(sid)*stride + classIdx
+		var nextID StateID
+		if offset < ftLen {
+			nextID = ft[offset]
+		} else {
+			nextID = InvalidState
+		}
+
+		switch nextID {
+		case InvalidState:
+			currentState = cache.getState(sid)
+			if currentState == nil {
+				return d.nfaFallback(haystack, 0)
+			}
+			nextState, err := d.determinize(cache, currentState, haystack[pos])
 			if err != nil {
 				if isCacheCleared(err) {
-					// Cache was cleared. Re-obtain start state and continue.
-					currentState = d.getStartStateForUnanchored(cache, haystack, pos)
-					if currentState == nil {
+					newStart := d.getStartStateForUnanchored(cache, haystack, pos)
+					if newStart == nil {
 						return d.nfaFallback(haystack, 0)
 					}
+					sid = newStart.id
+					startSID = sid
+					ft = cache.flatTrans
+					ftLen = len(ft)
 					committed = lastMatch >= 0
 					continue
 				}
 				return d.nfaFallback(haystack, 0)
 			}
 			if nextState == nil {
-				// Dead state - return last match if we had one
+				// Dead state — prefilter skip
 				if lastMatch != -1 {
 					return lastMatch
 				}
-				// No match yet - find next candidate
 				pos++
 				candidate = d.prefilter.Find(haystack, pos)
 				if candidate == -1 {
 					return -1
 				}
 				pos = candidate
-				// Get context-aware start state based on look-behind at new position
-				currentState = d.getStartStateForUnanchored(cache, haystack, pos)
-				if currentState == nil {
+				newStart := d.getStartStateForUnanchored(cache, haystack, pos)
+				if newStart == nil {
 					return d.nfaFallback(haystack, 0)
 				}
+				sid = newStart.id
+				startSID = sid
+				ft = cache.flatTrans
+				ftLen = len(ft)
 				lastMatch = -1
 				committed = false
-				if currentState.IsMatch() {
+				if newStart.IsMatch() {
 					lastMatch = pos
 					committed = true
 				}
 				continue
 			}
-		case nextID == DeadState:
-			// Dead state - return last match if we had one
+			sid = nextState.id
+			ft = cache.flatTrans
+			ftLen = len(ft)
+
+		case DeadState:
 			if lastMatch != -1 {
 				return lastMatch
 			}
-			// No match yet - find next candidate
 			pos++
 			candidate = d.prefilter.Find(haystack, pos)
 			if candidate == -1 {
 				return -1
 			}
 			pos = candidate
-			// Get context-aware start state based on look-behind at new position
-			currentState = d.getStartStateForUnanchored(cache, haystack, pos)
-			if currentState == nil {
+			newStart := d.getStartStateForUnanchored(cache, haystack, pos)
+			if newStart == nil {
 				return d.nfaFallback(haystack, 0)
 			}
+			sid = newStart.id
+			startSID = sid
+			ft = cache.flatTrans
+			ftLen = len(ft)
 			lastMatch = -1
 			committed = false
-			if currentState.IsMatch() {
+			if newStart.IsMatch() {
 				lastMatch = pos
 				committed = true
 			}
 			continue
+
 		default:
-			nextState = cache.getState(nextID)
-			if nextState == nil {
-				return d.nfaFallback(haystack, 0)
-			}
+			sid = nextID
 		}
 
 		pos++
-		currentState = nextState
 
-		// Track match state and enforce leftmost semantics
-		if currentState.IsMatch() {
+		if cache.IsMatchState(sid) {
 			lastMatch = pos
 			committed = true
 		} else if committed {
-			// We were in a match but now we're not - return leftmost match
 			return lastMatch
 		}
 
-		// If back in start state (unanchored prefix self-loop), use prefilter to skip
-		// Only do this if we haven't committed to a match yet
-		if !committed && currentState.ID() == StartState && pos < len(haystack) {
+		// Start state prefilter skip-ahead
+		if !committed && sid == startSID && pos < len(haystack) {
 			candidate = d.prefilter.Find(haystack, pos)
 			if candidate == -1 {
 				return -1
 			}
 			if candidate > pos {
 				pos = candidate
-				// Stay in start state
 			}
 		}
 	}
@@ -1213,11 +1244,11 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 	// Reached end of input.
 	// Check if there's a match at EOI due to pending word boundary assertions.
 	// Example: pattern `test\b` matching "test" - the \b is satisfied at EOI.
-	if d.checkEOIMatch(currentState) {
+	eoi := cache.getState(sid)
+	if eoi != nil && d.checkEOIMatch(eoi) {
 		return len(haystack)
 	}
 
-	// Return last match position (if any)
 	return lastMatch
 }
 
