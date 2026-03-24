@@ -119,11 +119,16 @@ func (e *Engine) findIndicesNFA(haystack []byte) (int, int, bool) {
 	state := e.getSearchState()
 	defer e.putSearchState(state)
 
-	// Use prefilter candidate loop for skip-ahead — but ONLY when prefilter
-	// covers all possible match positions (IsComplete or all branches represented).
-	// Incomplete prefilters (partial case-fold coverage) cannot be used as
-	// correctness gates — they'd miss branches whose literals were truncated.
-	if e.prefilter != nil && e.prefilter.IsComplete() {
+	// Use prefilter for candidate skip-ahead if available.
+	// Prefilter finds PREFIX positions → NFA/BT verifies full match from there.
+	// Safe for both complete and incomplete prefilters — as long as all
+	// alternation branches are represented in the literal set.
+	//
+	// NOT safe for partial-coverage prefilters (overflow truncated branches):
+	// candidate loop would miss unrepresented branches entirely.
+	// Rust avoids this by integrating prefilter inside PikeVM as skip-ahead
+	// (not as an external correctness gate). See pikevm.rs:1293-1299.
+	if e.prefilter != nil && !e.prefilterPartialCoverage {
 		at := 0
 		for at < len(haystack) {
 			// Find next candidate position via prefilter
@@ -175,8 +180,8 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 	state := e.getSearchState()
 	defer e.putSearchState(state)
 
-	// Use prefilter candidate loop — only safe with complete prefilter
-	if e.prefilter != nil && e.prefilter.IsComplete() {
+	// Use prefilter candidate loop — safe unless partial coverage (overflow)
+	if e.prefilter != nil && !e.prefilterPartialCoverage {
 		for at < len(haystack) {
 			pos := e.prefilter.Find(haystack, at)
 			if pos == -1 {
@@ -211,10 +216,10 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 }
 
 // findIndicesDFA searches using DFA with prefilter - zero alloc.
-func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
+func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) { //nolint:cyclop // DFA with prefilter paths
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 
-	// Literal fast path
+	// Literal fast path — complete prefilter returns match directly
 	if e.prefilter != nil && e.prefilter.IsComplete() {
 		pos := e.prefilter.Find(haystack, 0)
 		if pos == -1 {
@@ -226,6 +231,20 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
 			return pos, pos + literalLen, true
 		}
 		return e.pikevm.Search(haystack)
+	}
+
+	// Prefilter skip-ahead for DFA — safe even with incomplete prefilter.
+	// DFA verifies full pattern at candidate position; prefilter just skips.
+	if e.prefilter != nil && !e.prefilter.IsComplete() {
+		pos := e.prefilter.Find(haystack, 0)
+		if pos == -1 {
+			return -1, -1, false
+		}
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		if e.reverseDFA != nil {
+			return e.findIndicesBidirectionalDFA(haystack, pos)
+		}
+		return e.pikevm.SearchAt(haystack, pos)
 	}
 
 	// Prefilter-accelerated search: find candidate, verify with anchored DFA.
@@ -280,7 +299,8 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
 	}
 
 	// Prefilter with non-greedy: use prefilter for rejection only, PikeVM for match.
-	if e.prefilter != nil {
+	// Not safe with partial coverage — would miss unrepresented branches.
+	if e.prefilter != nil && !e.prefilterPartialCoverage {
 		pos := e.prefilter.Find(haystack, 0)
 		if pos == -1 {
 			return -1, -1, false
@@ -308,21 +328,7 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) {
 func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 
-	// Literal fast path
-	if e.prefilter != nil && e.prefilter.IsComplete() {
-		pos := e.prefilter.Find(haystack, at)
-		if pos == -1 {
-			return -1, -1, false
-		}
-		atomic.AddUint64(&e.stats.PrefilterHits, 1)
-		literalLen := e.prefilter.LiteralLen()
-		if literalLen > 0 {
-			return pos, pos + literalLen, true
-		}
-		return e.pikevm.SearchAt(haystack, at)
-	}
-
-	// Prefilter skip: use prefix prefilter to jump to candidate position.
+	// Prefilter skip-ahead — safe for all prefilters, DFA verifies.
 	if e.prefilter != nil {
 		pos := e.prefilter.Find(haystack, at)
 		if pos == -1 {
@@ -1028,9 +1034,9 @@ func (e *Engine) findIndicesNFAAtWithState(haystack []byte, at int, state *Searc
 	// BoundedBacktracker can be used for Find operations only when safe
 	useBT := e.boundedBacktracker != nil && !e.canMatchEmpty
 
-	// Use prefilter candidate loop — only safe with complete prefilter.
-	// Incomplete prefilters (partial case-fold coverage) would miss branches.
-	if e.prefilter != nil && e.prefilter.IsComplete() {
+	// Use prefilter candidate loop — safe unless partial coverage (overflow).
+	// Partial-coverage prefilters would miss unrepresented branches.
+	if e.prefilter != nil && !e.prefilterPartialCoverage {
 		for at < len(haystack) {
 			pos := e.prefilter.Find(haystack, at)
 			if pos == -1 {

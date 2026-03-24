@@ -27,36 +27,50 @@ import (
 //   - After too many clears, falls back to NFA
 //   - Clearing keeps allocated memory to avoid re-allocation
 type DFACache struct {
-	// states maps StateKey -> DFA State
+	// states maps StateKey -> DFA State (used only in determinize slow path)
 	states map[StateKey]*State
 
-	// stateList provides O(1) lookup of states by ID via direct indexing.
-	// StateIDs are sequential (0, 1, 2...), so slice indexing is faster than map.
-	// This was previously DFA.states — moved here because it grows during search.
+	// stateList provides O(1) lookup of State structs by ID.
+	// Used only in slow path (determinize, word boundary, acceleration).
+	// Hot loop uses flatTrans + matchFlags instead.
 	stateList []*State
 
+	// --- Flat transition table (Rust approach) ---
+	// Hot loop uses ONLY these fields — no *State pointer chase.
+	//
+	// Rust: cache.trans[sid + class] — single flat array, premultiplied ID.
+	// We use: flatTrans[int(sid)*stride + class] — same layout.
+	//
+	// This replaces per-state State.transitions[] in the hot loop:
+	// ONE slice access instead of TWO pointer chases (stateList → State → transitions).
+
+	// flatTrans is the flat transition table.
+	// Layout: [state0_c0, state0_c1, ..., state0_cN, state1_c0, ...]
+	// InvalidState (0xFFFFFFFF) = unknown transition (needs determinize).
+	flatTrans []StateID
+
+	// matchFlags[stateID] = true if state is a match/accepting state.
+	// Replaces State.IsMatch() in hot loop — no pointer chase needed.
+	matchFlags []bool
+
+	// stride is the number of byte equivalence classes (alphabet size).
+	stride int
+
 	// startTable caches start states for different look-behind contexts.
-	// This enables correct handling of assertions (^, \b, etc.) and
-	// avoids recomputing epsilon closures on every search.
-	// Previously lived on DFA — moved here because it is populated lazily.
 	startTable StartTable
 
 	// maxStates is the capacity limit
 	maxStates uint32
 
 	// nextID is the next available state ID.
-	// Start at 1 (0 is reserved for StartState).
 	nextID StateID
 
-	// clearCount tracks how many times the cache has been cleared during
-	// the current search. This is used to detect pathological cache thrashing
-	// and trigger NFA fallback when clears exceed the configured limit.
-	// Inspired by Rust regex-automata's hybrid DFA cache clearing strategy.
+	// clearCount tracks cache clear count for NFA fallback threshold.
 	clearCount int
 
-	// Statistics for cache performance tuning
-	hits   uint64 // Number of cache hits
-	misses uint64 // Number of cache misses
+	// Statistics
+	hits   uint64
+	misses uint64
 }
 
 // Get retrieves a state by its key.
@@ -95,7 +109,65 @@ func (c *DFACache) Insert(key StateKey, state *State) (StateID, error) {
 	c.states[key] = state
 	c.misses++
 
+	// Grow flat transition table for this state's row (all InvalidState initially).
+	if c.stride > 0 {
+		sid := int(state.id)
+		needed := (sid + 1) * c.stride
+		if needed > len(c.flatTrans) {
+			growth := needed - len(c.flatTrans)
+			for i := 0; i < growth; i++ {
+				c.flatTrans = append(c.flatTrans, InvalidState)
+			}
+		}
+		// Grow matchFlags
+		for len(c.matchFlags) <= sid {
+			c.matchFlags = append(c.matchFlags, false)
+		}
+		c.matchFlags[sid] = state.isMatch
+	}
+
 	return state.ID(), nil
+}
+
+// safeOffset computes flat table offset, safe on 386 where int is 32-bit.
+// StateID is uint32; on 386 int(0xFFFFFFFF) = -1 and uint multiply overflows.
+// Returns MaxInt for special state IDs (DeadState, InvalidState) so bounds
+// check (offset < ftLen) always fails safely.
+func safeOffset(sid StateID, stride int, classIdx int) int {
+	if sid >= DeadState {
+		return int(^uint(0) >> 1) // MaxInt — always >= ftLen
+	}
+	return int(sid)*stride + classIdx
+}
+
+// SetFlatTransition records a transition in the flat table.
+// Called from determinize when a transition is computed.
+func (c *DFACache) SetFlatTransition(fromID StateID, classIdx int, toID StateID) {
+	offset := safeOffset(fromID, c.stride, classIdx)
+	if offset < len(c.flatTrans) {
+		c.flatTrans[offset] = toID
+	}
+}
+
+// FlatNext returns the next state ID from the flat table.
+// Returns InvalidState if the transition hasn't been computed yet.
+// This is the hot-path function — should be inlined by the compiler.
+func (c *DFACache) FlatNext(sid StateID, classIdx int) StateID {
+	offset := int(sid)*c.stride + classIdx
+	return c.flatTrans[offset]
+}
+
+// IsMatchState returns whether the given state ID is a match state.
+// Uses compact matchFlags slice — no pointer chase.
+func (c *DFACache) IsMatchState(sid StateID) bool {
+	if sid >= DeadState {
+		return false
+	}
+	id := int(sid)
+	if id >= len(c.matchFlags) {
+		return false
+	}
+	return c.matchFlags[id]
 }
 
 // GetOrInsert retrieves a state from cache or inserts it if not present.
@@ -220,6 +292,11 @@ func (c *DFACache) getState(id StateID) *State {
 		return nil
 	}
 
+	// Guard against special state IDs (DeadState=0xFFFFFFFE, InvalidState=0xFFFFFFFF).
+	// On 386, int(uint32(0xFFFFFFFF)) = -1, causing negative index panic.
+	if id >= DeadState {
+		return nil
+	}
 	idx := int(id)
 	if idx >= len(c.stateList) {
 		return nil

@@ -12,6 +12,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.18] - 2026-03-24
+
+### Performance
+- **Flat DFA transition table** (Rust approach) — replaced double pointer chase
+  (`stateList[id].transitions[class]`) with flat array (`flatTrans[sid*stride+class]`).
+  Hot loop works with state ID only — no `*State` pointer in fast path. Applied to
+  all 6 DFA search functions. Inspired by Rust `Cache.trans` flat layout.
+
+- **4x loop unrolling** in `searchFirstAt` — process 4 bytes per iteration when
+  all transitions are in flat table. Falls to single-byte slow path on special states.
+
+- **DFA integrated prefilter skip-ahead** (Rust approach) — when DFA returns to
+  start state with no match in progress, uses `prefilter.Find()` to skip ahead
+  instead of byte-by-byte scanning. Applied to `searchFirstAt` and `searchAt`.
+  Reference: Rust `hybrid/search.rs:232-258`.
+  `peak_hours`: 197ms → **90ms** (gap vs Rust: 9x → 4x).
+
+- **PikeVM integrated prefilter skip-ahead** — prefilter integrated inside PikeVM
+  search loop (`pikevm.rs:1293`). When NFA has no active threads, PikeVM jumps to
+  next candidate. Safe for partial-coverage prefilters.
+
+### Fixed
+- **NFA candidate loop guard** — replaced `IsComplete()` with `partialCoverage`
+  flag. `IsComplete()` blocked ALL incomplete prefilters including prefix-only ones.
+  `errors` pattern: 1984ms → **80ms**.
+
+- **DFA prefilter skip for incomplete prefilters** — `IsComplete()` guard blocked
+  DFA prefilter skip-ahead for memmem/Teddy prefix-only prefilters. But DFA verifies
+  full pattern — skip is always safe. `sessions`: 229ms → **30ms**.
+
 ## [0.12.17] - 2026-03-23
 
 ### Fixed
@@ -38,6 +68,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wraps the prefilter with `WrapLineAnchor` for `(?m)^`, making Teddy safe.
   Now allows UseTeddy when anchors are only `(?m)^` (no \b, $, etc).
   `http_methods` on macOS ARM64: 89ms → **<1ms** (restored to v0.12.14 level).
+
+- **Fix NFA candidate loop guard** — `IsComplete()` guard blocked prefilter
+  candidate loop for ALL incomplete prefilters, including prefix-only ones
+  where all alternation branches are represented. Now uses `partialCoverage`
+  flag (set only on overflow truncation) instead of `IsComplete()`. Pattern
+  ` [5][0-9]{2} | [4][0-9]{2} ` (Kostya's `errors`): 1984ms → **109ms**.
+  Rust handles this by integrating prefilter as skip-ahead inside PikeVM
+  (not as an external correctness gate) — see `pikevm.rs:1293-1299`.
 
 ## [0.12.16] - 2026-03-21
 

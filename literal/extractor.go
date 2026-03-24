@@ -267,10 +267,9 @@ func (e *Extractor) extractPrefixesAlternate(re *syntax.Regexp, depth int) *Seq 
 	result := NewSeq(allLits...)
 
 	if overflowed || result.Len() > e.config.MaxLiterals {
-		// Either not all branches are represented (overflow) or too many literals.
 		// Trim to 3-byte prefixes + dedup to fit prefilter capacity.
 		// Mark ALL as inexact — prefilter is used for skip-ahead only,
-		// DFA/NFA verifies each candidate (safe with partial coverage).
+		// DFA/NFA verifies each candidate.
 		//
 		// Rust does the same: optimize_for_prefix_by_preference trims and deduplicates.
 		// A partial prefilter is much better than no prefilter — DFA with skip-ahead
@@ -280,6 +279,13 @@ func (e *Extractor) extractPrefixesAlternate(re *syntax.Regexp, depth int) *Seq 
 		result.Dedup()
 		if result.Len() > e.config.MaxLiterals {
 			result.literals = result.literals[:e.config.MaxLiterals]
+		}
+		// Mark partial coverage when overflow truncated branches.
+		// Prefilter with partial coverage CANNOT be used in candidate loops
+		// (would miss unrepresented branches). Only safe as skip-ahead
+		// inside NFA/DFA engine (Rust approach: PikeVM integrates prefilter).
+		if overflowed {
+			result.partialCoverage = true
 		}
 	}
 

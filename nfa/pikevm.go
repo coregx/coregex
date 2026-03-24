@@ -67,8 +67,17 @@ type searchThread struct {
 // Thread safety: PikeVM configuration (nfa) is immutable after creation.
 // For thread-safe concurrent usage, use *WithState methods with external PikeVMState.
 // The legacy methods without state use internal state and are NOT thread-safe.
+// SkipAhead is a prefilter interface for PikeVM skip-ahead optimization.
+// When NFA has no active threads, Find skips to the next candidate position
+// instead of scanning byte-by-byte. This is the Rust approach (pikevm.rs:1293).
+// Safe for both complete and partial-coverage prefilters.
+type SkipAhead interface {
+	Find(haystack []byte, start int) int
+}
+
 type PikeVM struct {
-	nfa *NFA
+	nfa       *NFA
+	skipAhead SkipAhead // Optional prefilter for skip-ahead (nil = disabled)
 
 	// internalState is used by legacy non-thread-safe methods.
 	// For concurrent usage, use *WithState methods with external PikeVMState.
@@ -264,6 +273,13 @@ func (p *PikeVM) initState(state *PikeVMState) {
 	// Each capture group has 2 slots (start and end position)
 	slotsPerState := p.nfa.CaptureCount() * 2
 	state.SlotTable = NewSlotTable(p.nfa.States(), slotsPerState)
+}
+
+// SetSkipAhead sets the prefilter for skip-ahead optimization.
+// When set, PikeVM uses it to skip positions where no match can start
+// (when there are no active NFA threads). Safe for partial-coverage prefilters.
+func (p *PikeVM) SetSkipAhead(sa SkipAhead) {
+	p.skipAhead = sa
 }
 
 // NewPikeVMState creates a new mutable state for use with PikeVM.
@@ -717,6 +733,15 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 		// Add new start thread at current position (simulates .*? prefix)
 		// Stop adding new starts once we've found a match.
 		if bestStart == -1 && (!isAnchored || pos == startAt) {
+			// Skip-ahead: when no active threads, use prefilter to jump forward.
+			// Rust approach (pikevm.rs:1293). Safe for partial-coverage prefilters.
+			if len(p.internalState.Queue) == 0 && p.skipAhead != nil && pos > startAt {
+				candidate := p.skipAhead.Find(haystack, pos)
+				if candidate == -1 {
+					break
+				}
+				pos = candidate
+			}
 			p.internalState.Visited.Clear()
 			p.addThread(thread{state: p.nfa.StartAnchored(), startPos: pos}, haystack, pos)
 		}
@@ -1656,6 +1681,14 @@ func (p *PikeVM) searchWithSlotTableUnanchored(haystack []byte, startAt int) (in
 
 	for pos := startAt; pos <= len(haystack); pos++ {
 		if bestStart == -1 && (!isAnchored || pos == 0) {
+			// Skip-ahead (Rust pikevm.rs:1293)
+			if len(p.internalState.SearchQueue) == 0 && p.skipAhead != nil && pos > startAt {
+				candidate := p.skipAhead.Find(haystack, pos)
+				if candidate == -1 {
+					break
+				}
+				pos = candidate
+			}
 			p.internalState.Visited.Clear()
 			p.addSearchThread(searchThread{state: p.nfa.StartAnchored(), startPos: pos}, haystack, pos)
 		}

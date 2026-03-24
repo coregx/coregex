@@ -96,6 +96,7 @@ type Engine struct {
 	ahoCorasick                    *ahocorasick.Automaton          // For large literal alternations (>32 patterns)
 	anchoredLiteralInfo            *AnchoredLiteralInfo            // For ^prefix.*suffix$ patterns (Issue #79)
 	prefilter                      prefilter.Prefilter
+	prefilterPartialCoverage       bool // True when prefilter doesn't cover all alternation branches
 	strategy                       Strategy
 	config                         Config
 
