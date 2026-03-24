@@ -12,20 +12,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
-## [0.12.18] - 2026-03-23
+## [0.12.18] - 2026-03-24
 
 ### Performance
-- **PikeVM integrated prefilter skip-ahead** (Rust approach) — prefilter is now
-  integrated inside PikeVM search loop as skip-ahead (`pikevm.rs:1293`). When NFA
-  has no active threads, PikeVM jumps to next candidate via `prefilter.Find()`
-  instead of scanning byte-by-byte. Safe for partial-coverage prefilters — NFA
-  processes all branches from each candidate position.
+- **Flat DFA transition table** (Rust approach) — replaced double pointer chase
+  (`stateList[id].transitions[class]`) with flat array (`flatTrans[sid*stride+class]`).
+  Hot loop works with state ID only — no `*State` pointer in fast path. Applied to
+  all 6 DFA search functions. Inspired by Rust `Cache.trans` flat layout.
+
+- **4x loop unrolling** in `searchFirstAt` — process 4 bytes per iteration when
+  all transitions are in flat table. Falls to single-byte slow path on special states.
+
+- **DFA integrated prefilter skip-ahead** (Rust approach) — when DFA returns to
+  start state with no match in progress, uses `prefilter.Find()` to skip ahead
+  instead of byte-by-byte scanning. Applied to `searchFirstAt` and `searchAt`.
+  Reference: Rust `hybrid/search.rs:232-258`.
+  `peak_hours`: 197ms → **90ms** (gap vs Rust: 9x → 4x).
+
+- **PikeVM integrated prefilter skip-ahead** — prefilter integrated inside PikeVM
+  search loop (`pikevm.rs:1293`). When NFA has no active threads, PikeVM jumps to
+  next candidate. Safe for partial-coverage prefilters.
 
 ### Fixed
-- **NFA candidate loop guard** — replaced `IsComplete()` guard with `partialCoverage`
-  flag. `IsComplete()` blocked prefilter candidate loop for ALL incomplete prefilters,
-  including prefix-only ones where all branches are represented. Now only blocks
-  overflow partial-coverage prefilters. `errors` pattern: 1984ms → **120ms**.
+- **NFA candidate loop guard** — replaced `IsComplete()` with `partialCoverage`
+  flag. `IsComplete()` blocked ALL incomplete prefilters including prefix-only ones.
+  `errors` pattern: 1984ms → **80ms**.
+
+- **DFA prefilter skip for incomplete prefilters** — `IsComplete()` guard blocked
+  DFA prefilter skip-ahead for memmem/Teddy prefix-only prefilters. But DFA verifies
+  full pattern — skip is always safe. `sessions`: 229ms → **30ms**.
 
 ## [0.12.17] - 2026-03-23
 
