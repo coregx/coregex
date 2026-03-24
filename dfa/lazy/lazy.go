@@ -268,20 +268,36 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 		lastMatch = at
 	}
 
+	sid := currentState.id
+	ft := cache.flatTrans
+	stride := cache.stride
+	ftLen := len(ft)
+
 	for pos := at; pos < len(haystack); pos++ {
 		b := haystack[pos]
 
-		// O(1) word boundary match check using pre-computed flags (was 30% CPU).
-		// matchAtWordBoundary/matchAtNonWordBoundary computed during determinize.
-		if d.hasWordBoundary && currentState.checkWordBoundaryFast(b) {
-			return pos
+		if d.hasWordBoundary {
+			st := cache.getState(sid)
+			if st != nil && st.checkWordBoundaryFast(b) {
+				return pos
+			}
 		}
 
-		// Convert byte to equivalence class for transition lookup
-		classIdx := d.byteToClass(b)
-		nextID, ok := currentState.Transition(classIdx)
-		switch {
-		case !ok:
+		classIdx := int(d.byteToClass(b))
+		offset := int(sid)*stride + classIdx
+		var nextID StateID
+		if offset < ftLen {
+			nextID = ft[offset]
+		} else {
+			nextID = InvalidState
+		}
+
+		switch nextID {
+		case InvalidState:
+			currentState = cache.getState(sid)
+			if currentState == nil {
+				return d.nfaFallback(haystack, at)
+			}
 			nextState, err := d.determinize(cache, currentState, b)
 			if err != nil {
 				if isCacheCleared(err) {
@@ -289,7 +305,10 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 					if currentState == nil {
 						return d.nfaFallback(haystack, at)
 					}
-					pos-- // Will be incremented by for-loop
+					sid = currentState.id
+					ft = cache.flatTrans
+					ftLen = len(ft)
+					pos--
 					continue
 				}
 				return d.nfaFallback(haystack, at)
@@ -297,24 +316,24 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 			if nextState == nil {
 				return lastMatch
 			}
-			currentState = nextState
+			sid = nextState.id
+			ft = cache.flatTrans
+			ftLen = len(ft)
 
-		case nextID == DeadState:
+		case DeadState:
 			return lastMatch
 
 		default:
-			currentState = cache.getState(nextID)
-			if currentState == nil {
-				return d.nfaFallback(haystack, at)
-			}
+			sid = nextID
 		}
 
-		if currentState.IsMatch() {
+		if cache.IsMatchState(sid) {
 			lastMatch = pos + 1
 		}
 	}
 
-	if d.checkEOIMatch(currentState) {
+	eoi := cache.getState(sid)
+	if eoi != nil && d.checkEOIMatch(eoi) {
 		return len(haystack)
 	}
 
