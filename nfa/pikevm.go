@@ -2009,30 +2009,265 @@ func (p *PikeVM) addSearchThreadToNext(t searchThread, srcState StateID, haystac
 }
 
 // SearchWithSlotTableCaptures finds the first match and returns captures.
-//
-// NOTE: This method currently delegates to the legacy SearchWithCapturesAt
-// because per-state SlotTable storage doesn't correctly track per-thread
-// capture paths. The SlotTable architecture is designed for Find/IsMatch
-// modes where captures are not needed.
-//
-// Future optimization: Implement a proper thread-indexed slot table similar
-// to Rust's pikevm.rs Slots structure.
-//
-// Returns nil if no match found.
+// Uses zero-allocation SlotTable architecture (Rust approach).
 func (p *PikeVM) SearchWithSlotTableCaptures(haystack []byte) *MatchWithCaptures {
 	return p.SearchWithSlotTableCapturesAt(haystack, 0)
 }
 
 // SearchWithSlotTableCapturesAt finds the first match with captures starting from 'at'.
+// Uses SlotTable for zero-allocation capture tracking (Rust approach).
 //
-// NOTE: Currently delegates to legacy SearchWithCapturesAt for correct capture tracking.
-// See SearchWithSlotTableCaptures for details.
+// SlotTable per-state storage works correctly because the Visited sparse set
+// guarantees each NFA state is visited at most once per generation — the same
+// invariant that makes Rust's SlotTable correct.
 func (p *PikeVM) SearchWithSlotTableCapturesAt(haystack []byte, at int) *MatchWithCaptures {
-	// Delegate to the legacy capture implementation which correctly tracks
-	// per-thread capture positions using COW semantics.
-	//
-	// The SlotTable per-state architecture cannot correctly track captures
-	// because multiple threads can pass through the same state with different
-	// capture positions. A proper implementation would need thread-indexed slots.
-	return p.SearchWithCapturesAt(haystack, at)
+	if at > len(haystack) {
+		return nil
+	}
+
+	// Configure SlotTable for full capture mode
+	totalSlots := p.nfa.CaptureCount() * 2
+	p.internalState.SlotTable.SetActiveSlots(totalSlots)
+
+	// Handle edge cases
+	if at == len(haystack) {
+		if p.matchesEmptyAt(haystack, at) {
+			return &MatchWithCaptures{
+				Start:    at,
+				End:      at,
+				Captures: [][]int{{at, at}},
+			}
+		}
+		return nil
+	}
+	if len(haystack) == 0 {
+		if p.matchesEmpty() {
+			return &MatchWithCaptures{
+				Start:    0,
+				End:      0,
+				Captures: [][]int{{0, 0}},
+			}
+		}
+		return nil
+	}
+
+	if p.nfa.IsAnchored() {
+		return p.searchWithSlotTableCapturesAnchored(haystack, at)
+	}
+	return p.searchWithSlotTableCapturesUnanchored(haystack, at)
+}
+
+// searchWithSlotTableCapturesUnanchored implements unanchored search with captures.
+// Captures stored in SlotTable per-state, saved to bestSlots on match.
+//
+//nolint:gocognit
+func (p *PikeVM) searchWithSlotTableCapturesUnanchored(haystack []byte, startAt int) *MatchWithCaptures {
+	st := &p.internalState
+	st.SearchQueue = st.SearchQueue[:0]
+	st.SearchNextQueue = st.SearchNextQueue[:0]
+	st.Visited.Clear()
+	st.SlotTable.Reset()
+
+	totalSlots := st.SlotTable.ActiveSlots()
+	bestStart := -1
+	bestEnd := -1
+	// bestSlots stores capture slots for the best match found so far
+	var bestSlots []int
+
+	for pos := startAt; pos <= len(haystack); pos++ {
+		if bestStart == -1 {
+			// Skip-ahead
+			if len(st.SearchQueue) == 0 && p.skipAhead != nil && pos > startAt {
+				candidate := p.skipAhead.Find(haystack, pos)
+				if candidate == -1 {
+					break
+				}
+				pos = candidate
+			}
+			st.Visited.Clear()
+			// Initialize slots for start state to all -1 (AllAbsent scratch)
+			absentSlots := st.SlotTable.AllAbsent()
+			for i := range absentSlots {
+				absentSlots[i] = -1
+			}
+			startSid := p.nfa.StartAnchored()
+			// Copy absent slots to start state
+			startSlots := st.SlotTable.ForState(startSid)
+			if startSlots != nil {
+				copy(startSlots, absentSlots)
+			}
+			p.addSearchThread(searchThread{state: startSid, startPos: pos}, haystack, pos)
+		}
+
+		if pos < len(haystack) {
+			b := haystack[pos]
+			st.Visited.Clear()
+			for _, t := range st.SearchQueue {
+				if p.nfa.IsMatch(t.state) {
+					if p.isBetterMatch(bestStart, bestEnd, t.startPos, pos) {
+						bestStart = t.startPos
+						bestEnd = pos
+						// Save capture slots for this match
+						matchSlots := st.SlotTable.ForState(t.state)
+						if matchSlots != nil && totalSlots > 0 {
+							if bestSlots == nil {
+								bestSlots = make([]int, totalSlots)
+							}
+							copy(bestSlots, matchSlots)
+						}
+					}
+					if !st.Longest {
+						break
+					}
+					continue
+				}
+				p.stepSearchThread(t, b, haystack, pos+1)
+			}
+		} else {
+			for _, t := range st.SearchQueue {
+				if p.nfa.IsMatch(t.state) {
+					if p.isBetterMatch(bestStart, bestEnd, t.startPos, pos) {
+						bestStart = t.startPos
+						bestEnd = pos
+						matchSlots := st.SlotTable.ForState(t.state)
+						if matchSlots != nil && totalSlots > 0 {
+							if bestSlots == nil {
+								bestSlots = make([]int, totalSlots)
+							}
+							copy(bestSlots, matchSlots)
+						}
+					}
+					break
+				}
+			}
+		}
+
+		if pos >= len(haystack) {
+			break
+		}
+
+		if bestStart != -1 {
+			hasLeftmostCandidate := false
+			for _, t := range st.SearchNextQueue {
+				if t.startPos <= bestStart {
+					hasLeftmostCandidate = true
+					break
+				}
+			}
+			if !hasLeftmostCandidate {
+				break
+			}
+		}
+
+		st.SearchQueue, st.SearchNextQueue = st.SearchNextQueue, st.SearchQueue[:0]
+	}
+
+	if bestStart == -1 {
+		return nil
+	}
+	return p.buildCapturesFromSlots(bestSlots, bestStart, bestEnd)
+}
+
+// searchWithSlotTableCapturesAnchored implements anchored search with captures.
+func (p *PikeVM) searchWithSlotTableCapturesAnchored(haystack []byte, startPos int) *MatchWithCaptures {
+	st := &p.internalState
+	st.SearchQueue = st.SearchQueue[:0]
+	st.SearchNextQueue = st.SearchNextQueue[:0]
+	st.Visited.Clear()
+	st.SlotTable.Reset()
+
+	totalSlots := st.SlotTable.ActiveSlots()
+
+	// Initialize start state slots
+	startSid := p.nfa.StartAnchored()
+	startSlots := st.SlotTable.ForState(startSid)
+	if startSlots != nil {
+		for i := range startSlots {
+			startSlots[i] = -1
+		}
+	}
+
+	p.addSearchThread(searchThread{state: startSid, startPos: startPos}, haystack, startPos)
+
+	lastMatchPos := -1
+	var bestSlots []int
+
+	for pos := startPos; pos <= len(haystack); pos++ {
+		if pos < len(haystack) {
+			b := haystack[pos]
+			st.Visited.Clear()
+			for _, t := range st.SearchQueue {
+				if p.nfa.IsMatch(t.state) {
+					if pos > lastMatchPos || lastMatchPos == -1 {
+						lastMatchPos = pos
+						matchSlots := st.SlotTable.ForState(t.state)
+						if matchSlots != nil && totalSlots > 0 {
+							if bestSlots == nil {
+								bestSlots = make([]int, totalSlots)
+							}
+							copy(bestSlots, matchSlots)
+						}
+					}
+					if !st.Longest {
+						break
+					}
+					continue
+				}
+				p.stepSearchThread(t, b, haystack, pos+1)
+			}
+		} else {
+			for _, t := range st.SearchQueue {
+				if p.nfa.IsMatch(t.state) {
+					if pos > lastMatchPos || lastMatchPos == -1 {
+						lastMatchPos = pos
+						matchSlots := st.SlotTable.ForState(t.state)
+						if matchSlots != nil && totalSlots > 0 {
+							if bestSlots == nil {
+								bestSlots = make([]int, totalSlots)
+							}
+							copy(bestSlots, matchSlots)
+						}
+					}
+					break
+				}
+			}
+		}
+
+		if len(st.SearchNextQueue) == 0 && (pos >= len(haystack) || lastMatchPos != -1) {
+			break
+		}
+		if pos >= len(haystack) {
+			break
+		}
+
+		st.SearchQueue, st.SearchNextQueue = st.SearchNextQueue, st.SearchQueue[:0]
+	}
+
+	if lastMatchPos == -1 {
+		return nil
+	}
+	return p.buildCapturesFromSlots(bestSlots, startPos, lastMatchPos)
+}
+
+// buildCapturesFromSlots converts flat slot data to MatchWithCaptures result.
+func (p *PikeVM) buildCapturesFromSlots(slots []int, matchStart, matchEnd int) *MatchWithCaptures {
+	numGroups := p.nfa.CaptureCount()
+	captures := make([][]int, numGroups)
+	captures[0] = []int{matchStart, matchEnd}
+
+	if slots != nil {
+		for i := 1; i < numGroups && i*2+1 < len(slots); i++ {
+			start := slots[i*2]
+			end := slots[i*2+1]
+			if start >= 0 && end >= 0 {
+				captures[i] = []int{start, end}
+			}
+		}
+	}
+
+	return &MatchWithCaptures{
+		Start:    matchStart,
+		End:      matchEnd,
+		Captures: captures,
+	}
 }
