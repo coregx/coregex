@@ -270,7 +270,7 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
+	_ = cache.stride
 	ftLen := len(ft)
 
 	for pos := at; pos < len(haystack); pos++ {
@@ -284,7 +284,7 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 		}
 
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 		var nextID StateID
 		if offset < ftLen {
 			nextID = ft[offset]
@@ -523,7 +523,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 		}
 
 		classIdx := int(d.byteToClass(haystack[pos]))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -648,7 +648,7 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 	endPos := len(haystack)
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
+	_ = cache.stride
 	ftLen := len(ft)
 
 	for pos < endPos {
@@ -661,7 +661,7 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 		}
 
 		classIdx := int(d.byteToClass(haystack[pos]))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 		var nextID StateID
 		if offset < ftLen {
 			nextID = ft[offset]
@@ -908,7 +908,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 
 		// Flat table lookup for transition
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -989,7 +989,7 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 	// Work with state ID only — no *State pointer chase in fast path.
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
+	_ = cache.stride
 	ftLen := len(ft)
 
 	// Scan input byte by byte with early termination
@@ -1007,7 +1007,7 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 
 		// Flat table lookup for transition
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -1093,7 +1093,7 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
+	_ = cache.stride
 	ftLen := len(ft)
 	startSID := sid
 
@@ -1111,7 +1111,7 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 		}
 
 		classIdx := int(d.byteToClass(haystack[pos]))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 		var nextID StateID
 		if offset < ftLen {
 			nextID = ft[offset]
@@ -1446,7 +1446,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 
 		// Flat table lookup for transition
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -1921,7 +1921,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 	// Hot loop: flat transition table (Rust approach).
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
+	_ = cache.stride
 	ftLen := len(ft)
 
 	if ftLen > 0 {
@@ -1934,7 +1934,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 	var nextSID StateID
 	for at >= start+3 {
 		// Transition 1 (from at, going backward)
-		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
+		revOff = sid.Offset() + int(d.byteToClass(haystack[at]))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
@@ -1949,7 +1949,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		at--
 
 		// Transition 2
-		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
+		revOff = sid.Offset() + int(d.byteToClass(haystack[at]))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
@@ -1964,7 +1964,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		at--
 
 		// Transition 3
-		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
+		revOff = sid.Offset() + int(d.byteToClass(haystack[at]))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
@@ -1979,7 +1979,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		at--
 
 		// Transition 4
-		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
+		revOff = sid.Offset() + int(d.byteToClass(haystack[at]))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
@@ -2004,7 +2004,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		b := haystack[at]
 
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -2106,14 +2106,14 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 	// Hot loop: flat transition table (Rust approach).
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
+	_ = cache.stride
 	ftLen := len(ft)
 
 	for at := end - 1; at >= lowerBound; at-- {
 		b := haystack[at]
 
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -2191,14 +2191,14 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 	// Hot loop: flat transition table (Rust approach).
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
+	_ = cache.stride
 	ftLen := len(ft)
 
 	for at := end - 1; at >= start; at-- {
 		b := haystack[at]
 
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
