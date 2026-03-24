@@ -290,13 +290,28 @@ func (p *PikeVM) initState(state *PikeVMState) {
 	// Pre-allocate epsilon stack for loop-based closure in IsMatch (Rust pattern)
 	state.epsilonStack = make([]StateID, 0, capacity)
 
-	// Initialize SlotTables for capture tracking (curr/next, swapped per byte)
-	// Each capture group has 2 slots (start and end position)
-	slotsPerState := p.nfa.CaptureCount() * 2
-	state.SlotTable = NewSlotTable(p.nfa.States(), slotsPerState)
-	state.NextSlotTable = NewSlotTable(p.nfa.States(), slotsPerState)
+	// SlotTables for capture tracking are initialized lazily on first use.
+	// This avoids allocation overhead for non-capture searches (FindAll, IsMatch).
+	// See ensureSlotTables().
+	state.SlotTable = nil
+	state.NextSlotTable = nil
+}
 
-	// Capture-aware epsilon closure stack and working buffer
+// ensureSlotTables lazily initializes SlotTables and capture support.
+// Called only when capture tracking is needed (SearchWithSlotTableCaptures).
+func (p *PikeVM) ensureSlotTables(state *PikeVMState) {
+	if state.SlotTable != nil {
+		return // Already initialized
+	}
+	slotsPerState := p.nfa.CaptureCount() * 2
+	numStates := p.nfa.States()
+	state.SlotTable = NewSlotTable(numStates, slotsPerState)
+	state.NextSlotTable = NewSlotTable(numStates, slotsPerState)
+
+	capacity := numStates
+	if capacity < 16 {
+		capacity = 16
+	}
 	state.captureStack = make([]captureFrame, 0, capacity)
 	if slotsPerState > 0 {
 		state.currSlots = make([]int, slotsPerState)
@@ -2135,6 +2150,9 @@ func (p *PikeVM) SearchWithSlotTableCapturesAt(haystack []byte, at int) *MatchWi
 	if at > len(haystack) {
 		return nil
 	}
+
+	// Lazy init SlotTables (only on first capture search)
+	p.ensureSlotTables(&p.internalState)
 
 	totalSlots := p.nfa.CaptureCount() * 2
 	p.internalState.SlotTable.SetActiveSlots(totalSlots)
