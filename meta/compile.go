@@ -624,13 +624,13 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		anchoredLiteralInfo:            anchoredLiteralInfo,
 		prefilter:                      pf,
 		prefilterPartialCoverage:       literals != nil && literals.IsPartialCoverage(),
-		prefilterGivesStart:            pf != nil && literals != nil, // prefix prefilter → position = match start
-		strategy:                       strategy,
-		config:                         config,
-		onepass:                        onePassRes,
-		canMatchEmpty:                  canMatchEmpty,
-		isStartAnchored:                isStartAnchored,
-		fatTeddyFallback:               fatTeddyFallback,
+		// prefilterGivesStart reserved for future prefix-aware DFA optimization
+		strategy:         strategy,
+		config:           config,
+		onepass:          onePassRes,
+		canMatchEmpty:    canMatchEmpty,
+		isStartAnchored:  isStartAnchored,
+		fatTeddyFallback: fatTeddyFallback,
 		statePool: newSearchStatePool(buildSearchStateConfig(
 			pikevmNFA, numCaptures, engines, strategy,
 		)),
@@ -744,6 +744,8 @@ type CompileError struct {
 
 // Error implements the error interface.
 // For syntax errors, returns the error directly to match stdlib behavior.
+// literalsMinLen returns the minimum literal length in the sequence.
+
 func (e *CompileError) Error() string {
 	// If the underlying error is from regexp/syntax, return it directly
 	// to match stdlib behavior (no extra prefix)

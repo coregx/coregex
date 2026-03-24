@@ -97,7 +97,6 @@ type Engine struct {
 	anchoredLiteralInfo            *AnchoredLiteralInfo            // For ^prefix.*suffix$ patterns (Issue #79)
 	prefilter                      prefilter.Prefilter
 	prefilterPartialCoverage       bool // True when prefilter doesn't cover all alternation branches
-	prefilterGivesStart            bool // True when prefilter = prefix literal → position = match start
 	strategy                       Strategy
 	config                         Config
 
