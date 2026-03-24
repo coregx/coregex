@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-03-20 | **Current Version**: v0.12.15 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-03-24 | **Current Version**: v0.12.18 | **Target**: v1.0.0 stable
 
 ---
 
@@ -87,7 +87,13 @@ v0.12.13 ✅ → FatTeddy fix, prefilter acceleration, AC v0.2.1
          ↓
 v0.12.14 ✅ → Concurrent safety fix for isMatchDFA prefilter (#137)
          ↓
-v0.12.15 (Current) ✅ → Per-goroutine DFA cache, word boundary 30%→0.3% CPU, AC prefilter
+v0.12.15 ✅ → Per-goroutine DFA cache, word boundary 30%→0.3% CPU, AC prefilter
+         ↓
+v0.12.16 ✅ → WrapLineAnchor for (?m)^ patterns
+         ↓
+v0.12.17 ✅ → Fix LogParser ARM64 regression, restore DFA/Teddy for (?m)^
+         ↓
+v0.12.18 (Current) ✅ → Flat DFA transition table, integrated prefilter, PikeVM skip-ahead
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
@@ -130,7 +136,10 @@ v1.0.0 STABLE → Production release with API stability guarantee
 - ✅ **v0.12.12**: Prefix trimming for case-fold literals
 - ✅ **v0.12.13**: FatTeddy fix (ANDL→ORL, VPTEST), prefilter acceleration, AC v0.2.1
 - ✅ **v0.12.14**: Concurrent safety fix for isMatchDFA prefilter (#137)
-- ✅ **v0.12.15**: Per-goroutine DFA cache (Rust approach), word boundary 30%→0.3% CPU, AC DFA prefilter for >32 literals (7-13x faster)
+- ✅ **v0.12.15**: Per-goroutine DFA cache (Rust approach), word boundary 30%→0.3% CPU, 7 correctness fixes
+- ✅ **v0.12.16**: WrapLineAnchor for (?m)^ patterns
+- ✅ **v0.12.17**: Fix LogParser ARM64 regression — restore DFA/Teddy for (?m)^, partial prefilter
+- ✅ **v0.12.18**: Flat DFA transition table (Rust approach), integrated prefilter skip-ahead in DFA+PikeVM, 4x unrolling — **35% faster than v0.12.14, 3x from Rust**
 
 ---
 
