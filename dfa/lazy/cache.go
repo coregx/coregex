@@ -1,8 +1,6 @@
 package lazy
 
-import (
-	"github.com/coregx/coregex/internal/conv"
-)
+// DFACache uses byte-based capacity (like Rust's cache_capacity).
 
 // DFACache holds mutable state for DFA search operations.
 //
@@ -15,7 +13,7 @@ import (
 // the DFA configuration is immutable and per-thread cache is mutable.
 //
 // The cache maps StateKey (NFA state set hash) -> DFA State.
-// When the cache reaches maxStates, it can be cleared and rebuilt
+// When the cache reaches capacityBytes, it can be cleared and rebuilt
 // (up to a configured limit) before falling back to NFA.
 //
 // Thread safety: NOT thread-safe. Each DFACache must be owned by a single
@@ -59,8 +57,10 @@ type DFACache struct {
 	// startTable caches start states for different look-behind contexts.
 	startTable StartTable
 
-	// maxStates is the capacity limit
-	maxStates uint32
+	// capacityBytes is the maximum cache memory in bytes (Rust approach).
+	// When MemoryUsage() exceeds this, Insert returns ErrCacheFull.
+	// Default: 2MB (matches Rust regex's hybrid_cache_capacity).
+	capacityBytes int
 
 	// nextID is the next available state ID.
 	nextID StateID
@@ -93,8 +93,8 @@ func (c *DFACache) Insert(key StateKey, state *State) (StateID, error) {
 		return existing.ID(), nil
 	}
 
-	// Check capacity
-	if conv.IntToUint32(len(c.states)) >= c.maxStates {
+	// Check capacity (byte-based, like Rust's cache_capacity)
+	if c.MemoryUsage() >= c.capacityBytes {
 		c.misses++
 		return InvalidState, ErrCacheFull
 	}
@@ -206,9 +206,39 @@ func (c *DFACache) Size() int {
 	return len(c.states)
 }
 
-// IsFull returns true if the cache has reached its maximum capacity.
+// MemoryUsage returns the estimated heap memory used by this cache in bytes.
+// Mirrors Rust's Cache::memory_usage() (hybrid/dfa.rs:2021).
+//
+// Components:
+//   - flatTrans: len * 4 bytes (StateID = uint32)
+//   - stateList: len * 8 bytes (pointer)
+//   - matchFlags: len * 1 byte
+//   - states map: ~len * 48 bytes (key + pointer + map overhead)
+//   - State heap: nfaStates slices + accelBytes
+func (c *DFACache) MemoryUsage() int {
+	const stateIDSize = 4   // uint32
+	const ptrSize = 8       // pointer on 64-bit
+	const mapEntrySize = 48 // approximate: key(8) + value(8) + map overhead(32)
+
+	usage := len(c.flatTrans) * stateIDSize
+	usage += len(c.stateList) * ptrSize
+	usage += len(c.matchFlags)
+	usage += len(c.states) * mapEntrySize
+
+	// State struct heap: nfaStates slice per state
+	for _, s := range c.stateList {
+		if s != nil {
+			usage += len(s.NFAStates()) * 4 // nfa.StateID = uint32
+			usage += len(s.AccelExitBytes())
+		}
+	}
+
+	return usage
+}
+
+// IsFull returns true if the cache has reached its capacity.
 func (c *DFACache) IsFull() bool {
-	return conv.IntToUint32(len(c.states)) >= c.maxStates
+	return c.MemoryUsage() >= c.capacityBytes
 }
 
 // Stats returns cache hit/miss statistics.
@@ -237,7 +267,7 @@ func (c *DFACache) ResetStats() {
 // This also resets the clear counter. Primarily for testing.
 func (c *DFACache) Clear() {
 	// Clear map (GC will reclaim memory)
-	c.states = make(map[StateKey]*State, c.maxStates)
+	c.states = make(map[StateKey]*State)
 	c.stateList = c.stateList[:0]
 	c.startTable = newStartTableFromByteMap(&c.startTable.byteMap)
 	c.nextID = StartState + 1

@@ -8,15 +8,23 @@ import (
 )
 
 // newTestCache creates a DFACache for testing without needing a DFA.
+// maxStates is converted to a byte limit (~56 bytes per state for stride=0 test caches).
 func newTestCache(maxStates uint32) *DFACache {
 	var byteMap [256]StartKind
 	initByteMap(&byteMap)
+	// Each state in a stride=0 test cache uses ~56 bytes:
+	// map entry(48) + stateList ptr(8) + nfaStates heap(~4) = ~60
+	// Use 52 to be slightly conservative (ensure IsFull after N inserts)
+	capacityBytes := int(maxStates) * 52
+	if capacityBytes == 0 {
+		capacityBytes = DefaultCacheCapacity
+	}
 	return &DFACache{
-		states:     make(map[StateKey]*State, maxStates),
-		stateList:  make([]*State, 0, maxStates),
-		startTable: newStartTableFromByteMap(&byteMap),
-		maxStates:  maxStates,
-		nextID:     StartState + 1,
+		states:        make(map[StateKey]*State, maxStates),
+		stateList:     make([]*State, 0, maxStates),
+		startTable:    newStartTableFromByteMap(&byteMap),
+		capacityBytes: capacityBytes,
+		nextID:        StartState + 1,
 	}
 }
 
@@ -116,9 +124,9 @@ func TestCacheInsertDuplicate(t *testing.T) {
 }
 
 func TestCacheIsFull(t *testing.T) {
-	c := newTestCache(3)
+	c := newTestCache(100) // Start with large capacity
 
-	// Insert up to capacity
+	// Insert 3 states
 	for i := nfa.StateID(0); i < 3; i++ {
 		nfaStates := []nfa.StateID{i}
 		key := ComputeStateKey(nfaStates)
@@ -129,9 +137,10 @@ func TestCacheIsFull(t *testing.T) {
 		}
 	}
 
-	// Cache should be full
+	// Set capacity to current usage — should be full
+	c.capacityBytes = c.MemoryUsage()
 	if !c.IsFull() {
-		t.Error("Cache should be full after inserting maxStates items")
+		t.Error("Cache should be full when capacity == usage")
 	}
 
 	// Next insert should fail with ErrCacheFull
@@ -178,9 +187,9 @@ func TestCacheGetOrInsert(t *testing.T) {
 }
 
 func TestCacheGetOrInsertFull(t *testing.T) {
-	c := newTestCache(1)
+	c := newTestCache(100) // Start with large capacity
 
-	// Fill the cache
+	// Insert one state
 	nfaStates := []nfa.StateID{1}
 	key := ComputeStateKey(nfaStates)
 	state := NewState(InvalidState, nfaStates, false)
@@ -188,6 +197,9 @@ func TestCacheGetOrInsertFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrInsert failed: %v", err)
 	}
+
+	// Set capacity to current usage — full
+	c.capacityBytes = c.MemoryUsage()
 
 	// Next GetOrInsert with new key should fail
 	nfaStates2 := []nfa.StateID{2}
@@ -354,8 +366,8 @@ func TestCacheResetClearCount(t *testing.T) {
 }
 
 func TestCacheCapacityBoundary(t *testing.T) {
-	// Test with capacity of 1
-	c := newTestCache(1)
+	// Create cache, insert one state, measure usage, then set capacity to that
+	c := newTestCache(100)
 
 	nfaStates := []nfa.StateID{1}
 	key := ComputeStateKey(nfaStates)
@@ -364,11 +376,13 @@ func TestCacheCapacityBoundary(t *testing.T) {
 	// First insert should succeed
 	_, err := c.Insert(key, state)
 	if err != nil {
-		t.Fatalf("Insert on capacity-1 cache failed: %v", err)
+		t.Fatalf("Insert failed: %v", err)
 	}
 
+	// Now set capacity to exactly the current usage — should be full
+	c.capacityBytes = c.MemoryUsage()
 	if !c.IsFull() {
-		t.Error("Capacity-1 cache should be full after 1 insert")
+		t.Error("Cache should be full when capacity == usage")
 	}
 
 	// Second insert with different key should fail
@@ -377,7 +391,7 @@ func TestCacheCapacityBoundary(t *testing.T) {
 	state2 := NewState(InvalidState, nfaStates2, false)
 	_, err = c.Insert(key2, state2)
 	if !errors.Is(err, ErrCacheFull) {
-		t.Errorf("Second insert on capacity-1 cache: got %v, want ErrCacheFull", err)
+		t.Errorf("Insert on full cache: got %v, want ErrCacheFull", err)
 	}
 }
 

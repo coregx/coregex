@@ -373,12 +373,13 @@ func TestDetectAccelerationNilBuilder(t *testing.T) {
 
 // TestConfigValidateEdgeCases tests config validation edge cases.
 func TestConfigValidateEdgeCases(t *testing.T) {
-	// Invalid: zero max states
+	// Invalid: zero capacity and zero max states
 	cfg := DefaultConfig()
+	cfg.CacheCapacityBytes = 0
 	cfg.MaxStates = 0
 	err := cfg.Validate()
 	if err == nil {
-		t.Error("expected error for zero MaxStates")
+		t.Error("expected error for zero CacheCapacityBytes and MaxStates")
 	}
 
 	// Invalid: zero determinization limit

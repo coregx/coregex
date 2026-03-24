@@ -99,7 +99,7 @@ type DFA struct {
 // across searches via Reset(), or pooled via sync.Pool in the meta layer.
 //
 // The cache is initialized with:
-//   - A state map sized to config.MaxStates
+//   - A state map (grows on demand up to CacheCapacityBytes)
 //   - A stateList for O(1) state-by-ID lookup
 //   - A StartTable with the DFA's immutable byteMap
 func (d *DFA) NewCache() *DFACache {
@@ -108,14 +108,14 @@ func (d *DFA) NewCache() *DFACache {
 	const initCap = 64
 	stride := d.AlphabetLen()
 	return &DFACache{
-		states:     make(map[StateKey]*State, initCap),
-		stateList:  make([]*State, 0, initCap),
-		flatTrans:  make([]StateID, 0, initCap*stride),
-		matchFlags: make([]bool, 0, initCap),
-		stride:     stride,
-		startTable: newStartTableFromByteMap(&d.startByteMap),
-		maxStates:  d.config.MaxStates,
-		nextID:     StartState + 1,
+		states:        make(map[StateKey]*State, initCap),
+		stateList:     make([]*State, 0, initCap),
+		flatTrans:     make([]StateID, 0, initCap*stride),
+		matchFlags:    make([]bool, 0, initCap),
+		stride:        stride,
+		startTable:    newStartTableFromByteMap(&d.startByteMap),
+		capacityBytes: d.config.effectiveCapacityBytes(),
+		nextID:        StartState + 1,
 	}
 }
 
@@ -1861,9 +1861,10 @@ func (d *DFA) accelerate(haystack []byte, pos int, exitBytes []byte) int {
 // Useful for performance tuning and diagnostics.
 //
 // Returns (size, capacity, hits, misses, hitRate).
+// capacity is the cache limit in bytes.
 func (d *DFA) CacheStats(cache *DFACache) (size int, capacity uint32, hits, misses uint64, hitRate float64) {
 	size = cache.Size()
-	capacity = d.config.MaxStates
+	capacity = uint32(cache.capacityBytes)
 	hits, misses, hitRate = cache.Stats()
 	return
 }

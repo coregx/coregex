@@ -5,18 +5,28 @@ package lazy
 // The configuration allows tuning the trade-off between memory usage and
 // performance. Larger caches provide better hit rates but consume more memory.
 type Config struct {
-	// MaxStates is the maximum number of DFA states to cache.
-	// When this limit is reached, the DFA clears the cache and continues
-	// DFA search (up to MaxCacheClears times per search), then falls back
-	// to NFA execution if the clear limit is exceeded.
+	// CacheCapacityBytes is the maximum memory (in bytes) that the DFA cache
+	// may use for transition tables, state storage, and metadata.
 	//
-	// Default: 10,000 states (~1MB with 256-byte transition tables)
-	// Memory usage: ~100-200 bytes per state (depending on transitions)
+	// When MemoryUsage() exceeds this limit, the cache is considered full.
+	// The DFA will then clear the cache (up to MaxCacheClears times) and
+	// rebuild states on demand, or fall back to NFA.
+	//
+	// Default: 2MB (2 * 1024 * 1024), matching Rust regex's hybrid_cache_capacity.
 	//
 	// Tuning guidelines:
-	//   - Simple patterns: 100-1,000 states sufficient
-	//   - Complex patterns: 10,000-100,000 states
-	//   - Memory-constrained: 1,000 states (~100KB)
+	//   - Simple patterns: 256KB-1MB sufficient
+	//   - Complex patterns or large alphabets: 2MB-10MB
+	//   - Memory-constrained environments: 256KB
+	//   - Performance-critical with complex patterns: 10MB-100MB
+	CacheCapacityBytes int
+
+	// MaxStates is a legacy limit on the number of DFA states.
+	// When CacheCapacityBytes > 0, MaxStates is ignored.
+	// When CacheCapacityBytes == 0 and MaxStates > 0,
+	// an approximate byte limit is computed from MaxStates.
+	//
+	// Deprecated: Use CacheCapacityBytes instead.
 	MaxStates uint32
 
 	// MaxCacheClears is the maximum number of times the DFA cache can be
@@ -71,20 +81,24 @@ type Config struct {
 	DeterminizationLimit int
 }
 
+// DefaultCacheCapacity is the default DFA cache capacity in bytes.
+// Matches Rust regex's hybrid_cache_capacity: 2 * (1 << 20) = 2MB.
+const DefaultCacheCapacity = 2 * 1024 * 1024
+
 // DefaultConfig returns a configuration with sensible defaults.
 //
 // These defaults are tuned for general-purpose regex matching:
-//   - Balance memory usage (~1MB) with performance
+//   - Cache capacity: 2MB (matches Rust regex default)
 //   - Enable prefilter for maximum speedup
 //   - Prevent exponential state explosion
 //
 // For specific use cases, tune the parameters:
-//   - Memory-constrained: reduce MaxStates to 1,000
-//   - Performance-critical: increase MaxStates to 100,000
+//   - Memory-constrained: reduce CacheCapacityBytes to 256KB
+//   - Performance-critical: increase CacheCapacityBytes to 10MB
 //   - Complex patterns: increase DeterminizationLimit
 func DefaultConfig() Config {
 	return Config{
-		MaxStates:            10_000,
+		CacheCapacityBytes:   DefaultCacheCapacity,
 		MaxCacheClears:       5,   // Allow 5 cache clears before NFA fallback
 		CacheHitThreshold:    0.0, // Disabled by default
 		UsePrefilter:         true,
@@ -93,13 +107,27 @@ func DefaultConfig() Config {
 	}
 }
 
+// effectiveCapacityBytes returns the cache capacity in bytes.
+// Uses CacheCapacityBytes if set, otherwise derives from legacy MaxStates.
+func (c *Config) effectiveCapacityBytes() int {
+	if c.CacheCapacityBytes > 0 {
+		return c.CacheCapacityBytes
+	}
+	if c.MaxStates > 0 {
+		// Legacy: approximate bytes from state count.
+		// Each state uses ~100 bytes (flatTrans row + map entry + State struct).
+		return int(c.MaxStates) * 100
+	}
+	return DefaultCacheCapacity
+}
+
 // Validate checks if the configuration is valid.
 // Returns an error if any parameter is out of acceptable range.
 func (c *Config) Validate() error {
-	if c.MaxStates == 0 {
+	if c.CacheCapacityBytes == 0 && c.MaxStates == 0 {
 		return &DFAError{
 			Kind:    InvalidConfig,
-			Message: "MaxStates must be > 0",
+			Message: "CacheCapacityBytes or MaxStates must be > 0",
 		}
 	}
 
@@ -134,9 +162,20 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// WithMaxStates returns a new config with the specified max states
+// WithCacheCapacity returns a new config with the specified cache capacity in bytes.
+// Default is 2MB (matching Rust regex). Set to 0 to use MaxStates instead.
+func (c Config) WithCacheCapacity(bytes int) Config {
+	c.CacheCapacityBytes = bytes
+	return c
+}
+
+// WithMaxStates returns a new config with the specified max states.
+//
+// Deprecated: Use WithCacheCapacity instead.
 func (c Config) WithMaxStates(maxStates uint32) Config {
 	c.MaxStates = maxStates
+	// Clear byte limit so legacy MaxStates takes effect
+	c.CacheCapacityBytes = 0
 	return c
 }
 

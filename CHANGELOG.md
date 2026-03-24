@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UseBoundedBacktracker` strategy retains full 32M limit for POSIX longest-match
   correctness (Go stdlib compatibility).
 
+- **Byte-based DFA cache limit** (Rust approach) — replaced `MaxStates` count limit
+  with `CacheCapacityBytes` (default 2MB, matching Rust's `hybrid_cache_capacity`).
+  Cache limit is now self-adjusting: fewer states for large alphabets, more for small.
+  Added `MemoryUsage()` method for runtime cache introspection.
+
 - **Remove dual transition storage** — eliminated `transitions []StateID` and
   `transitionCount` from `State` struct. Transitions now stored exclusively in
   `DFACache.flatTrans`. Acceleration detection migrated to `DetectAccelerationFromFlat()`
