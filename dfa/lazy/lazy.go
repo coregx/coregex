@@ -284,7 +284,7 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 		}
 
 		classIdx := int(d.byteToClass(b))
-		offset := int(sid)*stride + classIdx
+		offset := safeOffset(sid, stride, classIdx)
 		var nextID StateID
 		if offset < ftLen {
 			nextID = ft[offset]
@@ -434,10 +434,8 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 
 		// === 4x UNROLLED FAST PATH ===
 		if canUnroll && pos+3 < end {
-			sidInt := int(sid)
-
 			// Transition 1
-			o1 := sidInt*stride + int(d.byteToClass(haystack[pos]))
+			o1 := safeOffset(sid, stride, int(d.byteToClass(haystack[pos])))
 			if o1 >= ftLen {
 				goto searchFirstSlowPath
 			}
@@ -454,7 +452,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 			}
 
 			// Transition 2
-			o2 := int(n1)*stride + int(d.byteToClass(haystack[pos]))
+			o2 := safeOffset(n1, stride, int(d.byteToClass(haystack[pos])))
 			if o2 >= ftLen {
 				sid = n1
 				goto searchFirstSlowPath
@@ -473,7 +471,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 			}
 
 			// Transition 3
-			o3 := int(n2)*stride + int(d.byteToClass(haystack[pos]))
+			o3 := safeOffset(n2, stride, int(d.byteToClass(haystack[pos])))
 			if o3 >= ftLen {
 				sid = n2
 				goto searchFirstSlowPath
@@ -492,7 +490,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 			}
 
 			// Transition 4
-			o4 := int(n3)*stride + int(d.byteToClass(haystack[pos]))
+			o4 := safeOffset(n3, stride, int(d.byteToClass(haystack[pos])))
 			if o4 >= ftLen {
 				sid = n3
 				goto searchFirstSlowPath
@@ -524,7 +522,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 		}
 
 		classIdx := int(d.byteToClass(haystack[pos]))
-		offset := int(sid)*stride + classIdx
+		offset := safeOffset(sid, stride, classIdx)
 
 		var nextID StateID
 		if offset < ftLen {
@@ -662,7 +660,7 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 		}
 
 		classIdx := int(d.byteToClass(haystack[pos]))
-		offset := int(sid)*stride + classIdx
+		offset := safeOffset(sid, stride, classIdx)
 		var nextID StateID
 		if offset < ftLen {
 			nextID = ft[offset]
@@ -805,8 +803,6 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 		// For IsMatch(), we return true on ANY match, so no leftmost-longest tracking.
 		// This is even simpler than searchAt: just check isMatch after each transition.
 		if canUnroll && pos+3 < endPos {
-			sidInt := int(sid)
-
 			// Check acceleration on slow→fast transition (once per entry).
 			accelState := cache.getState(sid)
 			if accelState != nil && accelState.IsAccelerable() {
@@ -814,7 +810,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			}
 
 			// Transition 1
-			o1 := sidInt*stride + int(d.byteToClass(haystack[pos]))
+			o1 := safeOffset(sid, stride, int(d.byteToClass(haystack[pos])))
 			if o1 >= ftLen {
 				goto earliestSlowPath
 			}
@@ -834,7 +830,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			}
 
 			// Transition 2
-			o2 := int(n1)*stride + int(d.byteToClass(haystack[pos]))
+			o2 := safeOffset(n1, stride, int(d.byteToClass(haystack[pos])))
 			if o2 >= ftLen {
 				sid = n1
 				goto earliestSlowPath
@@ -855,7 +851,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			}
 
 			// Transition 3
-			o3 := int(n2)*stride + int(d.byteToClass(haystack[pos]))
+			o3 := safeOffset(n2, stride, int(d.byteToClass(haystack[pos])))
 			if o3 >= ftLen {
 				sid = n2
 				goto earliestSlowPath
@@ -871,7 +867,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			}
 
 			// Transition 4
-			o4 := int(n3)*stride + int(d.byteToClass(haystack[pos]))
+			o4 := safeOffset(n3, stride, int(d.byteToClass(haystack[pos])))
 			if o4 >= ftLen {
 				sid = n3
 				goto earliestSlowPath
@@ -926,7 +922,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 
 		// Flat table lookup for transition
 		classIdx := int(d.byteToClass(b))
-		offset := int(sid)*stride + classIdx
+		offset := safeOffset(sid, stride, classIdx)
 
 		var nextID StateID
 		if offset < ftLen {
@@ -1025,7 +1021,7 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 
 		// Flat table lookup for transition
 		classIdx := int(d.byteToClass(b))
-		offset := int(sid)*stride + classIdx
+		offset := safeOffset(sid, stride, classIdx)
 
 		var nextID StateID
 		if offset < ftLen {
@@ -1129,7 +1125,7 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 		}
 
 		classIdx := int(d.byteToClass(haystack[pos]))
-		offset := int(sid)*stride + classIdx
+		offset := safeOffset(sid, stride, classIdx)
 		var nextID StateID
 		if offset < ftLen {
 			nextID = ft[offset]
@@ -1358,8 +1354,6 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 		// === 4x UNROLLED FAST PATH ===
 		// Process 4 transitions per iteration when conditions allow.
 		if canUnroll && !committed && pos+3 < end {
-			sidInt := int(sid)
-
 			// Check acceleration on slow→fast transition (once per entry).
 			accelState := cache.getState(sid)
 			if accelState != nil && accelState.IsAccelerable() {
@@ -1367,7 +1361,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			}
 
 			// Transition 1
-			o1 := sidInt*stride + int(d.byteToClass(haystack[pos]))
+			o1 := safeOffset(sid, stride, int(d.byteToClass(haystack[pos])))
 			if o1 >= ftLen {
 				goto slowPath
 			}
@@ -1387,7 +1381,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			}
 
 			// Transition 2
-			o2 := int(n1)*stride + int(d.byteToClass(haystack[pos]))
+			o2 := safeOffset(n1, stride, int(d.byteToClass(haystack[pos])))
 			if o2 >= ftLen {
 				sid = n1
 				goto slowPath
@@ -1409,7 +1403,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			}
 
 			// Transition 3
-			o3 := int(n2)*stride + int(d.byteToClass(haystack[pos]))
+			o3 := safeOffset(n2, stride, int(d.byteToClass(haystack[pos])))
 			if o3 >= ftLen {
 				sid = n2
 				goto slowPath
@@ -1429,7 +1423,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			}
 
 			// Transition 4
-			o4 := int(n3)*stride + int(d.byteToClass(haystack[pos]))
+			o4 := safeOffset(n3, stride, int(d.byteToClass(haystack[pos])))
 			if o4 >= ftLen {
 				sid = n3
 				goto slowPath
@@ -1478,7 +1472,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 
 		// Flat table lookup for transition
 		classIdx := int(d.byteToClass(b))
-		offset := int(sid)*stride + classIdx
+		offset := safeOffset(sid, stride, classIdx)
 
 		var nextID StateID
 		if offset < ftLen {
@@ -1967,7 +1961,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 	var nextSID StateID
 	for at >= start+3 {
 		// Transition 1 (from at, going backward)
-		revOff = int(sid)*stride + int(d.byteToClass(haystack[at]))
+		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
@@ -1982,7 +1976,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		at--
 
 		// Transition 2
-		revOff = int(sid)*stride + int(d.byteToClass(haystack[at]))
+		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
@@ -1997,7 +1991,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		at--
 
 		// Transition 3
-		revOff = int(sid)*stride + int(d.byteToClass(haystack[at]))
+		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
@@ -2012,7 +2006,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		at--
 
 		// Transition 4
-		revOff = int(sid)*stride + int(d.byteToClass(haystack[at]))
+		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
@@ -2037,7 +2031,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		b := haystack[at]
 
 		classIdx := int(d.byteToClass(b))
-		offset := int(sid)*stride + classIdx
+		offset := safeOffset(sid, stride, classIdx)
 
 		var nextID StateID
 		if offset < ftLen {
@@ -2146,7 +2140,7 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 		b := haystack[at]
 
 		classIdx := int(d.byteToClass(b))
-		offset := int(sid)*stride + classIdx
+		offset := safeOffset(sid, stride, classIdx)
 
 		var nextID StateID
 		if offset < ftLen {
@@ -2231,7 +2225,7 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 		b := haystack[at]
 
 		classIdx := int(d.byteToClass(b))
-		offset := int(sid)*stride + classIdx
+		offset := safeOffset(sid, stride, classIdx)
 
 		var nextID StateID
 		if offset < ftLen {

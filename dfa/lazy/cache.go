@@ -129,6 +129,13 @@ func (c *DFACache) Insert(key StateKey, state *State) (StateID, error) {
 	return state.ID(), nil
 }
 
+// safeOffset computes flat table offset, safe on 386 where int is 32-bit.
+// StateID is uint32; on 386 int(0xFFFFFFFF) = -1 causing negative index panic.
+// Uses uint arithmetic then converts to int — always non-negative.
+func safeOffset(sid StateID, stride int, classIdx int) int {
+	return int(uint(sid)*uint(stride)) + classIdx
+}
+
 // SetFlatTransition records a transition in the flat table.
 // Called from determinize when a transition is computed.
 func (c *DFACache) SetFlatTransition(fromID StateID, classIdx int, toID StateID) {
