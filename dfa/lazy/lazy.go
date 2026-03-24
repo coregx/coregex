@@ -352,7 +352,7 @@ func (d *DFA) SearchFirstAt(cache *DFACache, haystack []byte, at int) int {
 
 // searchFirstAt is the core DFA search with early termination after first match.
 // Returns the end of the first match found, without extending for longest match.
-func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int { //nolint:funlen // 4x unrolled hot loop requires many statements
+func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int { //nolint:funlen,maintidx // 4x unrolled hot loop with integrated prefilter
 	if d.isAlwaysAnchored && startPos > 0 {
 		return -1
 	}
@@ -384,12 +384,35 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 	}
 
 	// 4x unrolled hot loop (Rust approach: hybrid/search.rs:195-221).
-	// Process 4 bytes per iteration when all transitions are in flat table
-	// (no unknown/dead/special states). Falls to slow path on any special case.
 	canUnroll := !d.hasWordBoundary
 	ftLen := len(ft)
+	startSID := startState.id
+	hasPre := d.prefilter != nil
 
 	for pos < end {
+		// Prefilter skip-ahead: when DFA is at start state with no match
+		// in progress, use prefilter to jump to next candidate position.
+		// This is the Rust approach (hybrid/search.rs:232-258).
+		// Eliminates byte-by-byte scanning between matches.
+		if hasPre && sid == startSID && !committed && pos > startPos {
+			candidate := d.prefilter.Find(haystack, pos)
+			if candidate == -1 {
+				return lastMatch // No more candidates
+			}
+			if candidate > pos {
+				pos = candidate
+				// Re-obtain start state at new position (context may differ)
+				newStart := d.getStartStateForUnanchored(cache, haystack, pos)
+				if newStart == nil {
+					return d.nfaFallback(haystack, startPos)
+				}
+				sid = newStart.id
+				startSID = sid
+				ft = cache.flatTrans
+				ftLen = len(ft)
+			}
+		}
+
 		// === 4x UNROLLED FAST PATH ===
 		if canUnroll && pos+3 < end {
 			sidInt := int(sid)
@@ -1259,7 +1282,29 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 		_ = ft[ftLen-1]
 	}
 
+	startSID := currentState.id
+	hasPre := d.prefilter != nil
+
 	for pos < end {
+		// Prefilter skip-ahead at start state (Rust hybrid/search.rs:232-258)
+		if hasPre && sid == startSID && !committed && pos > startPos {
+			candidate := d.prefilter.Find(haystack, pos)
+			if candidate == -1 {
+				return lastMatch
+			}
+			if candidate > pos {
+				pos = candidate
+				newStart := d.getStartStateForUnanchored(cache, haystack, pos)
+				if newStart == nil {
+					return d.nfaFallback(haystack, startPos)
+				}
+				sid = newStart.id
+				startSID = sid
+				ft = cache.flatTrans
+				ftLen = len(ft)
+			}
+		}
+
 		// === 4x UNROLLED FAST PATH ===
 		// Process 4 transitions per iteration when conditions allow.
 		if canUnroll && !committed && pos+3 < end {
