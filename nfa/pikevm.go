@@ -57,6 +57,17 @@ type searchThread struct {
 	startPos int     // Position where this thread's match attempt started
 }
 
+// captureFrame is a stack frame for capture-aware epsilon closure.
+// Two kinds: Explore (process a state) and RestoreCapture (undo a capture write).
+// Mirrors Rust's FollowEpsilon enum (pikevm.rs:1611).
+type captureFrame struct {
+	state    StateID // state to explore (InvalidState = restore frame)
+	startPos int     // thread start position
+	// For restore frames:
+	slot  int // slot index to restore
+	value int // old value to restore
+}
+
 // PikeVM implements the Pike VM algorithm for NFA execution.
 // It simulates the NFA by maintaining a set of active states and
 // exploring all possible paths through the automaton.
@@ -112,6 +123,15 @@ type PikeVMState struct {
 	// Enables O(1) access to capture positions for any state.
 	// Reference: rust-regex/regex-automata/src/nfa/thompson/pikevm.rs:2044-2160
 	SlotTable *SlotTable
+
+	// captureStack is used for stack-based epsilon closure with capture save/restore.
+	// Mirrors Rust's FollowEpsilon::RestoreCapture pattern (pikevm.rs:1611-1637).
+	captureStack []captureFrame
+
+	// currSlots is the working capture buffer during epsilon closure.
+	// Modified in-place, saved/restored via captureStack for StateCapture.
+	// Copied to SlotTable row when terminal state reached.
+	currSlots []int
 
 	// Longest enables leftmost-longest (POSIX) matching semantics.
 	// By default (false), uses leftmost-first (Perl) semantics where
@@ -273,6 +293,12 @@ func (p *PikeVM) initState(state *PikeVMState) {
 	// Each capture group has 2 slots (start and end position)
 	slotsPerState := p.nfa.CaptureCount() * 2
 	state.SlotTable = NewSlotTable(p.nfa.States(), slotsPerState)
+
+	// Capture-aware epsilon closure stack and working buffer
+	state.captureStack = make([]captureFrame, 0, capacity)
+	if slotsPerState > 0 {
+		state.currSlots = make([]int, slotsPerState)
+	}
 }
 
 // SetSkipAhead sets the prefilter for skip-ahead optimization.
@@ -1812,72 +1838,115 @@ func (p *PikeVM) searchWithSlotTableAnchored(haystack []byte, startPos int) (int
 // addSearchThread adds a lightweight thread to the current queue, following epsilon transitions.
 // Captures are stored in SlotTable, not in the thread.
 func (p *PikeVM) addSearchThread(t searchThread, haystack []byte, pos int) {
-	// Check if already visited this state
-	if !p.internalState.Visited.Insert(uint32(t.state)) {
-		return
-	}
+	st := &p.internalState
+	activeSlots := st.SlotTable.ActiveSlots()
 
-	state := p.nfa.State(t.state)
-	if state == nil {
-		return
-	}
+	// Stack-based epsilon closure with capture save/restore (Rust approach).
+	// Uses currSlots as working buffer, modified in-place during closure.
+	// When terminal state reached: copy currSlots to SlotTable row.
+	// When StateCapture encountered: save old value, set new, push RestoreCapture.
+	// Reference: rust-regex pikevm.rs:1611-1749 (FollowEpsilon::RestoreCapture)
 
-	switch state.Kind() {
-	case StateMatch, StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
-		p.internalState.SearchQueue = append(p.internalState.SearchQueue, t)
+	st.captureStack = st.captureStack[:0]
+	st.captureStack = append(st.captureStack, captureFrame{
+		state: t.state, startPos: t.startPos,
+	})
 
-	case StateEpsilon:
-		next := state.Epsilon()
-		if next != InvalidState {
-			p.addSearchThread(searchThread{state: next, startPos: t.startPos}, haystack, pos)
-		}
+	for len(st.captureStack) > 0 {
+		n := len(st.captureStack)
+		frame := st.captureStack[n-1]
+		st.captureStack = st.captureStack[:n-1]
 
-	case StateSplit:
-		left, right := state.Split()
-
-		if left != InvalidState {
-			if p.internalState.SlotTable.ActiveSlots() > 2 {
-				p.internalState.SlotTable.CopySlots(left, t.state)
+		// RestoreCapture frame: undo a capture slot modification
+		if frame.state == InvalidState {
+			if activeSlots > 2 && frame.slot < len(st.currSlots) {
+				st.currSlots[frame.slot] = frame.value
 			}
-			p.addSearchThread(searchThread{state: left, startPos: t.startPos}, haystack, pos)
-		}
-		if right != InvalidState {
-			if p.internalState.SlotTable.ActiveSlots() > 2 {
-				p.internalState.SlotTable.CopySlots(right, t.state)
-			}
-			p.addSearchThread(searchThread{state: right, startPos: t.startPos}, haystack, pos)
+			continue
 		}
 
-	case StateCapture:
-		groupIndex, isStart, next := state.Capture()
-		if next != InvalidState {
-			// For Find mode (activeSlots=2), group 0 is tracked via thread.startPos/pos
-			if p.internalState.SlotTable.ActiveSlots() > 2 {
-				slotIndex := int(groupIndex) * 2
-				if !isStart {
-					slotIndex++
-				}
-				if p.internalState.SlotTable.ActiveSlots() > slotIndex {
-					// Copy parent slots to next state first
-					p.internalState.SlotTable.CopySlots(next, t.state)
-					// Then update the capture slot
-					p.internalState.SlotTable.SetSlot(next, slotIndex, pos)
+		sid := frame.state
+		if !st.Visited.Insert(uint32(sid)) {
+			continue
+		}
+
+		state := p.nfa.State(sid)
+		if state == nil {
+			continue
+		}
+
+		switch state.Kind() {
+		case StateMatch, StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
+			// Terminal state: copy currSlots to this state's SlotTable row
+			if activeSlots > 2 {
+				stateSlots := st.SlotTable.ForState(sid)
+				if stateSlots != nil {
+					copy(stateSlots, st.currSlots)
 				}
 			}
-			p.addSearchThread(searchThread{state: next, startPos: t.startPos}, haystack, pos)
-		}
+			st.SearchQueue = append(st.SearchQueue, searchThread{
+				state: sid, startPos: frame.startPos,
+			})
 
-	case StateLook:
-		look, next := state.Look()
-		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			if p.internalState.SlotTable.ActiveSlots() > 2 {
-				p.internalState.SlotTable.CopySlots(next, t.state)
+		case StateEpsilon:
+			next := state.Epsilon()
+			if next != InvalidState {
+				st.captureStack = append(st.captureStack, captureFrame{
+					state: next, startPos: frame.startPos,
+				})
 			}
-			p.addSearchThread(searchThread{state: next, startPos: t.startPos}, haystack, pos)
-		}
 
-	case StateFail:
-		// Dead state
+		case StateSplit:
+			left, right := state.Split()
+			// Push right first (processed last = DFS left-first ordering)
+			if right != InvalidState {
+				st.captureStack = append(st.captureStack, captureFrame{
+					state: right, startPos: frame.startPos,
+				})
+			}
+			if left != InvalidState {
+				st.captureStack = append(st.captureStack, captureFrame{
+					state: left, startPos: frame.startPos,
+				})
+			}
+
+		case StateCapture:
+			groupIndex, isStart, next := state.Capture()
+			if next != InvalidState {
+				if activeSlots > 2 {
+					slotIndex := int(groupIndex) * 2
+					if !isStart {
+						slotIndex++
+					}
+					if slotIndex < len(st.currSlots) {
+						// Save old value for restore
+						oldValue := st.currSlots[slotIndex]
+						// Push RestoreCapture BEFORE explore (will execute after)
+						st.captureStack = append(st.captureStack, captureFrame{
+							state: InvalidState, // marker: restore frame
+							slot:  slotIndex,
+							value: oldValue,
+						})
+						// Set new capture value
+						st.currSlots[slotIndex] = pos
+					}
+				}
+				st.captureStack = append(st.captureStack, captureFrame{
+					state: next, startPos: frame.startPos,
+				})
+			}
+
+		case StateLook:
+			look, next := state.Look()
+			if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+				st.captureStack = append(st.captureStack, captureFrame{
+					state: next, startPos: frame.startPos,
+				})
+			}
+
+		case StateFail:
+			// Dead state
+		}
 	}
 }
 
@@ -1936,76 +2005,115 @@ func (p *PikeVM) stepSearchThread(t searchThread, b byte, haystack []byte, nextP
 
 // addSearchThreadToNext adds a lightweight thread to the next queue.
 // srcState is the state we came from (for slot copying).
+// Uses stack-based epsilon closure with capture save/restore.
 func (p *PikeVM) addSearchThreadToNext(t searchThread, srcState StateID, haystack []byte, pos int) {
-	if !p.internalState.Visited.Insert(uint32(t.state)) {
-		return
-	}
+	st := &p.internalState
+	activeSlots := st.SlotTable.ActiveSlots()
 
-	state := p.nfa.State(t.state)
-	if state == nil {
-		return
-	}
-
-	// Copy slots from source to new state (only for Captures mode)
-	if p.internalState.SlotTable.ActiveSlots() > 2 {
-		p.internalState.SlotTable.CopySlots(t.state, srcState)
-	}
-
-	switch state.Kind() {
-	case StateEpsilon:
-		next := state.Epsilon()
-		if next != InvalidState {
-			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos}, t.state, haystack, pos)
+	// Load currSlots from source state's SlotTable row
+	if activeSlots > 2 {
+		srcSlots := st.SlotTable.ForState(srcState)
+		if srcSlots != nil && len(st.currSlots) > 0 {
+			copy(st.currSlots, srcSlots)
 		}
-		return
+	}
 
-	case StateSplit:
-		left, right := state.Split()
+	// Stack-based epsilon closure (same as addSearchThread but targets NextQueue)
+	st.captureStack = st.captureStack[:0]
+	st.captureStack = append(st.captureStack, captureFrame{
+		state: t.state, startPos: t.startPos,
+	})
 
-		if left != InvalidState {
-			if p.internalState.SlotTable.ActiveSlots() > 2 {
-				p.internalState.SlotTable.CopySlots(left, t.state)
+	for len(st.captureStack) > 0 {
+		n := len(st.captureStack)
+		frame := st.captureStack[n-1]
+		st.captureStack = st.captureStack[:n-1]
+
+		if frame.state == InvalidState {
+			if activeSlots > 2 && frame.slot < len(st.currSlots) {
+				st.currSlots[frame.slot] = frame.value
 			}
-			p.addSearchThreadToNext(searchThread{state: left, startPos: t.startPos}, left, haystack, pos)
+			continue
 		}
-		if right != InvalidState {
-			if p.internalState.SlotTable.ActiveSlots() > 2 {
-				p.internalState.SlotTable.CopySlots(right, t.state)
-			}
-			p.addSearchThreadToNext(searchThread{state: right, startPos: t.startPos}, right, haystack, pos)
-		}
-		return
 
-	case StateCapture:
-		groupIndex, isStart, next := state.Capture()
-		if next != InvalidState {
-			if p.internalState.SlotTable.ActiveSlots() > 2 {
-				slotIndex := int(groupIndex) * 2
-				if !isStart {
-					slotIndex++
-				}
-				if p.internalState.SlotTable.ActiveSlots() > slotIndex {
-					p.internalState.SlotTable.CopySlots(next, t.state)
-					p.internalState.SlotTable.SetSlot(next, slotIndex, pos)
+		sid := frame.state
+		if !st.Visited.Insert(uint32(sid)) {
+			continue
+		}
+
+		state := p.nfa.State(sid)
+		if state == nil {
+			continue
+		}
+
+		switch state.Kind() {
+		case StateMatch, StateByteRange, StateSparse, StateRuneAny, StateRuneAnyNotNL:
+			if activeSlots > 2 {
+				stateSlots := st.SlotTable.ForState(sid)
+				if stateSlots != nil {
+					copy(stateSlots, st.currSlots)
 				}
 			}
-			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos}, next, haystack, pos)
-		}
-		return
+			// Add to NEXT queue (not current)
+			st.SearchNextQueue = append(st.SearchNextQueue, searchThread{
+				state: sid, startPos: frame.startPos,
+			})
 
-	case StateLook:
-		look, next := state.Look()
-		if checkLookAssertion(look, haystack, pos) && next != InvalidState {
-			if p.internalState.SlotTable.ActiveSlots() > 2 {
-				p.internalState.SlotTable.CopySlots(next, t.state)
+		case StateEpsilon:
+			next := state.Epsilon()
+			if next != InvalidState {
+				st.captureStack = append(st.captureStack, captureFrame{
+					state: next, startPos: frame.startPos,
+				})
 			}
-			p.addSearchThreadToNext(searchThread{state: next, startPos: t.startPos}, next, haystack, pos)
-		}
-		return
-	}
 
-	// Add to next queue
-	p.internalState.SearchNextQueue = append(p.internalState.SearchNextQueue, t)
+		case StateSplit:
+			left, right := state.Split()
+			if right != InvalidState {
+				st.captureStack = append(st.captureStack, captureFrame{
+					state: right, startPos: frame.startPos,
+				})
+			}
+			if left != InvalidState {
+				st.captureStack = append(st.captureStack, captureFrame{
+					state: left, startPos: frame.startPos,
+				})
+			}
+
+		case StateCapture:
+			groupIndex, isStart, next := state.Capture()
+			if next != InvalidState {
+				if activeSlots > 2 {
+					slotIndex := int(groupIndex) * 2
+					if !isStart {
+						slotIndex++
+					}
+					if slotIndex < len(st.currSlots) {
+						oldValue := st.currSlots[slotIndex]
+						st.captureStack = append(st.captureStack, captureFrame{
+							state: InvalidState,
+							slot:  slotIndex,
+							value: oldValue,
+						})
+						st.currSlots[slotIndex] = pos
+					}
+				}
+				st.captureStack = append(st.captureStack, captureFrame{
+					state: next, startPos: frame.startPos,
+				})
+			}
+
+		case StateLook:
+			look, next := state.Look()
+			if checkLookAssertion(look, haystack, pos) && next != InvalidState {
+				st.captureStack = append(st.captureStack, captureFrame{
+					state: next, startPos: frame.startPos,
+				})
+			}
+
+		case StateFail:
+		}
+	}
 }
 
 // SearchWithSlotTableCaptures finds the first match and returns captures.
@@ -2085,16 +2193,10 @@ func (p *PikeVM) searchWithSlotTableCapturesUnanchored(haystack []byte, startAt 
 				pos = candidate
 			}
 			st.Visited.Clear()
-			// Initialize slots for start state to all -1 (AllAbsent scratch)
-			absentSlots := st.SlotTable.AllAbsent()
-			for i := range absentSlots {
-				absentSlots[i] = -1
-			}
 			startSid := p.nfa.StartAnchored()
-			// Copy absent slots to start state
-			startSlots := st.SlotTable.ForState(startSid)
-			if startSlots != nil {
-				copy(startSlots, absentSlots)
+			// Initialize currSlots to -1 (unset) before epsilon closure
+			for i := range st.currSlots {
+				st.currSlots[i] = -1
 			}
 			p.addSearchThread(searchThread{state: startSid, startPos: pos}, haystack, pos)
 		}
