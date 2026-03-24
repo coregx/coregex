@@ -115,7 +115,7 @@ func (d *DFA) NewCache() *DFACache {
 		stride:        stride,
 		startTable:    newStartTableFromByteMap(&d.startByteMap),
 		capacityBytes: d.config.effectiveCapacityBytes(),
-		nextID:        StartState + 1,
+		nextID:        StateID(stride), // premultiplied: next state starts at offset=stride
 	}
 }
 
