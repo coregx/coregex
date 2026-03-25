@@ -1590,3 +1590,24 @@ func strategyReasonComplex(strategy Strategy, n *nfa.NFA, literals *literal.Seq,
 		return "unknown strategy"
 	}
 }
+
+// hasDotStarOrDotPlus checks recursively if the AST contains .* or .+ (OpStar/OpPlus
+// over AnyChar/AnyCharNotNL). When present, leftmost-first and greedy DFA searches
+// can return different match ends from the same start, so Phase 3 is needed.
+// When absent, SearchFirstAt already returns the correct greedy end.
+func hasDotStarOrDotPlus(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+	if (re.Op == syntax.OpStar || re.Op == syntax.OpPlus) &&
+		len(re.Sub) > 0 &&
+		(re.Sub[0].Op == syntax.OpAnyChar || re.Sub[0].Op == syntax.OpAnyCharNotNL) {
+		return true
+	}
+	for _, sub := range re.Sub {
+		if hasDotStarOrDotPlus(sub) {
+			return true
+		}
+	}
+	return false
+}

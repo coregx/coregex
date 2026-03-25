@@ -50,7 +50,7 @@ const (
 	// DeadState represents a dead/failure state — no match possible.
 	DeadState StateID = tagDead // 0x40000000
 
-	// StartState is the initial state. Offset 0, tagged as start.
+	// StartState is the initial state. Offset 0, untagged.
 	StartState StateID = 0
 )
 
@@ -97,6 +97,7 @@ func (sid StateID) WithMatchTag() StateID {
 }
 
 // WithStartTag returns a copy of this StateID with the start tag set.
+// Reserved for future start-state specialization (Rust specialize_start_states).
 func (sid StateID) WithStartTag() StateID {
 	return sid | tagStart
 }

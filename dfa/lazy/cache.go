@@ -30,7 +30,6 @@ type DFACache struct {
 
 	// stateList provides O(1) lookup of State structs by ID.
 	// Used only in slow path (determinize, word boundary, acceleration).
-	// Hot loop uses flatTrans + matchFlags instead.
 	stateList []*State
 
 	// --- Flat transition table (Rust approach) ---
@@ -46,10 +45,6 @@ type DFACache struct {
 	// Layout: [state0_c0, state0_c1, ..., state0_cN, state1_c0, ...]
 	// InvalidState (0xFFFFFFFF) = unknown transition (needs determinize).
 	flatTrans []StateID
-
-	// matchFlags[stateID] = true if state is a match/accepting state.
-	// Replaces State.IsMatch() in hot loop — no pointer chase needed.
-	matchFlags []bool
 
 	// stride is the number of byte equivalence classes (alphabet size).
 	stride int
@@ -125,28 +120,17 @@ func (c *DFACache) Insert(key StateKey, state *State) (StateID, error) {
 				c.flatTrans = append(c.flatTrans, InvalidState)
 			}
 		}
-		// matchFlags kept for backward compatibility (slow path only)
-		stateIdx := offset / c.stride
-		for len(c.matchFlags) <= stateIdx {
-			c.matchFlags = append(c.matchFlags, false)
-		}
-		c.matchFlags[stateIdx] = state.isMatch
 	}
 
 	return state.ID(), nil
 }
 
 // safeOffset computes flat table offset from premultiplied StateID.
-// For tagged states (dead/invalid/match-only), returns MaxInt so bounds
-// check always fails safely. For normal states, returns sid.Offset() + classIdx.
-func safeOffset(sid StateID, _ int, classIdx int) int {
-	if sid.IsTagged() {
-		// Tagged states with dead/invalid bits are not in flatTrans
-		if sid.IsDeadTag() || sid.IsInvalidTag() {
-			return int(^uint(0) >> 1) // MaxInt
-		}
-		// Match-tagged states have valid offset
-		return sid.Offset() + classIdx
+// For tagged states (dead/invalid), returns MaxInt so bounds check always
+// fails safely. For normal and match-tagged states, returns sid.Offset() + classIdx.
+func safeOffset(sid StateID, classIdx int) int {
+	if sid.IsDeadTag() || sid.IsInvalidTag() {
+		return int(^uint(0) >> 1) // MaxInt
 	}
 	return sid.Offset() + classIdx
 }
@@ -218,7 +202,6 @@ func (c *DFACache) Size() int {
 // Components:
 //   - flatTrans: len * 4 bytes (StateID = uint32)
 //   - stateList: len * 8 bytes (pointer)
-//   - matchFlags: len * 1 byte
 //   - states map: ~len * 48 bytes (key + pointer + map overhead)
 //   - State heap: nfaStates slices + accelBytes
 func (c *DFACache) MemoryUsage() int {
@@ -228,7 +211,6 @@ func (c *DFACache) MemoryUsage() int {
 
 	usage := len(c.flatTrans) * stateIDSize
 	usage += len(c.stateList) * ptrSize
-	usage += len(c.matchFlags)
 	usage += len(c.states) * mapEntrySize
 
 	// State struct heap: nfaStates slice per state

@@ -227,8 +227,8 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 			//   merging adjacent matches (SearchAt is too greedy).
 			// Phase 2: Reverse DFA → start.
 			// Phase 3: SearchAtAnchored from start → greedy end.
-			//   Only when reverse found earlier start (dot-star patterns).
-			//   For prefix patterns (password=) start==pos → skip Phase 3.
+			//   Only when phase3Needed (pattern has .* or .+, ambiguous ends).
+			//   For prefix patterns (password=), Phase 3 is skipped.
 			matchEnd := e.dfa.SearchFirstAt(state.dfaCache, haystack, pos)
 			if matchEnd < 0 {
 				break
@@ -241,9 +241,13 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 					break
 				}
 				// Phase 3: anchored greedy from confirmed start.
-				exactEnd := e.dfa.SearchAtAnchored(state.dfaCache, haystack, matchStart)
-				if exactEnd > matchStart {
-					matchEnd = exactEnd
+				// Only needed when pattern has .* or .+ (ambiguous match ends).
+				// For prefix patterns (password=), phase3Needed is false -- skip.
+				if e.phase3Needed {
+					exactEnd := e.dfa.SearchAtAnchored(state.dfaCache, haystack, matchStart)
+					if exactEnd > matchStart {
+						matchEnd = exactEnd
+					}
 				}
 				start, end, found = matchStart, matchEnd, true
 			}

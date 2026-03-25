@@ -530,6 +530,13 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// because its greedy semantics give wrong results for patterns like (?:|a)*
 	canMatchEmpty := pikevm.IsMatch(nil)
 
+	// Check if Phase 3 (SearchAtAnchored) is needed in bidirectional DFA search.
+	// Phase 3 re-scans from confirmed start with greedy semantics. Only needed when
+	// the pattern contains .* or .+ which can cause leftmost-first (SearchFirstAt)
+	// and greedy (SearchAtAnchored) to return different match ends from the same start.
+	// For prefix patterns like password=[^&\s"]+, Phase 3 is redundant.
+	phase3Needed := hasDotStarOrDotPlus(re)
+
 	// Extract first-byte prefilter for anchored patterns.
 	// This enables O(1) early rejection for non-matching inputs.
 	// Only useful for start-anchored patterns where we only check position 0.
@@ -624,13 +631,13 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		anchoredLiteralInfo:            anchoredLiteralInfo,
 		prefilter:                      pf,
 		prefilterPartialCoverage:       literals != nil && literals.IsPartialCoverage(),
-		// prefilterGivesStart reserved for future prefix-aware DFA optimization
-		strategy:         strategy,
-		config:           config,
-		onepass:          onePassRes,
-		canMatchEmpty:    canMatchEmpty,
-		isStartAnchored:  isStartAnchored,
-		fatTeddyFallback: fatTeddyFallback,
+		strategy:                       strategy,
+		config:                         config,
+		onepass:                        onePassRes,
+		canMatchEmpty:                  canMatchEmpty,
+		phase3Needed:                   phase3Needed,
+		isStartAnchored:                isStartAnchored,
+		fatTeddyFallback:               fatTeddyFallback,
 		statePool: newSearchStatePool(buildSearchStateConfig(
 			pikevmNFA, numCaptures, engines, strategy,
 		)),
@@ -744,8 +751,6 @@ type CompileError struct {
 
 // Error implements the error interface.
 // For syntax errors, returns the error directly to match stdlib behavior.
-// literalsMinLen returns the minimum literal length in the sequence.
-
 func (e *CompileError) Error() string {
 	// If the underlying error is from regexp/syntax, return it directly
 	// to match stdlib behavior (no extra prefix)

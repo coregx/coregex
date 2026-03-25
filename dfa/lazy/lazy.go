@@ -111,7 +111,6 @@ func (d *DFA) NewCache() *DFACache {
 		states:        make(map[StateKey]*State, initCap),
 		stateList:     make([]*State, 0, initCap),
 		flatTrans:     make([]StateID, 0, initCap*stride),
-		matchFlags:    make([]bool, 0, initCap),
 		stride:        stride,
 		startTable:    newStartTableFromByteMap(&d.startByteMap),
 		capacityBytes: d.config.effectiveCapacityBytes(),
@@ -270,7 +269,6 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 
 	sid := currentState.id
 	ft := cache.flatTrans
-	_ = cache.stride
 	ftLen := len(ft)
 
 	for pos := at; pos < len(haystack); pos++ {
@@ -648,7 +646,6 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 	endPos := len(haystack)
 	sid := currentState.id
 	ft := cache.flatTrans
-	_ = cache.stride
 	ftLen := len(ft)
 
 	for pos < endPos {
@@ -989,7 +986,6 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 	// Work with state ID only — no *State pointer chase in fast path.
 	sid := currentState.id
 	ft := cache.flatTrans
-	_ = cache.stride
 	ftLen := len(ft)
 
 	// Scan input byte by byte with early termination
@@ -1093,7 +1089,6 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 
 	sid := currentState.id
 	ft := cache.flatTrans
-	_ = cache.stride
 	ftLen := len(ft)
 	startSID := sid
 
@@ -1921,7 +1916,6 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 	// Hot loop: flat transition table (Rust approach).
 	sid := currentState.id
 	ft := cache.flatTrans
-	_ = cache.stride
 	ftLen := len(ft)
 
 	if ftLen > 0 {
@@ -1939,7 +1933,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 			goto reverseSlowPath
 		}
 		nextSID = ft[revOff]
-		if nextSID >= DeadState {
+		if nextSID.IsTagged() {
 			goto reverseSlowPath
 		}
 		if nextSID.IsMatchTag() {
@@ -1954,7 +1948,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 			goto reverseSlowPath
 		}
 		nextSID = ft[revOff]
-		if nextSID >= DeadState {
+		if nextSID.IsTagged() {
 			goto reverseSlowPath
 		}
 		if nextSID.IsMatchTag() {
@@ -1969,7 +1963,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 			goto reverseSlowPath
 		}
 		nextSID = ft[revOff]
-		if nextSID >= DeadState {
+		if nextSID.IsTagged() {
 			goto reverseSlowPath
 		}
 		if nextSID.IsMatchTag() {
@@ -1984,7 +1978,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 			goto reverseSlowPath
 		}
 		nextSID = ft[revOff]
-		if nextSID >= DeadState {
+		if nextSID.IsTagged() {
 			goto reverseSlowPath
 		}
 		if nextSID.IsMatchTag() {
@@ -2106,7 +2100,6 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 	// Hot loop: flat transition table (Rust approach).
 	sid := currentState.id
 	ft := cache.flatTrans
-	_ = cache.stride
 	ftLen := len(ft)
 
 	for at := end - 1; at >= lowerBound; at-- {
@@ -2191,7 +2184,6 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 	// Hot loop: flat transition table (Rust approach).
 	sid := currentState.id
 	ft := cache.flatTrans
-	_ = cache.stride
 	ftLen := len(ft)
 
 	for at := end - 1; at >= start; at-- {

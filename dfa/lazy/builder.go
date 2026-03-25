@@ -610,7 +610,7 @@ func DetectAccelerationFromCachedWithClasses(state *State, byteClasses *nfa.Byte
 func DetectAccelerationFromFlat(sid StateID, flatTrans []StateID, stride int, byteClasses *nfa.ByteClasses) []byte {
 	ftLen := len(flatTrans)
 	return detectAccelFromTransitions(sid, stride, func(classIdx int) (StateID, bool) {
-		offset := safeOffset(sid, stride, classIdx)
+		offset := safeOffset(sid, classIdx)
 		if offset >= ftLen {
 			return InvalidState, false
 		}

@@ -605,11 +605,14 @@ func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int,
 		return -1, -1, false
 	}
 	// Phase 3: anchored greedy DFA from confirmed start.
-	// Needed for patterns like a.*b where SearchFirstAt returns first 'b'
-	// but correct greedy end is last 'b'. Cost: one short DFA scan per match.
-	exactEnd := e.dfa.SearchAtAnchored(state.dfaCache, haystack, start)
-	if exactEnd > start {
-		end = exactEnd
+	// Only needed when pattern has .* or .+ (ambiguous match ends):
+	// SearchFirstAt returns first 'b' but correct greedy end is last 'b'.
+	// For prefix patterns (password=), phase3Needed is false -- skip.
+	if e.phase3Needed {
+		exactEnd := e.dfa.SearchAtAnchored(state.dfaCache, haystack, start)
+		if exactEnd > start {
+			end = exactEnd
+		}
 	}
 	return start, end, true
 }
