@@ -222,9 +222,13 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 		var found bool
 
 		if useDFADirect {
-			// Bidirectional DFA: forward → end, reverse → start.
-			// Phase 3 (anchored greedy) adaptively skipped: if first 4 matches
-			// don't need it, skip for remaining matches (runtime detection).
+			// 3-pass bidirectional DFA, called directly (no meta prefilter).
+			// Phase 1: SearchFirstAt (leftmost-first end) — needed to avoid
+			//   merging adjacent matches (SearchAt is too greedy).
+			// Phase 2: Reverse DFA → start.
+			// Phase 3: SearchAtAnchored from start → greedy end.
+			//   Only when reverse found earlier start (dot-star patterns).
+			//   For prefix patterns (password=) start==pos → skip Phase 3.
 			matchEnd := e.dfa.SearchFirstAt(state.dfaCache, haystack, pos)
 			if matchEnd < 0 {
 				break
@@ -236,7 +240,7 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 				if matchStart < 0 {
 					break
 				}
-				// Phase 3: greedy end from confirmed start
+				// Phase 3: anchored greedy from confirmed start.
 				exactEnd := e.dfa.SearchAtAnchored(state.dfaCache, haystack, matchStart)
 				if exactEnd > matchStart {
 					matchEnd = exactEnd

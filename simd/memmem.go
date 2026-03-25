@@ -81,11 +81,21 @@ func Memmem(haystack, needle []byte) int {
 }
 
 // memmemShort handles short needles (2-32 bytes) using rare byte heuristic.
-// Uses Memchr(rarest byte) + verify, matching Rust memchr::memmem approach.
-// This is faster than MemchrPair for repeated FindAll calls (5-11x speedup).
+// This is the fast path for most real-world patterns.
 func memmemShort(haystack, needle []byte) int {
-	rareByte, rareIdx := selectRareByteOptimized(needle)
-	return memmemSingle(haystack, needle, rareByte, rareIdx)
+	// Select the two rarest bytes for paired-byte search
+	rareInfo := SelectRareBytes(needle)
+
+	// Determine if we can use paired-byte search (different bytes at different positions)
+	// Paired-byte search is more selective: false positives require both bytes at exact distance
+	usePair := rareInfo.Byte1 != rareInfo.Byte2 && rareInfo.Index1 != rareInfo.Index2
+
+	if usePair {
+		return memmemPaired(haystack, needle, rareInfo)
+	}
+
+	// Fall back to single-byte search
+	return memmemSingle(haystack, needle, rareInfo.Byte1, rareInfo.Index1)
 }
 
 // memmemPaired uses paired-byte SIMD search for highly selective substring matching.
