@@ -587,7 +587,7 @@ func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int,
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 	state := e.getSearchState()
 	defer e.putSearchState(state)
-	// Phase 1: find first match end (forward DFA)
+	// Phase 1: forward DFA (leftmost-first end)
 	end := e.dfa.SearchFirstAt(state.dfaCache, haystack, at)
 	if end == -1 {
 		return -1, -1, false
@@ -599,14 +599,14 @@ func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int,
 	if e.nfa.IsAlwaysAnchored() {
 		return at, end, true
 	}
-	// Phase 2: reverse DFA to find match start
+	// Phase 2: reverse DFA → match start
 	start := e.reverseDFA.SearchReverse(state.revDFACache, haystack, at, end)
 	if start < 0 {
-		return -1, -1, false // Reverse DFA failed (cache full)
+		return -1, -1, false
 	}
-	// Phase 3: anchored greedy forward DFA from start → correct end.
-	// SearchFirstAt gives leftmost-first end, but we need leftmost-longest
-	// (greedy) end for POSIX/Go stdlib compatibility.
+	// Phase 3: anchored greedy DFA from confirmed start.
+	// Needed for patterns like a.*b where SearchFirstAt returns first 'b'
+	// but correct greedy end is last 'b'. Cost: one short DFA scan per match.
 	exactEnd := e.dfa.SearchAtAnchored(state.dfaCache, haystack, start)
 	if exactEnd > start {
 		end = exactEnd
