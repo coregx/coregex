@@ -61,17 +61,6 @@ func (b *Builder) Build() (*DFA, error) {
 		pf = b.buildPrefilter()
 	}
 
-	// Compute fresh start states: epsilon closure of anchored start.
-	// These are states that get re-introduced via unanchored machinery after each position.
-	// Used for leftmost matching: when all remaining states are in this set plus unanchored
-	// machinery, the committed match is final.
-	startLook := LookSetFromStartKind(StartText)
-	anchoredStartClosure := b.epsilonClosure([]nfa.StateID{b.nfa.StartAnchored()}, startLook)
-	freshStartStates := make(map[nfa.StateID]bool, len(anchoredStartClosure))
-	for _, stateID := range anchoredStartClosure {
-		freshStartStates[stateID] = true
-	}
-
 	// Check if the NFA contains word boundary assertions
 	hasWordBoundary := b.checkHasWordBoundary()
 
@@ -89,7 +78,6 @@ func (b *Builder) Build() (*DFA, error) {
 		prefilter:        pf,
 		pikevm:           nfa.NewPikeVM(b.nfa),
 		byteClasses:      b.nfa.ByteClasses(),
-		freshStartStates: freshStartStates,
 		unanchoredStart:  b.nfa.StartUnanchored(),
 		hasWordBoundary:  hasWordBoundary,
 		isAlwaysAnchored: isAlwaysAnchored,

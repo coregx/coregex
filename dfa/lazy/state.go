@@ -310,11 +310,24 @@ func ComputeStateKey(nfaStates []nfa.StateID) StateKey {
 // States with same NFA states but different isFromWord are DIFFERENT DFA states.
 // This is essential for correct \b and \B handling.
 func ComputeStateKeyWithWord(nfaStates []nfa.StateID, isFromWord bool) StateKey {
+	return ComputeStateKeyWithWordAndMatch(nfaStates, isFromWord, false)
+}
+
+// ComputeStateKeyWithWordAndMatch computes a hash-based key including word context
+// and match delay flag. With 1-byte match delay, the same set of NFA states can
+// produce both a match and non-match DFA state depending on whether the SOURCE
+// state contained an NFA match state. This function distinguishes them in the cache.
+func ComputeStateKeyWithWordAndMatch(nfaStates []nfa.StateID, isFromWord bool, isMatch bool) StateKey {
 	if len(nfaStates) == 0 {
+		// Encode (isFromWord, isMatch) into 2 bits for empty states
+		var key StateKey
 		if isFromWord {
-			return StateKey(1) // Distinguish empty+fromWord from empty+notFromWord
+			key |= 1
 		}
-		return StateKey(0)
+		if isMatch {
+			key |= 2
+		}
+		return key
 	}
 
 	// Sort NFA states for canonical ordering
@@ -326,12 +339,15 @@ func ComputeStateKeyWithWord(nfaStates []nfa.StateID, isFromWord bool) StateKey 
 	// Hash the sorted states using FNV-1a
 	h := fnv.New64a()
 
-	// Include isFromWord in the hash FIRST to distinguish states
+	// Include isFromWord and isMatch in the hash FIRST to distinguish states
+	var flags byte
 	if isFromWord {
-		_, _ = h.Write([]byte{1})
-	} else {
-		_, _ = h.Write([]byte{0})
+		flags |= 1
 	}
+	if isMatch {
+		flags |= 2
+	}
+	_, _ = h.Write([]byte{flags})
 
 	for _, sid := range sorted {
 		// Write each StateID as 4 bytes (uint32)

@@ -525,7 +525,7 @@ func TestFindWithPrefilterAtWordBoundary(t *testing.T) {
 // TestFindWithPrefilterAtCacheClear tests the cache-clear recovery path
 // in findWithPrefilterAt using a very small cache.
 func TestFindWithPrefilterAtCacheClear(t *testing.T) {
-	config := DefaultConfig().WithMaxStates(3).WithMaxCacheClears(10)
+	config := DefaultConfig().WithMaxStates(6).WithMaxCacheClears(20)
 	compiler := nfa.NewDefaultCompiler()
 	nfaObj, err := compiler.Compile("[a-zA-Z]+[0-9]+")
 	if err != nil {
