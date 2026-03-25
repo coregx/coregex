@@ -440,8 +440,6 @@ func (p *memchrPrefilter) IsFast() bool {
 type memmemPrefilter struct {
 	needle   []byte
 	complete bool
-	rareByte byte // pre-computed rarest byte in needle
-	rareIdx  int  // position of rareByte in needle
 }
 
 // newMemmemPrefilter creates a new Memmem-based prefilter.
@@ -457,62 +455,27 @@ func newMemmemPrefilter(needle []byte, complete bool) Prefilter {
 	needleCopy := make([]byte, len(needle))
 	copy(needleCopy, needle)
 
-	// Pre-compute rarest byte (like Rust memchr::memmem::Finder::new).
-	// This avoids recomputing on every Find call.
-	rareInfo := simd.SelectRareBytes(needleCopy)
-
 	return &memmemPrefilter{
 		needle:   needleCopy,
 		complete: complete,
-		rareByte: rareInfo.Byte1,
-		rareIdx:  rareInfo.Index1,
 	}
 }
 
-// Find implements Prefilter.Find using Memchr(rareByte) + verify.
-// This approach (like Rust memchr::memmem) is 3x faster than stdlib bytes.Index:
-// SIMD finds the rarest byte in needle, then verifies the full needle match.
+// Find implements Prefilter.Find using simd.Memmem.
 func (p *memmemPrefilter) Find(haystack []byte, start int) int {
 	// Bounds check
 	if start < 0 || start >= len(haystack) {
 		return -1
 	}
 
-	needle := p.needle
-	needleLen := len(needle)
-	rareByte := p.rareByte
-	rareIdx := p.rareIdx
-	hay := haystack[start:]
-
-	for {
-		// SIMD scan for the rarest byte in needle
-		idx := simd.Memchr(hay, rareByte)
-		if idx == -1 {
-			return -1
-		}
-
-		// Calculate where needle would start
-		needleStart := idx - rareIdx
-		if needleStart < 0 {
-			// Not enough room before rare byte for needle prefix
-			hay = hay[idx+1:]
-			start += idx + 1
-			continue
-		}
-		if needleStart+needleLen > len(hay) {
-			// Not enough room after for full needle
-			return -1
-		}
-
-		// Verify full needle match
-		if equalBytes(hay[needleStart:needleStart+needleLen], needle) {
-			return start + needleStart
-		}
-
-		// No match, advance past this rare byte
-		hay = hay[idx+1:]
-		start += idx + 1
+	// Search for needle starting at 'start'
+	idx := simd.Memmem(haystack[start:], p.needle)
+	if idx == -1 {
+		return -1
 	}
+
+	// Return absolute position in haystack
+	return start + idx
 }
 
 // IsComplete implements Prefilter.IsComplete.
@@ -540,11 +503,4 @@ func (p *memmemPrefilter) HeapBytes() int {
 // Reference: Rust regex-automata always returns true for Memmem.
 func (p *memmemPrefilter) IsFast() bool {
 	return true
-}
-
-// equalBytes compares two byte slices for equality without importing "bytes".
-// Uses string comparison which the Go compiler optimizes to a fast memcmp
-// intrinsic without allocation (since Go 1.3).
-func equalBytes(a, b []byte) bool {
-	return string(a) == string(b)
 }
