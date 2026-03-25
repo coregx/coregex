@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-03-24 | **Current Version**: v0.12.18 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-03-25 | **Current Version**: v0.12.19 | **Target**: v1.0.0 stable
 
 ---
 
@@ -93,7 +93,11 @@ v0.12.16 ✅ → WrapLineAnchor for (?m)^ patterns
          ↓
 v0.12.17 ✅ → Fix LogParser ARM64 regression, restore DFA/Teddy for (?m)^
          ↓
-v0.12.18 (Current) ✅ → Flat DFA transition table, integrated prefilter, PikeVM skip-ahead
+v0.12.18 ✅ → Flat DFA transition table, integrated prefilter, PikeVM skip-ahead
+         ↓
+v0.12.19 ✅ → SlotTable captures (-95% alloc), BT visited limit, DFA cache bytes
+         ↓
+v0.12.20 (Current) → Memmem prefilter fix (11x), premultiplied StateIDs
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓

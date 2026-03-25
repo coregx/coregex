@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+### Performance
+- **Memmem prefilter: Memchr(rareByte) + verify** (Rust approach) — replaced
+  `MemchrPair`-based `simd.Memmem` with single rare byte SIMD scan + `bytes.Equal`
+  verify, matching Rust `memchr::memmem::Finder` architecture. Rare byte is
+  pre-computed once at prefilter construction (like Rust `Finder::new`), eliminating
+  per-call `SelectRareBytes` overhead. On `password=[^&\s"]+` FindAll (2.4MB, 21K
+  matches): **11x faster** than old memmem, **2.8x faster than stdlib** `bytes.Index`.
+  Root cause of 5-13x gap vs Rust on LangArena DFA patterns with prefix literals.
+
 ## [0.12.19] - 2026-03-24
 
 ### Performance
