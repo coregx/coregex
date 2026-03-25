@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-03-24 | **Current Version**: v0.12.18 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-03-25 | **Current Version**: v0.12.19 | **Target**: v1.0.0 stable
 
 ---
 
@@ -12,7 +12,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 
 ### Current State vs Target
 
-| Metric | Current (v0.12.15) | Target (v1.0.0) |
+| Metric | Current (v0.12.19) | Target (v1.0.0) |
 |--------|-------------------|-----------------|
 | Inner literal speedup | **280-3154x** | ✅ Achieved |
 | Case-insensitive speedup | **263x** | ✅ Achieved |
@@ -93,7 +93,12 @@ v0.12.16 ✅ → WrapLineAnchor for (?m)^ patterns
          ↓
 v0.12.17 ✅ → Fix LogParser ARM64 regression, restore DFA/Teddy for (?m)^
          ↓
-v0.12.18 (Current) ✅ → Flat DFA transition table, integrated prefilter, PikeVM skip-ahead
+v0.12.18 ✅ → Flat DFA transition table, integrated prefilter, PikeVM skip-ahead
+         ↓
+v0.12.19 ✅ → Zero-alloc FindSubmatch, byte-based DFA cache, Rust-aligned visited limits
+         ↓
+v0.12.20 (Current) → Premultiplied/tagged StateIDs, break-at-match DFA determinize,
+                      Phase 3 elimination (2-pass bidirectional DFA)
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
