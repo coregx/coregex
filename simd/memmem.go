@@ -17,16 +17,15 @@ import "bytes"
 //
 // Algorithm:
 //
-// The function uses paired-byte SIMD search with frequency-based rare byte selection:
+// The function uses a hybrid SIMD search with frequency-based rare byte selection:
 //  1. Identify the two rarest bytes in needle using empirical frequency table
-//  2. Use MemchrPair to find candidates where both bytes appear at correct distance
-//  3. For each candidate, verify the full needle match
-//  4. Return position of first match or -1 if not found
-//
-// The paired-byte approach dramatically reduces false positives compared to
-// single-byte search, since matches require two specific bytes at exactly the
-// right distance apart. For example, in "@example.com", both '@' (rank 25) and
-// 'x' (rank 45) are used, requiring them to appear exactly 2 positions apart.
+//  2. For short needles (<=6 bytes): use MemchrPair to find candidates where both
+//     bytes appear at correct distance — reduces false positives when individual
+//     bytes are common in the input data
+//  3. For longer needles (>6 bytes): use single Memchr on the rarest byte, which
+//     is genuinely rare and makes single-byte scan + verify faster
+//  4. For each candidate, verify the full needle match
+//  5. Return position of first match or -1 if not found
 //
 // For longer needles (> 32 bytes), a simplified Two-Way string matching
 // approach is used to maintain O(n+m) complexity and avoid pathological cases.
@@ -81,20 +80,18 @@ func Memmem(haystack, needle []byte) int {
 }
 
 // memmemShort handles short needles (2-32 bytes) using rare byte heuristic.
-// This is the fast path for most real-world patterns.
+// Uses a hybrid approach: MemchrPair for short needles (<=6 bytes) where
+// single-byte scan has high false positive rates, and Memchr(rarest byte)
+// for longer needles where the rare byte is genuinely rare.
 func memmemShort(haystack, needle []byte) int {
-	// Select the two rarest bytes for paired-byte search
 	rareInfo := SelectRareBytes(needle)
-
-	// Determine if we can use paired-byte search (different bytes at different positions)
-	// Paired-byte search is more selective: false positives require both bytes at exact distance
 	usePair := rareInfo.Byte1 != rareInfo.Byte2 && rareInfo.Index1 != rareInfo.Index2
 
-	if usePair {
+	// Short needles: MemchrPair is more selective (fewer false positives).
+	// Long needles: single Memchr + verify is faster (rare byte is genuinely rare).
+	if usePair && len(needle) <= 6 {
 		return memmemPaired(haystack, needle, rareInfo)
 	}
-
-	// Fall back to single-byte search
 	return memmemSingle(haystack, needle, rareInfo.Byte1, rareInfo.Index1)
 }
 
