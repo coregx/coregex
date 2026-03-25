@@ -31,8 +31,6 @@
 package prefilter
 
 import (
-	"bytes"
-
 	"github.com/coregx/coregex/literal"
 	"github.com/coregx/coregex/simd"
 )
@@ -507,7 +505,7 @@ func (p *memmemPrefilter) Find(haystack []byte, start int) int {
 		}
 
 		// Verify full needle match
-		if bytes.Equal(hay[needleStart:needleStart+needleLen], needle) {
+		if equalBytes(hay[needleStart:needleStart+needleLen], needle) {
 			return start + needleStart
 		}
 
@@ -541,5 +539,20 @@ func (p *memmemPrefilter) HeapBytes() int {
 // rare byte heuristic, providing 5-10x speedup over the regex engine.
 // Reference: Rust regex-automata always returns true for Memmem.
 func (p *memmemPrefilter) IsFast() bool {
+	return true
+}
+
+// equalBytes compares two byte slices for equality.
+// Defined here to avoid importing "bytes" which can shift binary layout
+// and cause performance regressions on some CPUs (Go issue #8717).
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
 	return true
 }
