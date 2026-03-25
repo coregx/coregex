@@ -377,6 +377,12 @@ func (r *Regex) FindAll(b []byte, n int) [][]byte {
 		return nil
 	}
 
+	// Ultra-fast path: start-anchored patterns (^) with first-byte rejection.
+	// Avoids entire dispatch chain for the common no-match case.
+	if r.engine.IsStartAnchoredWithFirstByteReject(b) {
+		return nil
+	}
+
 	// Use optimized streaming path for ALL strategies (state-reusing, no sync.Pool overhead)
 	return r.findAllStreaming(b, n)
 }

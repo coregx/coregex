@@ -9,21 +9,98 @@ import (
 )
 
 // StateID uniquely identifies a DFA state in the cache.
-// This is a 32-bit unsigned integer for compact representation.
+//
+// The ID is a **premultiplied byte offset** into the flat transition table,
+// with tag bits in the high 5 bits for O(1) special state detection.
+//
+// Layout (Rust LazyStateID approach, hybrid/id.rs:169):
+//
+//	[invalid|dead|reserved|start|match| 27 bits: offset into flatTrans ]
+//	 bit 31  30    29       28    27    bits 0-26
+//
+// Hot loop: nextSID = flatTrans[sid & TagMask + classIdx]
+//
+//	if sid > TagMask { handle special }
+//
+// No multiply needed — sid already contains the byte offset.
 type StateID uint32
 
-// Special state constants
+// Tag bit masks for StateID high bits.
 const (
-	// InvalidState represents an invalid/uninitialized state ID
-	InvalidState StateID = 0xFFFFFFFF
+	tagInvalid  StateID = 1 << 31 // Unknown/not yet computed transition
+	tagDead     StateID = 1 << 30 // Dead state — no match possible
+	tagReserved StateID = 1 << 29 // Reserved for quit
+	tagStart    StateID = 1 << 28 // Start state
+	tagMatch    StateID = 1 << 27 // Match/accepting state
 
-	// DeadState represents a dead/failure state with no outgoing transitions.
-	// Once in this state, the DFA can never match.
-	DeadState StateID = 0xFFFFFFFE
+	// TagMask extracts the offset (lower 27 bits).
+	// Any bit above this = special state requiring slow path.
+	TagMask StateID = tagMatch - 1 // 0x07FFFFFF
 
-	// StartState is always state ID 0 (the initial state)
+	// MaxStateOffset is the maximum premultiplied offset (128M entries).
+	MaxStateOffset StateID = TagMask
+)
+
+// Special state constants (tagged, premultiplied offset = 0).
+const (
+	// InvalidState represents an unknown/uninitialized transition.
+	// In flatTrans, this means the transition hasn't been computed yet.
+	InvalidState StateID = tagInvalid // 0x80000000
+
+	// DeadState represents a dead/failure state — no match possible.
+	DeadState StateID = tagDead // 0x40000000
+
+	// StartState is the initial state. Offset 0, untagged.
 	StartState StateID = 0
 )
+
+// IsTagged returns true if any tag bit is set (special state).
+// This is the single branch in the DFA hot loop.
+//
+//go:nosplit
+func (sid StateID) IsTagged() bool {
+	return sid > TagMask
+}
+
+// Offset returns the premultiplied byte offset into flatTrans.
+// Strips tag bits. Only valid for non-special states.
+//
+//go:nosplit
+func (sid StateID) Offset() int {
+	return int(sid & TagMask)
+}
+
+// IsMatch returns true if this state has the match tag.
+//
+//go:nosplit
+func (sid StateID) IsMatchTag() bool {
+	return sid&tagMatch != 0
+}
+
+// IsDeadTag returns true if this state has the dead tag.
+//
+//go:nosplit
+func (sid StateID) IsDeadTag() bool {
+	return sid&tagDead != 0
+}
+
+// IsInvalidTag returns true if this state has the invalid tag.
+//
+//go:nosplit
+func (sid StateID) IsInvalidTag() bool {
+	return sid&tagInvalid != 0
+}
+
+// WithMatchTag returns a copy of this StateID with the match tag set.
+func (sid StateID) WithMatchTag() StateID {
+	return sid | tagMatch
+}
+
+// WithStartTag returns a copy of this StateID with the start tag set.
+// Reserved for future start-state specialization (Rust specialize_start_states).
+func (sid StateID) WithStartTag() StateID {
+	return sid | tagStart
+}
 
 // defaultStride is the default alphabet size when ByteClasses compression is not used.
 const defaultStride = 256
@@ -233,11 +310,24 @@ func ComputeStateKey(nfaStates []nfa.StateID) StateKey {
 // States with same NFA states but different isFromWord are DIFFERENT DFA states.
 // This is essential for correct \b and \B handling.
 func ComputeStateKeyWithWord(nfaStates []nfa.StateID, isFromWord bool) StateKey {
+	return ComputeStateKeyWithWordAndMatch(nfaStates, isFromWord, false)
+}
+
+// ComputeStateKeyWithWordAndMatch computes a hash-based key including word context
+// and match delay flag. With 1-byte match delay, the same set of NFA states can
+// produce both a match and non-match DFA state depending on whether the SOURCE
+// state contained an NFA match state. This function distinguishes them in the cache.
+func ComputeStateKeyWithWordAndMatch(nfaStates []nfa.StateID, isFromWord bool, isMatch bool) StateKey {
 	if len(nfaStates) == 0 {
+		// Encode (isFromWord, isMatch) into 2 bits for empty states
+		var key StateKey
 		if isFromWord {
-			return StateKey(1) // Distinguish empty+fromWord from empty+notFromWord
+			key |= 1
 		}
-		return StateKey(0)
+		if isMatch {
+			key |= 2
+		}
+		return key
 	}
 
 	// Sort NFA states for canonical ordering
@@ -249,12 +339,15 @@ func ComputeStateKeyWithWord(nfaStates []nfa.StateID, isFromWord bool) StateKey 
 	// Hash the sorted states using FNV-1a
 	h := fnv.New64a()
 
-	// Include isFromWord in the hash FIRST to distinguish states
+	// Include isFromWord and isMatch in the hash FIRST to distinguish states
+	var flags byte
 	if isFromWord {
-		_, _ = h.Write([]byte{1})
-	} else {
-		_, _ = h.Write([]byte{0})
+		flags |= 1
 	}
+	if isMatch {
+		flags |= 2
+	}
+	_, _ = h.Write([]byte{flags})
 
 	for _, sid := range sorted {
 		// Write each StateID as 4 bytes (uint32)
@@ -390,6 +483,18 @@ func (ss *StateSet) ToSlice() []nfa.StateID {
 	slice := make([]nfa.StateID, ss.size)
 	copy(slice, ss.dense[:ss.size])
 	sortStateIDs(slice)
+	return slice
+}
+
+// ToSliceInsertionOrder returns states in the order they were inserted.
+// This matches Rust's sparse set iteration order, which is critical for
+// determinize break-at-match semantics (leftmost-first match priority).
+func (ss *StateSet) ToSliceInsertionOrder() []nfa.StateID {
+	if ss.size == 0 {
+		return nil
+	}
+	slice := make([]nfa.StateID, ss.size)
+	copy(slice, ss.dense[:ss.size])
 	return slice
 }
 

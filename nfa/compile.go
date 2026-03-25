@@ -132,8 +132,7 @@ func (c *Compiler) CompileRegexp(re *syntax.Regexp) (*NFA, error) {
 	anchoredStart := patternStart
 
 	// Unanchored start: compile the (?s:.)*? prefix for DFA and other engines
-	// that need it. PikeVM simulates this prefix in its search loop instead
-	// (like Rust regex-automata) for correct startPos tracking.
+	// (same as Rust regex-automata: compiler.rs:997 c_at_least(dot, false, 0)).
 	// If pattern is anchored, unanchored start equals anchored start.
 	var unanchoredStart StateID
 	if c.config.Anchored || allAnchored {

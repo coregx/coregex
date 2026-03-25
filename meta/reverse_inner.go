@@ -224,8 +224,11 @@ func NewReverseInnerSearcher(
 	// Build reverse NFA from prefix
 	reverseNFA := nfa.Reverse(prefixNFA)
 
-	// Build reverse DFA from reverse prefix NFA
-	reverseDFA, err := lazy.CompileWithConfig(reverseNFA, config)
+	// Build reverse DFA from reverse prefix NFA.
+	// Disable BreakAtMatch for reverse DFA.
+	revConfig := config
+	revConfig.BreakAtMatch = false
+	reverseDFA, err := lazy.CompileWithConfig(reverseNFA, revConfig)
 	if err != nil {
 		return nil, err
 	}

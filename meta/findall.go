@@ -171,6 +171,8 @@ func (e *Engine) FindAllIndicesStreaming(haystack []byte, n int, results [][2]in
 
 // findAllIndicesLoop is the standard loop-based FindAll for non-streaming strategies.
 // Optimized: acquires SearchState once for entire loop to avoid sync.Pool overhead per match.
+//
+//nolint:cyclop // DFA direct path adds necessary branching
 func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) [][2]int {
 	if results == nil {
 		// Smart allocation: anchored patterns have max 1 match, others use capped heuristic.
@@ -194,12 +196,50 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 	pos := 0
 	lastMatchEnd := -1
 
+	// Fast path: start-anchored patterns (^) match at most once at position 0.
+	// Skip pool Get/Put overhead entirely — use non-pooled FindIndices.
+	if e.nfa.IsAlwaysAnchored() {
+		start, end, found := e.FindIndices(haystack)
+		if found {
+			results = append(results, [2]int{start, end})
+		}
+		return results
+	}
+
 	// Get state ONCE for entire iteration - eliminates 1.29M sync.Pool ops for FindAll
 	state := e.getSearchState()
 	defer e.putSearchState(state)
 
+	// DFA fast path: call DFA functions directly, skip meta prefilter layer.
+	// SearchFirstAt has integrated prefilter at start state — no duplicate scan.
+	// Saves: 1 prefilter call per candidate + function dispatch overhead.
+	useDFADirect := (e.strategy == UseDFA || e.strategy == UseBoth) &&
+		e.dfa != nil && e.reverseDFA != nil &&
+		state.dfaCache != nil && state.revDFACache != nil
+
 	for n <= 0 || len(results) < n {
-		start, end, found := e.findIndicesAtWithState(haystack, pos, state)
+		var start, end int
+		var found bool
+
+		if useDFADirect {
+			// 2-pass bidirectional DFA, called directly (no meta prefilter).
+			// SearchAt → match end (matches Rust find_fwd), reverse DFA → start.
+			matchEnd := e.dfa.SearchAt(state.dfaCache, haystack, pos)
+			if matchEnd < 0 {
+				break
+			}
+			if matchEnd == pos {
+				start, end, found = pos, pos, true
+			} else {
+				matchStart := e.reverseDFA.SearchReverse(state.revDFACache, haystack, pos, matchEnd)
+				if matchStart < 0 {
+					break
+				}
+				start, end, found = matchStart, matchEnd, true
+			}
+		} else {
+			start, end, found = e.findIndicesAtWithState(haystack, pos, state)
+		}
 		if !found {
 			break
 		}

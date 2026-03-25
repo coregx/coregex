@@ -12,6 +12,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.20] - 2026-03-25
+
+### Performance
+- **Premultiplied State IDs** — StateID stores byte offset into flat transition table,
+  eliminating multiply from DFA hot loop. Single `flatTrans[sid+classIdx]` lookup.
+  Inspired by Rust `LazyStateID` (hybrid/id.rs).
+
+- **Tagged State IDs** — match/dead/invalid/start flags encoded in StateID high bits.
+  Single `IsTagged()` branch replaces 3 separate comparisons in DFA hot loop.
+  4x loop unrolling breaks to slow path only on tagged states.
+
+- **1-byte match delay** (Rust determinize approach) — match reporting delayed by 1 byte,
+  enabling correct look-around assertion resolution (^, $, \b) at match boundaries.
+  Reference: Rust `determinize` mod.rs:254-286.
+
+- **Rust-aligned DFA determinize: break-at-match** — replaced `filterStatesAfterMatch`
+  with Rust's `determinize::next` break-at-match semantics (mod.rs:284). Epsilon closure
+  uses add-on-pop DFS with reverse Split push, matching Rust sparse set insertion order.
+  Incremental per-target epsilon closure preserves correct state ordering for leftmost-first.
+  **Eliminates Phase 3** anchored re-scan: bidirectional DFA reduced from 3-pass to 2-pass.
+  Verified against Rust regex-automata `find_fwd` — identical results on all test patterns.
+
+- **Memmem: Memchr(rareByte) + verify** (Rust approach) — replaced `MemchrPair`-based
+  paired search in `simd.Memmem` with single rare byte Memchr scan + `bytes.Equal`
+  verify, matching Rust `memchr::memmem` architecture.
+
+### Benchmarks (LangArena LogParser, 7.2 MB, 13 patterns)
+
+| vs stdlib | vs Rust | Wins vs Rust |
+|-----------|---------|-------------|
+| **30x faster** total | 2-5x gap (local i7) | ip 18.5x, multiline_php 2.0x, char_class 1.3x |
+
 ## [0.12.19] - 2026-03-24
 
 ### Performance

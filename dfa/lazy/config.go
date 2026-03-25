@@ -79,6 +79,18 @@ type Config struct {
 	// This prevents exponential blowup for patterns like (a|b)*c.
 	// When exceeded, fall back to NFA for that transition.
 	DeterminizationLimit int
+
+	// BreakAtMatch controls whether determinize uses Rust-style break-at-match
+	// semantics. When true (default), determinize stops iterating NFA states at
+	// the first Match state, preventing prefix restarts and giving leftmost-first
+	// match semantics.
+	//
+	// Set to false for REVERSE DFAs, where the search must continue past matches
+	// to find the leftmost match start. Reverse DFAs are always anchored (no prefix),
+	// so break-at-match would only cut off greedy continuation states.
+	//
+	// Default: true
+	BreakAtMatch bool
 }
 
 // DefaultCacheCapacity is the default DFA cache capacity in bytes.
@@ -104,6 +116,7 @@ func DefaultConfig() Config {
 		UsePrefilter:         true,
 		MinPrefilterLen:      3,
 		DeterminizationLimit: 1_000,
+		BreakAtMatch:         true,
 	}
 }
 

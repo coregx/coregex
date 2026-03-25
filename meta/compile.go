@@ -150,10 +150,9 @@ func buildStrategyEngines(
 		return result
 	}
 
-	dfaConfig := lazy.Config{
-		MaxStates:            config.MaxDFAStates,
-		DeterminizationLimit: config.DeterminizationLimit,
-	}
+	dfaConfig := lazy.DefaultConfig()
+	dfaConfig.MaxStates = config.MaxDFAStates //nolint:staticcheck // legacy API compat
+	dfaConfig.DeterminizationLimit = config.DeterminizationLimit
 
 	result = buildReverseSearchers(result, strategy, re, nfaEngine, dfaConfig, config)
 
@@ -189,13 +188,18 @@ func buildReverseDFA(
 	dfaConfig lazy.Config,
 	pf prefilter.Prefilter,
 ) strategyEngines {
+	// Reverse DFA config: disable break-at-match so the reverse search continues
+	// past matches to find the leftmost match start (greedy continuation).
+	revDFAConfig := dfaConfig
+	revDFAConfig.BreakAtMatch = false
+
 	switch result.finalStrategy {
 	case UseDFA:
 		// Skip for non-greedy patterns: forward DFA always finds leftmost-longest,
 		// which is incompatible with non-greedy semantics.
 		if result.dfa != nil && !hasNonGreedyQuantifier(re) {
 			reverseNFA := nfa.ReverseAnchored(nfaEngine)
-			revDFA, err := lazy.CompileWithConfig(reverseNFA, dfaConfig)
+			revDFA, err := lazy.CompileWithConfig(reverseNFA, revDFAConfig)
 			if err == nil {
 				result.reverseDFA = revDFA
 			}
@@ -205,7 +209,7 @@ func buildReverseDFA(
 		if err == nil {
 			result.dfa = fwdDFA
 			reverseNFA := nfa.ReverseAnchored(nfaEngine)
-			revDFA, revErr := lazy.CompileWithConfig(reverseNFA, dfaConfig)
+			revDFA, revErr := lazy.CompileWithConfig(reverseNFA, revDFAConfig)
 			if revErr == nil {
 				result.reverseDFA = revDFA
 			}
@@ -530,6 +534,8 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// because its greedy semantics give wrong results for patterns like (?:|a)*
 	canMatchEmpty := pikevm.IsMatch(nil)
 
+	// Check if Phase 3 (SearchAtAnchored) is needed in bidirectional DFA search.
+	// Phase 3 re-scans from confirmed start with greedy semantics. Only needed when
 	// Extract first-byte prefilter for anchored patterns.
 	// This enables O(1) early rejection for non-matching inputs.
 	// Only useful for start-anchored patterns where we only check position 0.

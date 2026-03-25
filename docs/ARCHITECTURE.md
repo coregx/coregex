@@ -27,7 +27,13 @@ Input → Prefilter (memchr/memmem/teddy) → Engine Search → Match Result
 ### DFA Layer (`dfa/lazy/`)
 
 - **Lazy DFA**: On-demand state construction with byte class compression
-- **Flat transition table**: `flatTrans[sid*stride+class]` — single array lookup, no pointer chase
+- **Flat transition table**: `flatTrans[sid+class]` — premultiplied offset, no multiply
+- **Tagged State IDs**: match/dead/invalid encoded in high bits, single `IsTagged()` branch
+- **Break-at-match**: Rust `determinize::next` (mod.rs:284) — stops NFA iteration at Match state,
+  preventing prefix restarts while preserving greedy continuation (leftmost-first semantics)
+- **Epsilon closure ordering**: Add-on-pop DFS with reverse Split push — matches Rust sparse set
+  insertion order. Incremental per-target closure preserves Match-before-prefix ordering
+- **2-pass bidirectional search**: Forward DFA → match end, reverse DFA → match start (no Phase 3)
 - **Byte-based cache limit**: 2MB default (matches Rust `hybrid_cache_capacity`)
 - **Cache clearing**: Up to 5 clears before NFA fallback (Rust approach)
 - **Acceleration**: Detects self-loop states, uses SIMD memchr for skip-ahead
@@ -99,7 +105,7 @@ Input → Prefilter (memchr/memmem/teddy) → Engine Search → Match Result
 
 1. **Multi-engine**: Strategy selection at compile time, not runtime
 2. **Rust reference**: Architecture mirrors Rust regex crate (lazy DFA, PikeVM, prefilters)
-3. **Go stdlib compat**: POSIX leftmost-longest semantics (differs from Rust leftmost-first)
+3. **Leftmost-first match**: DFA break-at-match matches Rust semantics (verified via cargo run)
 4. **Zero-alloc hot paths**: `IsMatch()`, `FindIndices()`, `Count()` — no heap allocation
 5. **SIMD first**: AVX2/SSSE3 prefilters for x86_64, pure Go fallback for other archs
 

@@ -342,7 +342,6 @@ func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
 		return e.pikevm.SearchAt(haystack, pos)
 	}
 
-	// No prefilter: bidirectional DFA or DFA + PikeVM fallback.
 	if e.reverseDFA != nil {
 		return e.findIndicesBidirectionalDFA(haystack, at)
 	}
@@ -578,35 +577,31 @@ func (e *Engine) findIndicesMultilineReverseSuffixAt(haystack []byte, at int) (i
 }
 
 // findIndicesBidirectionalDFA uses forward DFA + reverse DFA for exact match bounds.
-// Three-phase: forward DFA → first match end, reverse DFA → match start,
-// anchored forward DFA → correct greedy end from that start. O(n) total.
+// Two-phase: forward DFA → match end, reverse DFA → match start. O(n) total.
 //
-// Phase 1 uses SearchFirstAt (stops at first match end) to avoid DFA over-extension
-// with unanchored prefix. Phase 3 then runs anchored greedy DFA from the discovered
-// start to get the correct (potentially longer) end for patterns like ".*".
+// With Rust-style break-at-match in determinize, SearchAt produces correct
+// leftmost-first greedy match ends directly (verified against Rust regex-automata
+// fwd search). No Phase 3 re-scan needed.
 func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int, bool) {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 	state := e.getSearchState()
 	defer e.putSearchState(state)
-	// Phase 1: find first match end (leftmost-first, not leftmost-longest)
-	end := e.dfa.SearchFirstAt(state.dfaCache, haystack, at)
+	// Forward DFA: leftmost-first match end (matches Rust find_fwd)
+	end := e.dfa.SearchAt(state.dfaCache, haystack, at)
 	if end == -1 {
 		return -1, -1, false
 	}
 	if end == at {
 		return at, at, true // Empty match
 	}
-	// Phase 2: reverse DFA to find match start
+	// Skip reverse search if anchored (Rust hybrid/regex.rs:467)
+	if e.nfa.IsAlwaysAnchored() {
+		return at, end, true
+	}
+	// Reverse DFA → match start
 	start := e.reverseDFA.SearchReverse(state.revDFACache, haystack, at, end)
 	if start < 0 {
-		return -1, -1, false // Reverse DFA failed (cache full)
-	}
-	// Phase 3: anchored greedy forward DFA from start → correct end.
-	// SearchFirstAt may undercount for greedy patterns (e.g., ".*" stops at first ").
-	// Anchored DFA from start gives the correct greedy end for this specific match.
-	exactEnd := e.dfa.SearchAtAnchored(state.dfaCache, haystack, start)
-	if exactEnd > start {
-		end = exactEnd
+		return -1, -1, false
 	}
 	return start, end, true
 }
@@ -650,6 +645,14 @@ func (e *Engine) findIndicesBoundedBacktracker(haystack []byte) (int, int, bool)
 		if !e.anchoredFirstBytes.Contains(haystack[0]) {
 			return -1, -1, false
 		}
+	}
+
+	// For always-anchored patterns (^) on large inputs where BT can't handle
+	// the full haystack, use PikeVM directly. PikeVM memory is O(states) per
+	// step, not O(states × haystack) like BT visited table.
+	if e.nfa.IsAlwaysAnchored() && !e.boundedBacktracker.CanHandle(len(haystack)) {
+		atomic.AddUint64(&e.stats.NFASearches, 1)
+		return e.pikevm.SearchWithSlotTable(haystack, nfa.SearchModeFind)
 	}
 
 	atomic.AddUint64(&e.stats.NFASearches, 1)

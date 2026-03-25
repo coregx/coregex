@@ -71,13 +71,7 @@ type DFA struct {
 	// This enables memory optimization from 256 to ~8-16 transitions per state.
 	byteClasses *nfa.ByteClasses
 
-	// freshStartStates contains NFA state IDs that are part of the epsilon closure
-	// of the anchored start. These are "fresh start" states that get re-introduced
-	// via the unanchored machinery after each position. Used for leftmost matching:
-	// when all remaining states are in this set, the committed match is final.
-	freshStartStates map[nfa.StateID]bool
-
-	// unanchoredStart caches the unanchored start state ID for hasInProgressPattern
+	// unanchoredStart caches the unanchored start state ID
 	unanchoredStart nfa.StateID
 
 	// hasWordBoundary is true if the pattern contains \b or \B assertions.
@@ -111,34 +105,11 @@ func (d *DFA) NewCache() *DFACache {
 		states:        make(map[StateKey]*State, initCap),
 		stateList:     make([]*State, 0, initCap),
 		flatTrans:     make([]StateID, 0, initCap*stride),
-		matchFlags:    make([]bool, 0, initCap),
 		stride:        stride,
 		startTable:    newStartTableFromByteMap(&d.startByteMap),
 		capacityBytes: d.config.effectiveCapacityBytes(),
-		nextID:        StartState + 1,
+		nextID:        StateID(stride), // premultiplied: next state starts at offset=stride
 	}
-}
-
-// hasInProgressPattern checks if any pattern threads are still active (could extend the match).
-// Returns true if there are intermediate pattern states (not fresh starts or unanchored machinery).
-//
-// This is used for leftmost-longest semantics: after finding a match, we continue searching
-// only if pattern threads are still active. If all remaining NFA states are either fresh
-// starts (re-introduced via unanchored) or unanchored machinery, the committed match is final.
-func (d *DFA) hasInProgressPattern(state *State) bool {
-	for _, nfaState := range state.NFAStates() {
-		// Skip fresh start states (re-introduced via unanchored)
-		if d.freshStartStates[nfaState] {
-			continue
-		}
-		// Skip unanchored machinery (states near/at unanchoredStart)
-		if nfaState >= d.unanchoredStart-1 {
-			continue
-		}
-		// Found an intermediate pattern state - still in progress
-		return true
-	}
-	return false
 }
 
 // Find returns the index of the first match in the haystack, or -1 if no match.
@@ -264,13 +235,10 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 	}
 
 	lastMatch := -1
-	if currentState.IsMatch() {
-		lastMatch = at
-	}
+	// With 1-byte match delay, start states are never match states.
 
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
 	ftLen := len(ft)
 
 	for pos := at; pos < len(haystack); pos++ {
@@ -284,7 +252,7 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 		}
 
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 		var nextID StateID
 		if offset < ftLen {
 			nextID = ft[offset]
@@ -327,11 +295,19 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 			sid = nextID
 		}
 
+		// 1-byte match delay: check AFTER transition.
+		// With delay, the match tag on the new sid means the previous state
+		// had an NFA match. The exclusive match end = pos (the byte just
+		// consumed), because the delay already shifts by 1 byte.
+		// Rust: mat = Some(HalfMatch::new(pattern, at)) — at is the byte index.
 		if cache.IsMatchState(sid) {
-			lastMatch = pos + 1
+			lastMatch = pos
 		}
 	}
 
+	// EOI: check for delayed match at end of input.
+	// The current state's NFA states may contain a match that hasn't been
+	// reported yet (no more bytes to trigger the delay).
 	eoi := cache.getState(sid)
 	if eoi != nil && d.checkEOIMatch(eoi) {
 		return len(haystack)
@@ -371,7 +347,9 @@ func (d *DFA) SearchFirstAt(cache *DFACache, haystack []byte, at int) int {
 
 // searchFirstAt is the core DFA search with early termination after first match.
 // Returns the end of the first match found, without extending for longest match.
-func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int { //nolint:funlen,maintidx // 4x unrolled hot loop with integrated prefilter
+// With 1-byte match delay + break-at-match in determinize, the DFA naturally
+// reaches dead state after a match can't extend, providing leftmost-first semantics.
+func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int { //nolint:funlen // 4x unrolled hot loop with integrated prefilter
 	if d.isAlwaysAnchored && startPos > 0 {
 		return -1
 	}
@@ -381,46 +359,34 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 		return d.nfaFallback(haystack, startPos)
 	}
 
-	if startState.IsMatch() {
-		return startPos
-	}
+	// With 1-byte match delay, start states are never match states.
 
 	end := len(haystack)
 	pos := startPos
-	committed := false
 	lastMatch := -1
 
-	// Hot loop: flat transition table (Rust approach).
-	// Work with state ID only — no *State pointer chase in fast path.
-	// State struct needed only for: determinize (slow), word boundary (guarded).
 	sid := startState.id
 	ft := cache.flatTrans
 	stride := cache.stride
 
-	// Bounds hint for compiler — eliminates repeated len checks in loop.
 	if len(ft) > 0 {
 		_ = ft[len(ft)-1]
 	}
 
-	// 4x unrolled hot loop (Rust approach: hybrid/search.rs:195-221).
 	canUnroll := !d.hasWordBoundary
 	ftLen := len(ft)
 	startSID := startState.id
 	hasPre := d.prefilter != nil
 
 	for pos < end {
-		// Prefilter skip-ahead: when DFA is at start state with no match
-		// in progress, use prefilter to jump to next candidate position.
-		// This is the Rust approach (hybrid/search.rs:232-258).
-		// Eliminates byte-by-byte scanning between matches.
-		if hasPre && sid == startSID && !committed && pos > startPos {
+		// Prefilter skip-ahead at start state
+		if hasPre && sid == startSID && lastMatch < 0 && pos > startPos {
 			candidate := d.prefilter.Find(haystack, pos)
 			if candidate == -1 {
-				return lastMatch // No more candidates
+				return lastMatch
 			}
 			if candidate > pos {
 				pos = candidate
-				// Re-obtain start state at new position (context may differ)
 				newStart := d.getStartStateForUnanchored(cache, haystack, pos)
 				if newStart == nil {
 					return d.nfaFallback(haystack, startPos)
@@ -433,87 +399,59 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 		}
 
 		// === 4x UNROLLED FAST PATH ===
+		// With match delay, tagged states (including match) break to slow path.
 		if canUnroll && pos+3 < end {
-			// Transition 1
-			o1 := safeOffset(sid, stride, int(d.byteToClass(haystack[pos])))
-			if o1 >= ftLen {
+			if sid.Offset()+stride > ftLen {
 				goto searchFirstSlowPath
 			}
-			n1 := ft[o1]
-			if n1 >= DeadState { // DeadState or InvalidState
+			// Transition 1
+			n1 := ft[sid.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n1.IsTagged() {
 				goto searchFirstSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n1)] {
-				lastMatch = pos
-				committed = true
-			} else if committed {
-				return lastMatch
+			if pos+2 >= end {
+				sid = n1
+				goto searchFirstSlowPath
 			}
 
 			// Transition 2
-			o2 := safeOffset(n1, stride, int(d.byteToClass(haystack[pos])))
-			if o2 >= ftLen {
-				sid = n1
-				goto searchFirstSlowPath
-			}
-			n2 := ft[o2]
-			if n2 >= DeadState {
+			n2 := ft[n1.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n2.IsTagged() {
 				sid = n1
 				goto searchFirstSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n2)] {
-				lastMatch = pos
-				committed = true
-			} else if committed {
-				return lastMatch
+			if pos+1 >= end {
+				sid = n2
+				goto searchFirstSlowPath
 			}
 
 			// Transition 3
-			o3 := safeOffset(n2, stride, int(d.byteToClass(haystack[pos])))
-			if o3 >= ftLen {
-				sid = n2
-				goto searchFirstSlowPath
-			}
-			n3 := ft[o3]
-			if n3 >= DeadState {
+			n3 := ft[n2.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n3.IsTagged() {
 				sid = n2
 				goto searchFirstSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n3)] {
-				lastMatch = pos
-				committed = true
-			} else if committed {
-				return lastMatch
-			}
 
 			// Transition 4
-			o4 := safeOffset(n3, stride, int(d.byteToClass(haystack[pos])))
-			if o4 >= ftLen {
-				sid = n3
-				goto searchFirstSlowPath
-			}
-			n4 := ft[o4]
-			if n4 >= DeadState {
+			n4 := ft[n3.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n4.IsTagged() {
 				sid = n3
 				goto searchFirstSlowPath
 			}
 			pos++
 			sid = n4
-			if cache.matchFlags[int(n4)] {
-				lastMatch = pos
-				committed = true
-			} else if committed {
-				return lastMatch
-			}
 
 			continue
 		}
 
 	searchFirstSlowPath:
-		// === SINGLE-BYTE SLOW PATH ===
+		if pos >= end {
+			break
+		}
+
 		if d.hasWordBoundary {
 			st := cache.getState(sid)
 			if st != nil && st.checkWordBoundaryFast(haystack[pos]) {
@@ -522,7 +460,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 		}
 
 		classIdx := int(d.byteToClass(haystack[pos]))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -553,17 +491,17 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 			sid = nextID
 		}
 
-		pos++
-
+		// 1-byte match delay: check after transition, before pos advance.
+		// For leftmost-first (searchFirstAt), return immediately on first match.
+		// The match delay ensures pos is the correct exclusive end.
 		if cache.IsMatchState(sid) {
-			lastMatch = pos
-			committed = true
-		} else if committed {
-			return lastMatch
+			return pos
 		}
+
+		pos++
 	}
 
-	// EOI match check (needs State struct — slow path)
+	// EOI match check
 	eoi := cache.getState(sid)
 	if eoi != nil && d.checkEOIMatch(eoi) {
 		return len(haystack)
@@ -636,22 +574,16 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 	// Get anchored start state at candidate position
 	currentState := d.getStartState(cache, haystack, pos, true)
 	if currentState == nil {
-		// Fallback: use old two-pass approach with NFA
 		return d.isMatchWithPrefilterFallback(cache, haystack, pos)
 	}
-	if currentState.IsMatch() {
-		return true
-	}
+	// With 1-byte match delay, start states are never match states.
 
-	// Integrated prefilter+DFA loop with flat table (Rust approach)
 	endPos := len(haystack)
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
 	ftLen := len(ft)
 
 	for pos < endPos {
-		// Word boundary check (slow path)
 		if d.hasWordBoundary {
 			st := cache.getState(sid)
 			if st != nil && st.checkWordBoundaryFast(haystack[pos]) {
@@ -660,7 +592,7 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 		}
 
 		classIdx := int(d.byteToClass(haystack[pos]))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 		var nextID StateID
 		if offset < ftLen {
 			nextID = ft[offset]
@@ -695,13 +627,13 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 		}
 
 		pos++
+		// 1-byte match delay: check after transition
 		if cache.IsMatchState(sid) {
 			return true
 		}
 		continue
 
 	pfSkip:
-		// Prefilter skip: find next candidate after current position
 		pos++
 		candidate := d.prefilter.Find(haystack, pos)
 		if candidate == -1 {
@@ -709,7 +641,6 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 		}
 		pos = candidate
 
-		// Restart DFA at new candidate with anchored start state
 		newStart := d.getStartState(cache, haystack, pos, true)
 		if newStart == nil {
 			return d.isMatchWithPrefilterFallback(cache, haystack, pos)
@@ -717,9 +648,7 @@ func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
 		sid = newStart.id
 		ft = cache.flatTrans
 		ftLen = len(ft)
-		if newStart.IsMatch() {
-			return true
-		}
+		// With match delay, start states are never match — continue loop.
 	}
 
 	eoi := cache.getState(sid)
@@ -774,13 +703,9 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 		return matched && start >= 0 && end >= start
 	}
 
-	// Check if start state is already a match
-	if currentState.IsMatch() {
-		return true
-	}
+	// With 1-byte match delay, start states are never match states.
 
 	// Determine if 4x unrolling can be used.
-	// Word boundary patterns need per-byte boundary checks.
 	canUnroll := !d.hasWordBoundary
 
 	endPos := len(haystack)
@@ -809,41 +734,36 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 				goto earliestSlowPath
 			}
 
-			// Transition 1
-			o1 := safeOffset(sid, stride, int(d.byteToClass(haystack[pos])))
-			if o1 >= ftLen {
+			// Bounds hint for 4x unrolled transitions
+			if sid.Offset()+stride > ftLen {
 				goto earliestSlowPath
 			}
-			n1 := ft[o1]
-			if n1 >= DeadState {
+
+			// Transition 1
+			n1 := ft[sid.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n1.IsTagged() {
+				if n1.IsMatchTag() {
+					return true
+				}
 				goto earliestSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n1)] {
-				return true
-			}
 
-			// Check remaining bounds for subsequent transitions
 			if pos+2 >= endPos {
 				sid = n1
 				goto earliestSlowPath
 			}
 
 			// Transition 2
-			o2 := safeOffset(n1, stride, int(d.byteToClass(haystack[pos])))
-			if o2 >= ftLen {
-				sid = n1
-				goto earliestSlowPath
-			}
-			n2 := ft[o2]
-			if n2 >= DeadState {
+			n2 := ft[n1.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n2.IsTagged() {
+				if n2.IsMatchTag() {
+					return true
+				}
 				sid = n1
 				goto earliestSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n2)] {
-				return true
-			}
 
 			if pos+1 >= endPos {
 				sid = n2
@@ -851,37 +771,27 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			}
 
 			// Transition 3
-			o3 := safeOffset(n2, stride, int(d.byteToClass(haystack[pos])))
-			if o3 >= ftLen {
-				sid = n2
-				goto earliestSlowPath
-			}
-			n3 := ft[o3]
-			if n3 >= DeadState {
+			n3 := ft[n2.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n3.IsTagged() {
+				if n3.IsMatchTag() {
+					return true
+				}
 				sid = n2
 				goto earliestSlowPath
 			}
 			pos++
-			if cache.matchFlags[int(n3)] {
-				return true
-			}
 
 			// Transition 4
-			o4 := safeOffset(n3, stride, int(d.byteToClass(haystack[pos])))
-			if o4 >= ftLen {
-				sid = n3
-				goto earliestSlowPath
-			}
-			n4 := ft[o4]
-			if n4 >= DeadState {
+			n4 := ft[n3.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n4.IsTagged() {
+				if n4.IsMatchTag() {
+					return true
+				}
 				sid = n3
 				goto earliestSlowPath
 			}
 			pos++
 			sid = n4
-			if cache.matchFlags[int(n4)] {
-				return true
-			}
 
 			continue
 		}
@@ -922,7 +832,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 
 		// Flat table lookup for transition
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -994,24 +904,15 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 		return matched && start == startPos && end >= start
 	}
 
-	// Check if start state is already a match (e.g., empty pattern)
-	if currentState.IsMatch() {
-		return true
-	}
+	// With 1-byte match delay, start states are never match states.
 
-	// Hot loop: flat transition table (Rust approach).
-	// Work with state ID only — no *State pointer chase in fast path.
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
 	ftLen := len(ft)
 
-	// Scan input byte by byte with early termination
 	for pos := startPos; pos < len(haystack); pos++ {
 		b := haystack[pos]
 
-		// O(1) word boundary match check using pre-computed flags (was 30% CPU).
-		// matchAtWordBoundary/matchAtNonWordBoundary computed during determinize.
 		if d.hasWordBoundary {
 			st := cache.getState(sid)
 			if st != nil && st.checkWordBoundaryFast(b) {
@@ -1019,9 +920,8 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 			}
 		}
 
-		// Flat table lookup for transition
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -1040,8 +940,6 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 			nextState, err := d.determinize(cache, currentState, b)
 			if err != nil {
 				if isCacheCleared(err) {
-					// Cache was cleared. For anchored search, re-obtain
-					// the anchored start state at current position.
 					currentState = d.getStartState(cache, haystack, pos, true)
 					if currentState == nil {
 						start, end, matched := d.pikevm.SearchAt(haystack, startPos)
@@ -1050,8 +948,7 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 					sid = currentState.id
 					ft = cache.flatTrans
 					ftLen = len(ft)
-					// Re-process this byte with the new state (pos not incremented by for-loop yet)
-					pos-- // Will be incremented by for-loop
+					pos--
 					continue
 				}
 				start, end, matched := d.pikevm.SearchAt(haystack, startPos)
@@ -1071,6 +968,7 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 			sid = nextID
 		}
 
+		// 1-byte match delay: return true on any match state
 		if cache.IsMatchState(sid) {
 			return true
 		}
@@ -1103,18 +1001,12 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 
 	// Track last match position for leftmost-longest semantics
 	lastMatch := -1
-	committed := false // True once we've entered a match state
+	// With 1-byte match delay, start states are never match states.
 
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
 	ftLen := len(ft)
 	startSID := sid
-
-	if currentState.IsMatch() {
-		lastMatch = pos
-		committed = true
-	}
 
 	for pos < len(haystack) {
 		if d.hasWordBoundary {
@@ -1125,7 +1017,7 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 		}
 
 		classIdx := int(d.byteToClass(haystack[pos]))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 		var nextID StateID
 		if offset < ftLen {
 			nextID = ft[offset]
@@ -1150,7 +1042,6 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 					startSID = sid
 					ft = cache.flatTrans
 					ftLen = len(ft)
-					committed = lastMatch >= 0
 					continue
 				}
 				return d.nfaFallback(haystack, 0)
@@ -1175,11 +1066,6 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 				ft = cache.flatTrans
 				ftLen = len(ft)
 				lastMatch = -1
-				committed = false
-				if newStart.IsMatch() {
-					lastMatch = pos
-					committed = true
-				}
 				continue
 			}
 			sid = nextState.id
@@ -1205,28 +1091,21 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 			ft = cache.flatTrans
 			ftLen = len(ft)
 			lastMatch = -1
-			committed = false
-			if newStart.IsMatch() {
-				lastMatch = pos
-				committed = true
-			}
 			continue
 
 		default:
 			sid = nextID
 		}
 
-		pos++
-
+		// 1-byte match delay: check after transition, before pos advance
 		if cache.IsMatchState(sid) {
 			lastMatch = pos
-			committed = true
-		} else if committed {
-			return lastMatch
 		}
 
+		pos++
+
 		// Start state prefilter skip-ahead
-		if !committed && sid == startSID && pos < len(haystack) {
+		if lastMatch < 0 && sid == startSID && pos < len(haystack) {
 			candidate = d.prefilter.Find(haystack, pos)
 			if candidate == -1 {
 				return -1
@@ -1237,9 +1116,7 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 		}
 	}
 
-	// Reached end of input.
-	// Check if there's a match at EOI due to pending word boundary assertions.
-	// Example: pattern `test\b` matching "test" - the \b is satisfied at EOI.
+	// EOI check for delayed match
 	eoi := cache.getState(sid)
 	if eoi != nil && d.checkEOIMatch(eoi) {
 		return len(haystack)
@@ -1292,38 +1169,28 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 	}
 
 	// Get appropriate start state based on look-behind context
-	// This enables correct handling of assertions like ^, \b, etc.
 	currentState := d.getStartStateForUnanchored(cache, haystack, startPos)
 	if currentState == nil {
-		// Start state not in cache? This should never happen
 		return d.nfaFallback(haystack, startPos)
 	}
 
-	// Track last match position for leftmost-longest semantics
+	// Track last match position for leftmost-longest semantics.
+	// With 1-byte match delay, start states are never match states.
 	lastMatch := -1
-	committed := false // True once we've found a match
-
-	if currentState.IsMatch() {
-		lastMatch = startPos // Empty match at start
-		committed = true
-	}
 
 	// Determine if the 4x unrolled fast path can be used.
-	// Word boundary patterns require per-byte boundary checks that cannot be batched.
 	canUnroll := !d.hasWordBoundary
 
 	end := len(haystack)
 	pos := startPos
 
 	// Hot loop: flat transition table (Rust approach).
-	// Work with state ID only — no *State pointer chase in fast path.
-	// State struct needed only for: determinize (slow), word boundary (guarded), acceleration.
 	sid := currentState.id
 	ft := cache.flatTrans
 	stride := cache.stride
 	ftLen := len(ft)
 
-	// Bounds hint for compiler — eliminates repeated len checks in loop.
+	// Bounds hint for compiler
 	if ftLen > 0 {
 		_ = ft[ftLen-1]
 	}
@@ -1333,7 +1200,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 
 	for pos < end {
 		// Prefilter skip-ahead at start state (Rust hybrid/search.rs:232-258)
-		if hasPre && sid == startSID && !committed && pos > startPos {
+		if hasPre && sid == startSID && lastMatch < 0 && pos > startPos {
 			candidate := d.prefilter.Find(haystack, pos)
 			if candidate == -1 {
 				return lastMatch
@@ -1353,93 +1220,59 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 
 		// === 4x UNROLLED FAST PATH ===
 		// Process 4 transitions per iteration when conditions allow.
-		if canUnroll && !committed && pos+3 < end {
-			// Check acceleration on slow→fast transition (once per entry).
+		// With match delay, match states break out of the unrolled loop
+		// to the slow path for proper handling.
+		if canUnroll && pos+3 < end {
+			// Check acceleration on slow→fast transition
 			accelState := cache.getState(sid)
 			if accelState != nil && accelState.IsAccelerable() {
 				goto slowPath
 			}
 
-			// Transition 1
-			o1 := safeOffset(sid, stride, int(d.byteToClass(haystack[pos])))
-			if o1 >= ftLen {
+			// Bounds hint for 4x unrolled transitions
+			if sid.Offset()+stride > ftLen {
 				goto slowPath
 			}
-			n1 := ft[o1]
-			if n1 >= DeadState {
+
+			// Transition 1
+			n1 := ft[sid.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n1.IsTagged() {
 				goto slowPath
 			}
 			pos++
-
-			if cache.matchFlags[int(n1)] || pos+2 >= end {
+			if pos+2 >= end {
 				sid = n1
-				if cache.matchFlags[int(n1)] {
-					lastMatch = pos
-					committed = true
-				}
 				goto slowPath
 			}
 
 			// Transition 2
-			o2 := safeOffset(n1, stride, int(d.byteToClass(haystack[pos])))
-			if o2 >= ftLen {
-				sid = n1
-				goto slowPath
-			}
-			n2 := ft[o2]
-			if n2 >= DeadState {
+			n2 := ft[n1.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n2.IsTagged() {
 				sid = n1
 				goto slowPath
 			}
 			pos++
-
-			if cache.matchFlags[int(n2)] || pos+1 >= end {
+			if pos+1 >= end {
 				sid = n2
-				if cache.matchFlags[int(n2)] {
-					lastMatch = pos
-					committed = true
-				}
 				goto slowPath
 			}
 
 			// Transition 3
-			o3 := safeOffset(n2, stride, int(d.byteToClass(haystack[pos])))
-			if o3 >= ftLen {
-				sid = n2
-				goto slowPath
-			}
-			n3 := ft[o3]
-			if n3 >= DeadState {
+			n3 := ft[n2.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n3.IsTagged() {
 				sid = n2
 				goto slowPath
 			}
 			pos++
 
-			if cache.matchFlags[int(n3)] {
-				sid = n3
-				lastMatch = pos
-				committed = true
-				goto slowPath
-			}
-
 			// Transition 4
-			o4 := safeOffset(n3, stride, int(d.byteToClass(haystack[pos])))
-			if o4 >= ftLen {
-				sid = n3
-				goto slowPath
-			}
-			n4 := ft[o4]
-			if n4 >= DeadState {
+			n4 := ft[n3.Offset()+int(d.byteToClass(haystack[pos]))]
+			if n4.IsTagged() {
 				sid = n3
 				goto slowPath
 			}
 			pos++
 			sid = n4
-
-			if cache.matchFlags[int(n4)] {
-				lastMatch = pos
-				committed = true
-			}
 
 			continue
 		}
@@ -1472,7 +1305,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 
 		// Flat table lookup for transition
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -1499,19 +1332,19 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			sid = nextID
 		}
 
-		pos++
-
+		// 1-byte match delay: check AFTER transition, BEFORE pos advance.
+		// With delay, match tag means previous state had NFA match.
+		// Exclusive match end = pos (the consumed byte index), because delay
+		// already shifts by 1 byte.
+		// Rust: mat = Some(HalfMatch::new(pattern, at)) — at is byte index.
 		if cache.IsMatchState(sid) {
 			lastMatch = pos
-			committed = true
-		} else if committed {
-			currentState = cache.getState(sid)
-			if currentState == nil || !d.hasInProgressPattern(currentState) {
-				return lastMatch
-			}
 		}
+
+		pos++
 	}
 
+	// EOI: check for delayed match at end of input
 	eoi := cache.getState(sid)
 	if eoi != nil && d.checkEOIMatch(eoi) {
 		return len(haystack)
@@ -1548,19 +1381,32 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	// The actual byte value is still used for NFA move operations
 	classIdx := d.byteToClass(b)
 
-	// Compute next NFA state set via move operation WITH word context
-	// This is essential for correct \b and \B handling in DFA.
-	// The current state's isFromWord tells us if the previous byte was a word char.
-	// Note: use actual byte 'b' (not classIdx) for NFA move - NFA uses raw bytes
-	nextNFAStates := builder.moveWithWordContext(current.NFAStates(), b, current.IsFromWord())
+	// 1-byte match delay (Rust determinize mod.rs:254-286):
+	// Check if source (current) state's NFA states contain a match state.
+	// The NEW DFA state will be tagged as match if the OLD state had NFA match.
+	// This delays match reporting by 1 byte, enabling correct look-around (^, $, \b).
+	sourceHasMatch := builder.containsMatchState(current.NFAStates())
 
-	// No transitions on this byte → dead state
-	if len(nextNFAStates) == 0 {
-		// Cache the dead state transition to avoid re-computation
-		// Use classIdx for transition storage (compressed alphabet)
+	// Compute next NFA state set via move operation WITH word context.
+	// Leftmost-first (Rust determinize::next mod.rs:284):
+	// When source has NFA match AND BreakAtMatch is enabled, stop iterating
+	// at the first Match state. States after Match (prefix restarts) are not
+	// processed, causing the DFA to reach dead state with the committed match.
+	// BreakAtMatch is disabled for reverse DFAs to allow finding leftmost start.
+	breakAtMatch := sourceHasMatch && d.config.BreakAtMatch
+	nextNFAStates := builder.moveWithWordContextBreak(current.NFAStates(), b, current.IsFromWord(), breakAtMatch)
+
+	isMatch := sourceHasMatch
+
+	// No transitions on this byte → dead state (or dead-end match state)
+	if len(nextNFAStates) == 0 && !isMatch {
+		// Normal dead state — no match in source either
 		cache.SetFlatTransition(current.id, int(classIdx), DeadState)
 		return nil, nil //nolint:nilnil // dead state is valid, not an error
 	}
+	// When len(nextNFAStates) == 0 && isMatch: source has NFA match but target
+	// is dead. Create a dead-end match state so the search loop can observe
+	// the delayed match before seeing dead transitions. Fall through below.
 
 	// Check if we've exceeded determinization limit
 	if len(nextNFAStates) > d.config.DeterminizationLimit {
@@ -1576,9 +1422,10 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	// needs to know what byte got us there (for the next transition's word boundary check)
 	nextIsFromWord := isWordByte(b)
 
-	// Compute state key INCLUDING word context
-	// States with same NFA states but different isFromWord are DIFFERENT DFA states!
-	key := ComputeStateKeyWithWord(nextNFAStates, nextIsFromWord)
+	// Compute state key INCLUDING word context AND match delay flag.
+	// With match delay, the same NFA state set can produce both match and
+	// non-match DFA states (depending on whether the source had NFA match).
+	key := ComputeStateKeyWithWordAndMatch(nextNFAStates, nextIsFromWord, isMatch)
 
 	// Check if state already exists in cache
 	if existing, ok := cache.Get(key); ok {
@@ -1589,7 +1436,6 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	}
 
 	// Create new DFA state with word context and compressed alphabet stride
-	isMatch := builder.containsMatchState(nextNFAStates)
 	newState := NewStateWithStride(InvalidState, nextNFAStates, isMatch, nextIsFromWord, d.AlphabetLen())
 
 	// Pre-compute word boundary match flags to avoid per-byte checkWordBoundaryMatch.
@@ -1627,6 +1473,19 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	return newState, nil
 }
 
+// containsNFAMatch checks if any of the given NFA state IDs is a match state.
+// Used for EOI match detection with 1-byte match delay: at end of input,
+// we check the current DFA state's NFA states directly rather than following
+// an EOI transition.
+func containsNFAMatch(n *nfa.NFA, states []nfa.StateID) bool {
+	for _, sid := range states {
+		if n.IsMatch(sid) {
+			return true
+		}
+	}
+	return false
+}
+
 // tryClearCache attempts to clear the DFA cache and rebuild the start state.
 // Returns nil on success (cache was cleared, search can continue).
 // Returns ErrCacheFull if the maximum number of cache clears has been exceeded.
@@ -1654,8 +1513,8 @@ func (d *DFA) tryClearCache(cache *DFACache) error {
 	builder := NewBuilderWithWordBoundary(d.nfa, d.config, d.hasWordBoundary)
 	startLook := LookSetFromStartKind(StartText)
 	startStateSet := builder.epsilonClosure([]nfa.StateID{d.nfa.StartUnanchored()}, startLook)
-	isMatch := builder.containsMatchState(startStateSet)
-	startState := NewStateWithStride(StartState, startStateSet, isMatch, false, d.AlphabetLen())
+	// With 1-byte match delay, start states are never match states.
+	startState := NewStateWithStride(StartState, startStateSet, false, false, d.AlphabetLen())
 
 	key := ComputeStateKeyWithWord(startStateSet, false)
 	_, _ = cache.Insert(key, startState) // Cannot fail: cache was just cleared
@@ -1794,13 +1653,14 @@ func (d *DFA) nfaFallback(haystack []byte, startPos int) int {
 
 // matchesEmpty checks if the pattern matches an empty string
 func (d *DFA) matchesEmpty(cache *DFACache) bool {
-	// Check if start state is a match state
+	// With 1-byte match delay, the start state is never tagged as match.
+	// Check if the start state's NFA states contain a match (for empty patterns).
 	startState := cache.getState(StartState)
-	if startState != nil && startState.IsMatch() {
+	if startState != nil && containsNFAMatch(d.nfa, startState.NFAStates()) {
 		return true
 	}
 
-	// Fall back to NFA for empty match check
+	// Fall back to NFA for empty match check (handles word boundaries, etc.)
 	start, end, matched := d.pikevm.Search([]byte{})
 	return matched && start == 0 && end == 0
 }
@@ -1937,17 +1797,13 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 	}
 
 	lastMatch := -1
-
-	if currentState.IsMatch() {
-		lastMatch = end
-	}
+	// With 1-byte match delay, start states are never match states.
 
 	at := end - 1
 
 	// Hot loop: flat transition table (Rust approach).
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
 	ftLen := len(ft)
 
 	if ftLen > 0 {
@@ -1955,66 +1811,54 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 	}
 
 	// === 4x UNROLLED REVERSE LOOP ===
-	// offset/nextSID declared before loop to avoid goto-over-declaration.
+	// With match delay, any tagged state (including match) breaks to slow path.
 	var revOff int
 	var nextSID StateID
 	for at >= start+3 {
-		// Transition 1 (from at, going backward)
-		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
+		// Transition 1
+		revOff = sid.Offset() + int(d.byteToClass(haystack[at]))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
 		nextSID = ft[revOff]
-		if nextSID >= DeadState {
+		if nextSID.IsTagged() {
 			goto reverseSlowPath
-		}
-		if cache.matchFlags[int(nextSID)] {
-			lastMatch = at
 		}
 		sid = nextSID
 		at--
 
 		// Transition 2
-		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
+		revOff = sid.Offset() + int(d.byteToClass(haystack[at]))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
 		nextSID = ft[revOff]
-		if nextSID >= DeadState {
+		if nextSID.IsTagged() {
 			goto reverseSlowPath
-		}
-		if cache.matchFlags[int(nextSID)] {
-			lastMatch = at
 		}
 		sid = nextSID
 		at--
 
 		// Transition 3
-		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
+		revOff = sid.Offset() + int(d.byteToClass(haystack[at]))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
 		nextSID = ft[revOff]
-		if nextSID >= DeadState {
+		if nextSID.IsTagged() {
 			goto reverseSlowPath
-		}
-		if cache.matchFlags[int(nextSID)] {
-			lastMatch = at
 		}
 		sid = nextSID
 		at--
 
 		// Transition 4
-		revOff = safeOffset(sid, stride, int(d.byteToClass(haystack[at])))
+		revOff = sid.Offset() + int(d.byteToClass(haystack[at]))
 		if revOff >= ftLen {
 			goto reverseSlowPath
 		}
 		nextSID = ft[revOff]
-		if nextSID >= DeadState {
+		if nextSID.IsTagged() {
 			goto reverseSlowPath
-		}
-		if cache.matchFlags[int(nextSID)] {
-			lastMatch = at
 		}
 		sid = nextSID
 		at--
@@ -2030,7 +1874,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		b := haystack[at]
 
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -2073,11 +1917,22 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 			sid = nextID
 		}
 
+		// 1-byte match delay for reverse: the match tag on the new state means
+		// the OLD state had NFA match. In reverse search, the match position
+		// is at+1 (one byte forward from current, since we're going backward).
+		// Rust: mat = Some(HalfMatch::new(pattern, at + 1))
 		if cache.IsMatchState(sid) {
-			lastMatch = at
+			lastMatch = at + 1
 		}
 
 		at--
+	}
+
+	// EOI for reverse: at region start, check if current state's NFA states
+	// contain a delayed match. If so, the match starts at 'start'.
+	eoi := cache.getState(sid)
+	if eoi != nil && containsNFAMatch(d.nfa, eoi.NFAStates()) {
+		lastMatch = start
 	}
 
 	return lastMatch
@@ -2119,10 +1974,7 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 	}
 
 	lastMatch := -1
-
-	if currentState.IsMatch() {
-		lastMatch = end
-	}
+	// With 1-byte match delay, start states are never match states.
 
 	lowerBound := start
 	if minStart > lowerBound {
@@ -2132,14 +1984,13 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 	// Hot loop: flat transition table (Rust approach).
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
 	ftLen := len(ft)
 
 	for at := end - 1; at >= lowerBound; at-- {
 		b := haystack[at]
 
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -2183,9 +2034,16 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 			sid = nextID
 		}
 
+		// 1-byte match delay for reverse: match position is at+1
 		if cache.IsMatchState(sid) {
-			lastMatch = at
+			lastMatch = at + 1
 		}
+	}
+
+	// EOI for reverse: check delayed match at region start
+	eoi := cache.getState(sid)
+	if eoi != nil && containsNFAMatch(d.nfa, eoi.NFAStates()) {
+		lastMatch = lowerBound
 	}
 
 	if lowerBound > start && lastMatch < 0 {
@@ -2210,21 +2068,18 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 		return matched
 	}
 
-	if currentState.IsMatch() {
-		return true
-	}
+	// With 1-byte match delay, start states are never match states.
 
 	// Hot loop: flat transition table (Rust approach).
 	sid := currentState.id
 	ft := cache.flatTrans
-	stride := cache.stride
 	ftLen := len(ft)
 
 	for at := end - 1; at >= start; at-- {
 		b := haystack[at]
 
 		classIdx := int(d.byteToClass(b))
-		offset := safeOffset(sid, stride, classIdx)
+		offset := sid.Offset() + classIdx
 
 		var nextID StateID
 		if offset < ftLen {
@@ -2271,12 +2126,15 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 			sid = nextID
 		}
 
+		// 1-byte match delay: match detected after transition
 		if cache.IsMatchState(sid) {
 			return true
 		}
 	}
 
-	return cache.IsMatchState(sid)
+	// EOI for reverse: check if current state's NFA states contain match
+	eoi := cache.getState(sid)
+	return eoi != nil && containsNFAMatch(d.nfa, eoi.NFAStates())
 }
 
 // getStartStateForReverse returns the appropriate start state for reverse search.
