@@ -542,17 +542,9 @@ func (p *memmemPrefilter) IsFast() bool {
 	return true
 }
 
-// equalBytes compares two byte slices for equality.
-// Defined here to avoid importing "bytes" which can shift binary layout
-// and cause performance regressions on some CPUs (Go issue #8717).
+// equalBytes compares two byte slices for equality without importing "bytes".
+// Uses string comparison which the Go compiler optimizes to a fast memcmp
+// intrinsic without allocation (since Go 1.3).
 func equalBytes(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return string(a) == string(b)
 }
