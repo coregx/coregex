@@ -347,8 +347,8 @@ func (d *DFA) SearchFirstAt(cache *DFACache, haystack []byte, at int) int {
 
 // searchFirstAt is the core DFA search with early termination after first match.
 // Returns the end of the first match found, without extending for longest match.
-// With 1-byte match delay + filterUnanchoredPrefix, the DFA naturally reaches
-// dead state after a match can't extend, providing leftmost-first semantics.
+// With 1-byte match delay + break-at-match in determinize, the DFA naturally
+// reaches dead state after a match can't extend, providing leftmost-first semantics.
 func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int { //nolint:funlen // 4x unrolled hot loop with integrated prefilter
 	if d.isAlwaysAnchored && startPos > 0 {
 		return -1
@@ -1389,17 +1389,12 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 
 	// Compute next NFA state set via move operation WITH word context.
 	// Leftmost-first (Rust determinize::next mod.rs:284):
-	// When the source has NFA match, only include NFA states UP TO the first
-	// Match state. States after Match are from the unanchored prefix restarting
-	// the pattern — they must be excluded for leftmost-first semantics.
-	// This matches Rust's "break" after finding Match in the iteration.
-	var nfaStatesForMove []nfa.StateID
-	if sourceHasMatch {
-		nfaStatesForMove = d.filterStatesAfterMatch(current.NFAStates())
-	} else {
-		nfaStatesForMove = current.NFAStates()
-	}
-	nextNFAStates := builder.moveWithWordContext(nfaStatesForMove, b, current.IsFromWord())
+	// When source has NFA match AND BreakAtMatch is enabled, stop iterating
+	// at the first Match state. States after Match (prefix restarts) are not
+	// processed, causing the DFA to reach dead state with the committed match.
+	// BreakAtMatch is disabled for reverse DFAs to allow finding leftmost start.
+	breakAtMatch := sourceHasMatch && d.config.BreakAtMatch
+	nextNFAStates := builder.moveWithWordContextBreak(current.NFAStates(), b, current.IsFromWord(), breakAtMatch)
 
 	isMatch := sourceHasMatch
 
@@ -1489,55 +1484,6 @@ func containsNFAMatch(n *nfa.NFA, states []nfa.StateID) bool {
 		}
 	}
 	return false
-}
-
-// filterStatesAfterMatch implements leftmost-first match semantics.
-// When the source state has an NFA match, this filters the NFA state set to
-// prevent new match attempts from starting while allowing existing pattern
-// progress to complete.
-//
-// This combines two filtering operations (matching Rust determinize mod.rs:284):
-// 1. Remove unanchored prefix states (split + any-byte) that enable new match starts
-// 2. Remove the Match state itself (terminal, has no byte transitions)
-//
-// The remaining states are "in-progress" pattern states that can only extend
-// the current match, not start new ones. When they can't extend, the DFA reaches
-// dead state, terminating the search with the committed match.
-func (d *DFA) filterStatesAfterMatch(states []nfa.StateID) []nfa.StateID {
-	if d.nfa.IsAlwaysAnchored() {
-		// For anchored patterns, just remove Match states
-		filtered := make([]nfa.StateID, 0, len(states))
-		for _, sid := range states {
-			if !d.nfa.IsMatch(sid) {
-				filtered = append(filtered, sid)
-			}
-		}
-		return filtered
-	}
-
-	prefixStart := d.nfa.StartUnanchored()
-	anchoredStart := d.nfa.StartAnchored()
-	if prefixStart == anchoredStart {
-		// No prefix compiled — just remove Match states
-		filtered := make([]nfa.StateID, 0, len(states))
-		for _, sid := range states {
-			if !d.nfa.IsMatch(sid) {
-				filtered = append(filtered, sid)
-			}
-		}
-		return filtered
-	}
-
-	// Remove: prefix any-byte (prefixStart-1), prefix split (prefixStart), Match states
-	prefixByte := prefixStart - 1
-	filtered := make([]nfa.StateID, 0, len(states))
-	for _, sid := range states {
-		if sid == prefixStart || sid == prefixByte || d.nfa.IsMatch(sid) {
-			continue
-		}
-		filtered = append(filtered, sid)
-	}
-	return filtered
 }
 
 // tryClearCache attempts to clear the DFA cache and rebuild the start state.

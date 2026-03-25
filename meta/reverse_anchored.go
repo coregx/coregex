@@ -49,8 +49,12 @@ func NewReverseAnchoredSearcher(forwardNFA *nfa.NFA, config lazy.Config) (*Rever
 	// Build reverse NFA - must be anchored at start (because $ in forward becomes ^ in reverse)
 	reverseNFA := nfa.ReverseAnchored(forwardNFA)
 
-	// Build reverse DFA from reverse NFA
-	reverseDFA, err := lazy.CompileWithConfig(reverseNFA, config)
+	// Build reverse DFA from reverse NFA.
+	// Disable BreakAtMatch: reverse DFA must continue past matches to find
+	// the leftmost match start (greedy continuation).
+	revConfig := config
+	revConfig.BreakAtMatch = false
+	reverseDFA, err := lazy.CompileWithConfig(reverseNFA, revConfig)
 	if err != nil {
 		// Cannot build reverse DFA - this should be rare
 		return nil, err

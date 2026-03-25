@@ -486,6 +486,18 @@ func (ss *StateSet) ToSlice() []nfa.StateID {
 	return slice
 }
 
+// ToSliceInsertionOrder returns states in the order they were inserted.
+// This matches Rust's sparse set iteration order, which is critical for
+// determinize break-at-match semantics (leftmost-first match priority).
+func (ss *StateSet) ToSliceInsertionOrder() []nfa.StateID {
+	if ss.size == 0 {
+		return nil
+	}
+	slice := make([]nfa.StateID, ss.size)
+	copy(slice, ss.dense[:ss.size])
+	return slice
+}
+
 // Clone creates a deep copy of the state set
 func (ss *StateSet) Clone() *StateSet {
 	clone := NewStateSetWithCapacity(len(ss.sparse))

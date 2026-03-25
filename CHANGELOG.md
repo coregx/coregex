@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
 ### Performance
+- **Rust-aligned DFA determinize: break-at-match + epsilon closure ordering** — replaced
+  `filterStatesAfterMatch` with Rust's `determinize::next` break-at-match semantics
+  (mod.rs:284). Epsilon closure now uses add-on-pop DFS with reverse Split push order,
+  matching Rust's sparse set insertion order. Incremental per-target epsilon closure in
+  `moveWithWordContext` preserves correct state ordering for leftmost-first match priority.
+  Eliminates Phase 3 anchored re-scan in bidirectional DFA search (2-pass instead of 3-pass).
+  Verified against Rust regex-automata `find_fwd` — identical results on all test patterns.
+
 - **Memmem: Memchr(rareByte) + verify** (Rust approach) — replaced `MemchrPair`-based
   paired search in `simd.Memmem` with single rare byte Memchr scan + `bytes.Equal`
   verify, matching Rust `memchr::memmem` architecture. On `password=[^&\s"]+` FindAll

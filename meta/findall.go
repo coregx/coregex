@@ -222,11 +222,9 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 		var found bool
 
 		if useDFADirect {
-			// 3-pass bidirectional DFA, called directly (no meta prefilter).
-			// Phase 1: SearchFirstAt (leftmost-first end) — needed to avoid
-			//   merging adjacent matches (SearchAt is too greedy).
-			// Bidirectional DFA: forward → end, reverse → start, Phase 3 → greedy end.
-			matchEnd := e.dfa.SearchFirstAt(state.dfaCache, haystack, pos)
+			// 2-pass bidirectional DFA, called directly (no meta prefilter).
+			// SearchAt → match end (matches Rust find_fwd), reverse DFA → start.
+			matchEnd := e.dfa.SearchAt(state.dfaCache, haystack, pos)
 			if matchEnd < 0 {
 				break
 			}
@@ -236,10 +234,6 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 				matchStart := e.reverseDFA.SearchReverse(state.revDFACache, haystack, pos, matchEnd)
 				if matchStart < 0 {
 					break
-				}
-				exactEnd := e.dfa.SearchAtAnchored(state.dfaCache, haystack, matchStart)
-				if exactEnd > matchStart {
-					matchEnd = exactEnd
 				}
 				start, end, found = matchStart, matchEnd, true
 			}

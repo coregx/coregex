@@ -92,8 +92,10 @@ func NewReverseSuffixSetSearcher(
 	// Build reverse NFA
 	reverseNFA := nfa.Reverse(forwardNFA)
 
-	// Build reverse DFA
-	reverseDFA, err := lazy.CompileWithConfig(reverseNFA, config)
+	// Build reverse DFA. Disable BreakAtMatch for reverse DFA.
+	revConfig := config
+	revConfig.BreakAtMatch = false
+	reverseDFA, err := lazy.CompileWithConfig(reverseNFA, revConfig)
 	if err != nil {
 		return nil, err
 	}

@@ -577,18 +577,17 @@ func (e *Engine) findIndicesMultilineReverseSuffixAt(haystack []byte, at int) (i
 }
 
 // findIndicesBidirectionalDFA uses forward DFA + reverse DFA for exact match bounds.
-// Three-phase: forward DFA → first match end, reverse DFA → match start,
-// anchored forward DFA → correct greedy end from that start. O(n) total.
+// Two-phase: forward DFA → match end, reverse DFA → match start. O(n) total.
 //
-// Phase 1 uses SearchFirstAt (stops at first match end) to avoid DFA over-extension
-// with unanchored prefix. Phase 3 then runs anchored greedy DFA from the discovered
-// start to get the correct (potentially longer) end for patterns like ".*".
+// With Rust-style break-at-match in determinize, SearchAt produces correct
+// leftmost-first greedy match ends directly (verified against Rust regex-automata
+// fwd search). No Phase 3 re-scan needed.
 func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int, bool) {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 	state := e.getSearchState()
 	defer e.putSearchState(state)
-	// Phase 1: forward DFA (leftmost-first end)
-	end := e.dfa.SearchFirstAt(state.dfaCache, haystack, at)
+	// Forward DFA: leftmost-first match end (matches Rust find_fwd)
+	end := e.dfa.SearchAt(state.dfaCache, haystack, at)
 	if end == -1 {
 		return -1, -1, false
 	}
@@ -599,17 +598,10 @@ func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int,
 	if e.nfa.IsAlwaysAnchored() {
 		return at, end, true
 	}
-	// Phase 2: reverse DFA → match start
+	// Reverse DFA → match start
 	start := e.reverseDFA.SearchReverse(state.revDFACache, haystack, at, end)
 	if start < 0 {
 		return -1, -1, false
-	}
-	// Phase 3: anchored greedy DFA from confirmed start.
-	// Needed for greedy .* patterns where filterUnanchoredPrefix causes
-	// early dead state. DFA leftmost-first + Phase 3 = correct greedy end.
-	exactEnd := e.dfa.SearchAtAnchored(state.dfaCache, haystack, start)
-	if exactEnd > start {
-		end = exactEnd
 	}
 	return start, end, true
 }
