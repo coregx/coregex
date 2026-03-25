@@ -127,13 +127,6 @@ type Engine struct {
 	// By default (false), uses leftmost-first (Perl) semantics
 	longest bool
 
-	// phase3Needed is true when the pattern may have ambiguous match ends,
-	// i.e., leftmost-first and greedy DFA can return different end positions
-	// from the same start. True for patterns containing .* or .+ (AnyChar with
-	// Star/Plus). When false, Phase 3 (SearchAtAnchored) in bidirectional DFA
-	// is skipped since SearchFirstAt already returns the correct greedy end.
-	phase3Needed bool
-
 	// canMatchEmpty is true if the pattern can match an empty string.
 	// When true, BoundedBacktracker cannot be used for Find operations
 	// because its greedy semantics give wrong results for patterns like (?:|a)*

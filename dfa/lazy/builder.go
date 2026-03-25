@@ -284,27 +284,19 @@ func (b *Builder) moveWithWordContext(states []nfa.StateID, input byte, isFromWo
 		return nil
 	}
 
-	// Step 3: Determine look assertions satisfied after this byte transition.
-	// IMPORTANT: Word boundary assertions are handled in resolveWordBoundaries,
-	// NOT here. This is because word boundary is position-specific - it's resolved
-	// when we START consuming a byte, not after we've consumed it.
-	//
-	// Only line assertions (^, $) are passed to epsilonClosure because they
-	// depend only on the previous byte (was it '\n'?), not on the current byte.
-	var lookAfter LookSet
+	return b.completeMove(targets, input)
+}
 
-	// Line boundary: After '\n', multiline ^ (LookStartLine) is satisfied.
+// completeMove finishes the move operation: computes look assertions from the
+// input byte and runs epsilon closure on the target state set.
+func (b *Builder) completeMove(targets *StateSet, input byte) []nfa.StateID {
+	// Determine look assertions satisfied after this byte transition.
+	// Only line assertions (^, $) — word boundary handled by resolveWordBoundaries.
+	var lookAfter LookSet
 	if input == '\n' {
 		lookAfter = LookStartLine
 	}
 
-	// Word boundary bits are NOT included here - they're handled by
-	// resolveWordBoundaries at the START of the next move() call.
-	// The isFromWord state of the target DFA state will be used to
-	// resolve word boundary assertions when the next byte is consumed.
-
-	// Compute epsilon-closure of target states with appropriate look assertions
-	// Get slice before releasing, as ToSlice allocates a new slice
 	targetSlice := targets.ToSlice()
 	releaseStateSet(targets)
 	return b.epsilonClosure(targetSlice, lookAfter)

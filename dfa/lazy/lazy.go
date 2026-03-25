@@ -1521,7 +1521,17 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	// This is essential for correct \b and \B handling in DFA.
 	// The current state's isFromWord tells us if the previous byte was a word char.
 	// Note: use actual byte 'b' (not classIdx) for NFA move - NFA uses raw bytes
-	nextNFAStates := builder.moveWithWordContext(current.NFAStates(), b, current.IsFromWord())
+	var nfaStatesForMove []nfa.StateID
+	if current.IsMatch() {
+		// Leftmost-first: after a match, filter out .*? unanchored prefix states.
+		// This causes DFA to reach dead state when the pattern can't continue
+		// from non-prefix states alone — enabling 2-pass search without Phase 3.
+		// Matches Rust determinize::next (mod.rs:284) semantics.
+		nfaStatesForMove = d.filterUnanchoredPrefix(current.NFAStates())
+	} else {
+		nfaStatesForMove = current.NFAStates()
+	}
+	nextNFAStates := builder.moveWithWordContext(nfaStatesForMove, b, current.IsFromWord())
 
 	// No transitions on this byte → dead state
 	if len(nextNFAStates) == 0 {
@@ -1594,6 +1604,40 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	cache.SetFlatTransition(current.id, int(classIdx), newState.ID())
 
 	return newState, nil
+}
+
+// filterUnanchoredPrefix removes NFA states belonging to the .*? unanchored
+// prefix from the state set. This implements leftmost-first match semantics:
+// after a match is found, the .*? prefix should not continue consuming bytes,
+// forcing the DFA into a dead state when the pattern can't continue.
+//
+// This matches Rust determinize::next (mod.rs:284):
+//
+//	if !match_kind.continue_past_first_match() { break; }
+//
+// The unanchored prefix consists of the split state (StartUnanchored) and the
+// any-byte loop state that follows it. These are the first 2 NFA states
+// compiled by compileUnanchoredPrefix.
+func (d *DFA) filterUnanchoredPrefix(states []nfa.StateID) []nfa.StateID {
+	if d.nfa.IsAlwaysAnchored() {
+		return states // No prefix for anchored patterns
+	}
+	prefixStart := d.nfa.StartUnanchored()
+	anchoredStart := d.nfa.StartAnchored()
+	if prefixStart == anchoredStart {
+		return states // No prefix compiled
+	}
+
+	// The prefix is: split state (prefixStart) + any-byte state (prefixStart+1).
+	// Filter both from the NFA state set.
+	prefixByte := prefixStart + 1 // The any-byte loop state
+	filtered := make([]nfa.StateID, 0, len(states))
+	for _, sid := range states {
+		if sid != prefixStart && sid != prefixByte {
+			filtered = append(filtered, sid)
+		}
+	}
+	return filtered
 }
 
 // tryClearCache attempts to clear the DFA cache and rebuild the start state.

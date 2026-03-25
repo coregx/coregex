@@ -532,11 +532,6 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 
 	// Check if Phase 3 (SearchAtAnchored) is needed in bidirectional DFA search.
 	// Phase 3 re-scans from confirmed start with greedy semantics. Only needed when
-	// the pattern contains .* or .+ which can cause leftmost-first (SearchFirstAt)
-	// and greedy (SearchAtAnchored) to return different match ends from the same start.
-	// For prefix patterns like password=[^&\s"]+, Phase 3 is redundant.
-	phase3Needed := hasDotStarOrDotPlus(re)
-
 	// Extract first-byte prefilter for anchored patterns.
 	// This enables O(1) early rejection for non-matching inputs.
 	// Only useful for start-anchored patterns where we only check position 0.
@@ -635,7 +630,6 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		config:                         config,
 		onepass:                        onePassRes,
 		canMatchEmpty:                  canMatchEmpty,
-		phase3Needed:                   phase3Needed,
 		isStartAnchored:                isStartAnchored,
 		fatTeddyFallback:               fatTeddyFallback,
 		statePool: newSearchStatePool(buildSearchStateConfig(
