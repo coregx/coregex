@@ -106,6 +106,9 @@ func (st *SlotTable) ForStateUnchecked(sid StateID) []int {
 //
 // If n > slotsPerState, it is clamped to slotsPerState.
 func (st *SlotTable) SetActiveSlots(n int) {
+	if st == nil {
+		return
+	}
 	if n < 0 {
 		n = 0
 	}
@@ -117,6 +120,9 @@ func (st *SlotTable) SetActiveSlots(n int) {
 
 // ActiveSlots returns the current number of active slots.
 func (st *SlotTable) ActiveSlots() int {
+	if st == nil {
+		return 0
+	}
 	return st.activeSlots
 }
 
@@ -171,6 +177,9 @@ func (st *SlotTable) GetSlot(sid StateID, slotIndex int) int {
 // Note: This is O(n) where n = numStates * slotsPerState.
 // For large tables, consider using generation-based clearing instead.
 func (st *SlotTable) Reset() {
+	if st == nil {
+		return
+	}
 	for i := range st.table {
 		st.table[i] = -1
 	}

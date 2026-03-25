@@ -61,17 +61,6 @@ func (b *Builder) Build() (*DFA, error) {
 		pf = b.buildPrefilter()
 	}
 
-	// Compute fresh start states: epsilon closure of anchored start.
-	// These are states that get re-introduced via unanchored machinery after each position.
-	// Used for leftmost matching: when all remaining states are in this set plus unanchored
-	// machinery, the committed match is final.
-	startLook := LookSetFromStartKind(StartText)
-	anchoredStartClosure := b.epsilonClosure([]nfa.StateID{b.nfa.StartAnchored()}, startLook)
-	freshStartStates := make(map[nfa.StateID]bool, len(anchoredStartClosure))
-	for _, stateID := range anchoredStartClosure {
-		freshStartStates[stateID] = true
-	}
-
 	// Check if the NFA contains word boundary assertions
 	hasWordBoundary := b.checkHasWordBoundary()
 
@@ -89,7 +78,6 @@ func (b *Builder) Build() (*DFA, error) {
 		prefilter:        pf,
 		pikevm:           nfa.NewPikeVM(b.nfa),
 		byteClasses:      b.nfa.ByteClasses(),
-		freshStartStates: freshStartStates,
 		unanchoredStart:  b.nfa.StartUnanchored(),
 		hasWordBoundary:  hasWordBoundary,
 		isAlwaysAnchored: isAlwaysAnchored,
@@ -140,77 +128,16 @@ func (b *Builder) buildPrefilter() prefilter.Prefilter {
 //  4. Collect all reachable states
 //  5. Return sorted list for consistent ordering
 func (b *Builder) epsilonClosure(states []nfa.StateID, lookHave LookSet) []nfa.StateID {
-	// Use pooled StateSet for efficient membership testing and deduplication
 	closure := acquireStateSet()
 	defer releaseStateSet(closure)
-	stack := make([]nfa.StateID, 0, len(states)*2)
 
-	// Initialize with input states
+	// Reuse epsilonClosureInto for each seed state.
 	for _, sid := range states {
-		if !closure.Contains(sid) {
-			closure.Add(sid)
-			stack = append(stack, sid)
-		}
+		b.epsilonClosureInto(closure, sid, lookHave)
 	}
 
-	// DFS through epsilon transitions
-	for len(stack) > 0 {
-		// Pop from stack
-		current := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-
-		// Get NFA state
-		state := b.nfa.State(current)
-		if state == nil {
-			continue
-		}
-
-		// Follow epsilon transitions
-		switch state.Kind() {
-		case nfa.StateEpsilon:
-			next := state.Epsilon()
-			if next != nfa.InvalidState && !closure.Contains(next) {
-				closure.Add(next)
-				stack = append(stack, next)
-			}
-
-		case nfa.StateSplit:
-			left, right := state.Split()
-			if left != nfa.InvalidState && !closure.Contains(left) {
-				closure.Add(left)
-				stack = append(stack, left)
-			}
-			if right != nfa.InvalidState && !closure.Contains(right) {
-				closure.Add(right)
-				stack = append(stack, right)
-			}
-
-		case nfa.StateLook:
-			// CRITICAL: Only follow if the look assertion is satisfied
-			// This is the key fix for proper ^ and $ handling in DFA.
-			// Without this check, the DFA would incorrectly match patterns
-			// like "^abc" at any position in the input.
-			look, next := state.Look()
-			if lookHave.Contains(look) && next != nfa.InvalidState && !closure.Contains(next) {
-				closure.Add(next)
-				stack = append(stack, next)
-			}
-
-		case nfa.StateCapture:
-			// Capture states are epsilon transitions that record positions.
-			// The DFA ignores captures (it only tracks match/no-match),
-			// but we must follow through to reach the actual consuming states.
-			// Fix for Issue #15: DFA.IsMatch returns false for patterns with capture groups.
-			_, _, next := state.Capture()
-			if next != nfa.InvalidState && !closure.Contains(next) {
-				closure.Add(next)
-				stack = append(stack, next)
-			}
-		}
-	}
-
-	// Return sorted slice for consistent state keys
-	return closure.ToSlice()
+	// Return insertion order to match Rust sparse set iteration order.
+	return closure.ToSliceInsertionOrder()
 }
 
 // moveWithWordContext computes the set of NFA states reachable from the given states on input byte b,
@@ -235,26 +162,40 @@ func (b *Builder) epsilonClosure(states []nfa.StateID, lookHave LookSet) []nfa.S
 //
 // This effectively simulates one step of the NFA for all active states.
 func (b *Builder) moveWithWordContext(states []nfa.StateID, input byte, isFromWord bool) []nfa.StateID {
-	// Fast path: skip word boundary resolution if NFA has no word boundaries.
-	// This optimization eliminates ~74% of allocations for patterns without \b/\B.
-	// Based on Rust regex-automata approach: only resolve boundaries when needed.
+	return b.moveWithWordContextBreak(states, input, isFromWord, false)
+}
+
+// moveWithWordContextBreak is moveWithWordContext with optional break-at-match.
+// When breakAtMatch is true, iteration stops at the first Match state encountered.
+// This implements Rust's determinize::next break semantics (mod.rs:284):
+// after finding a Match, remaining states (prefix restarts) are not processed,
+// so the DFA reaches dead state and terminates with the committed match.
+//
+// Critical: uses INCREMENTAL epsilon closure (per-target, like Rust) instead of
+// batch closure. This ensures that each ByteRange target's epsilon closure is
+// added to the result set in iteration order. Match states from earlier targets
+// appear before prefix restart states from later targets, making break-at-match
+// work correctly for all patterns.
+func (b *Builder) moveWithWordContextBreak(states []nfa.StateID, input byte, isFromWord bool, breakAtMatch bool) []nfa.StateID {
 	var resolvedStates []nfa.StateID
 	if !b.hasWordBoundary {
-		// No word boundaries - use states directly, skip expensive resolution
 		resolvedStates = states
 	} else {
-		// Compute word boundary status for this transition
 		isCurrentWord := isWordByte(input)
 		wordBoundarySatisfied := isFromWord != isCurrentWord
-
-		// Step 1: Resolve word boundary assertions in the current state set.
-		// StateLook(\b) and StateLook(\B) that weren't followed during epsilon closure
-		// need to be resolved now that we know the current byte.
 		resolvedStates = b.resolveWordBoundaries(states, wordBoundarySatisfied)
 	}
 
-	// Step 2: Collect target states for this input byte (use pooled StateSet)
-	targets := acquireStateSet()
+	// Determine look assertions satisfied after this byte transition.
+	var lookAfter LookSet
+	if input == '\n' {
+		lookAfter = LookStartLine
+	}
+
+	// Incremental epsilon closure: for each ByteRange match, epsilon-close the
+	// target into the result set immediately. This matches Rust's determinize::next
+	// where each matched target is epsilon-closed into sparses.set2 in iteration order.
+	result := acquireStateSet()
 
 	for _, sid := range resolvedStates {
 		state := b.nfa.State(sid)
@@ -262,52 +203,89 @@ func (b *Builder) moveWithWordContext(states []nfa.StateID, input byte, isFromWo
 			continue
 		}
 
+		// Rust determinize::next (mod.rs:284): break at Match state.
+		if breakAtMatch && state.Kind() == nfa.StateMatch {
+			break
+		}
+
 		switch state.Kind() {
 		case nfa.StateByteRange:
 			lo, hi, next := state.ByteRange()
 			if input >= lo && input <= hi {
-				targets.Add(next)
+				b.epsilonClosureInto(result, next, lookAfter)
 			}
 
 		case nfa.StateSparse:
 			for _, tr := range state.Transitions() {
 				if input >= tr.Lo && input <= tr.Hi {
-					targets.Add(tr.Next)
+					b.epsilonClosureInto(result, tr.Next, lookAfter)
 				}
 			}
 		}
 	}
 
-	// No transitions on this byte
-	if targets.Len() == 0 {
-		releaseStateSet(targets)
+	if result.Len() == 0 {
+		releaseStateSet(result)
 		return nil
 	}
 
-	// Step 3: Determine look assertions satisfied after this byte transition.
-	// IMPORTANT: Word boundary assertions are handled in resolveWordBoundaries,
-	// NOT here. This is because word boundary is position-specific - it's resolved
-	// when we START consuming a byte, not after we've consumed it.
-	//
-	// Only line assertions (^, $) are passed to epsilonClosure because they
-	// depend only on the previous byte (was it '\n'?), not on the current byte.
-	var lookAfter LookSet
+	resultSlice := result.ToSliceInsertionOrder()
+	releaseStateSet(result)
+	return resultSlice
+}
 
-	// Line boundary: After '\n', multiline ^ (LookStartLine) is satisfied.
-	if input == '\n' {
-		lookAfter = LookStartLine
+// epsilonClosureInto adds a single state and its epsilon closure to an existing
+// StateSet. States already in the set are skipped (deduplication via Contains).
+// This enables incremental epsilon closure matching Rust's determinize::next
+// where each matched ByteRange target is closed into the result set in order.
+func (b *Builder) epsilonClosureInto(result *StateSet, seed nfa.StateID, lookHave LookSet) {
+	// Same add-on-pop + reverse-push approach as epsilonClosure.
+	stack := make([]nfa.StateID, 1, 8)
+	stack[0] = seed
+
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		if result.Contains(current) {
+			continue
+		}
+		result.Add(current)
+
+		state := b.nfa.State(current)
+		if state == nil {
+			continue
+		}
+
+		switch state.Kind() {
+		case nfa.StateEpsilon:
+			next := state.Epsilon()
+			if next != nfa.InvalidState {
+				stack = append(stack, next)
+			}
+
+		case nfa.StateSplit:
+			left, right := state.Split()
+			if right != nfa.InvalidState {
+				stack = append(stack, right)
+			}
+			if left != nfa.InvalidState {
+				stack = append(stack, left)
+			}
+
+		case nfa.StateLook:
+			look, next := state.Look()
+			if lookHave.Contains(look) && next != nfa.InvalidState {
+				stack = append(stack, next)
+			}
+
+		case nfa.StateCapture:
+			_, _, next := state.Capture()
+			if next != nfa.InvalidState {
+				stack = append(stack, next)
+			}
+		}
 	}
-
-	// Word boundary bits are NOT included here - they're handled by
-	// resolveWordBoundaries at the START of the next move() call.
-	// The isFromWord state of the target DFA state will be used to
-	// resolve word boundary assertions when the next byte is consumed.
-
-	// Compute epsilon-closure of target states with appropriate look assertions
-	// Get slice before releasing, as ToSlice allocates a new slice
-	targetSlice := targets.ToSlice()
-	releaseStateSet(targets)
-	return b.epsilonClosure(targetSlice, lookAfter)
 }
 
 // resolveWordBoundaries expands the NFA state set by following word boundary assertions
@@ -610,7 +588,7 @@ func DetectAccelerationFromCachedWithClasses(state *State, byteClasses *nfa.Byte
 func DetectAccelerationFromFlat(sid StateID, flatTrans []StateID, stride int, byteClasses *nfa.ByteClasses) []byte {
 	ftLen := len(flatTrans)
 	return detectAccelFromTransitions(sid, stride, func(classIdx int) (StateID, bool) {
-		offset := safeOffset(sid, stride, classIdx)
+		offset := safeOffset(sid, classIdx)
 		if offset >= ftLen {
 			return InvalidState, false
 		}

@@ -98,18 +98,20 @@ func TestDetectAccelerationFromCached(t *testing.T) {
 
 func TestDetectAccelerationFromFlat(t *testing.T) {
 	// Test acceleration detection via flat transition table
+	// Using premultiplied state IDs: sid = stateIndex * stride
 	stride := 256
-	sid := StateID(1)
-	flatTrans := make([]StateID, 2*stride) // 2 states
+	sid := StateID(1 * stride) // premultiplied: state 1 at offset 256
+	state2 := StateID(2 * stride)
+	flatTrans := make([]StateID, 3*stride) // 3 states (0, 1, 2)
 
 	// State 1: 250 self-loops, 3 exits to state 2, 3 dead
-	base := int(sid) * stride
+	base := sid.Offset()
 	for i := 0; i < 250; i++ {
 		flatTrans[base+i] = sid // Self-loop
 	}
-	flatTrans[base+250] = StateID(2)
-	flatTrans[base+251] = StateID(2)
-	flatTrans[base+252] = StateID(2)
+	flatTrans[base+250] = state2
+	flatTrans[base+251] = state2
+	flatTrans[base+252] = state2
 	flatTrans[base+253] = DeadState
 	flatTrans[base+254] = DeadState
 	flatTrans[base+255] = DeadState

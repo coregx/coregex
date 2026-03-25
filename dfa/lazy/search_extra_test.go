@@ -89,7 +89,7 @@ func TestSearchAtWithoutPrefilter(t *testing.T) {
 		{"simple literal from 0", "abc", "xyzabc", 0, 6},
 		{"simple literal from 3", "abc", "xyzabc", 3, 6},
 		{"no match", "xyz", "abcdef", 0, -1},
-		{"empty pattern from 0", "", "abc", 0, 3}, // empty pattern greedy-matches entire input
+		{"empty pattern from 0", "", "abc", 0, 0}, // empty pattern matches at position 0 (stdlib behavior)
 		{"empty input", "abc", "", 0, -1},
 		{"at end", "abc", "abc", 3, -1},
 		{"past end", "abc", "abc", 4, -1},
@@ -332,7 +332,7 @@ func TestEmptyPatternBehavior(t *testing.T) {
 		matchWant bool
 	}{
 		{"empty input", "", 0, true},
-		{"non-empty input", "abc", 3, true}, // empty pattern greedy-matches entire input
+		{"non-empty input", "abc", 0, true}, // empty pattern matches at position 0 (stdlib behavior)
 	}
 
 	for _, tt := range tests {

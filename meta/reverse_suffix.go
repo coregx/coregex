@@ -114,8 +114,11 @@ func NewReverseSuffixSearcher(
 	// searching for $ anchor, but for suffix literals.
 	reverseNFA := nfa.Reverse(forwardNFA)
 
-	// Build reverse DFA from reverse NFA
-	reverseDFA, err := lazy.CompileWithConfig(reverseNFA, config)
+	// Build reverse DFA from reverse NFA.
+	// Disable BreakAtMatch for reverse DFA.
+	revConfig := config
+	revConfig.BreakAtMatch = false
+	reverseDFA, err := lazy.CompileWithConfig(reverseNFA, revConfig)
 	if err != nil {
 		return nil, err
 	}

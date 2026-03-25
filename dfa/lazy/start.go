@@ -227,8 +227,12 @@ func ComputeStartStateWithStride(builder *Builder, n *nfa.NFA, config StartConfi
 	// Compute epsilon closure from NFA start state with look assertions
 	startStateSet := builder.epsilonClosure([]nfa.StateID{nfaStart}, lookHave)
 
-	// Check if start state is a match state
-	isMatch := builder.containsMatchState(startStateSet)
+	// With 1-byte match delay, start states are NEVER match states.
+	// Match reporting is delayed by 1 byte: the NEW state is tagged as match
+	// based on the OLD state's NFA match content. Since there is no "old state"
+	// before the start state, it cannot be a match.
+	// Reference: Rust regex-automata determinize (mod.rs:254-286).
+	isMatch := false
 
 	// Determine isFromWord based on StartKind.
 	// This is critical for \b/\B word boundary handling:

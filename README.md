@@ -64,19 +64,19 @@ Cross-language benchmarks on 6MB input, AMD EPYC ([source](https://github.com/ko
 
 | Pattern | Go stdlib | coregex | Rust regex | vs stdlib | vs Rust |
 |---------|-----------|---------|------------|-----------|---------|
-| Literal alternation | 475 ms | 4.4 ms | 0.7 ms | **109x** | 6.3x slower |
-| Multi-literal | 1391 ms | 12.6 ms | 4.7 ms | **110x** | 2.6x slower |
-| Inner `.*keyword.*` | 231 ms | 0.29 ms | 0.29 ms | **797x** | **~parity** |
-| Suffix `.*\.txt` | 234 ms | 1.83 ms | 1.07 ms | **128x** | 1.7x slower |
-| Multiline `(?m)^/.*\.php` | 103 ms | 0.66 ms | 0.66 ms | **156x** | **~parity** |
-| Email validation | 261 ms | 0.54 ms | 0.31 ms | **482x** | 1.7x slower |
-| URL extraction | 262 ms | 0.84 ms | 0.35 ms | **311x** | 2.4x slower |
-| IP address | 498 ms | 2.1 ms | 12.0 ms | **237x** | **5.6x faster** |
-| Char class `[\w]+` | 554 ms | 48.0 ms | 50.1 ms | **11x** | **1.0x faster** |
-| Word repeat `(\w{2,8})+` | 641 ms | 185 ms | 48.7 ms | **3x** | 3.7x slower |
+| Literal alternation | 466 ms | 4.2 ms | 0.65 ms | **110x** | 6.4x slower |
+| Multi-literal | 1391 ms | 12.4 ms | 5.3 ms | **112x** | 2.3x slower |
+| Inner `.*keyword.*` | 227 ms | 0.34 ms | 0.32 ms | **668x** | **~parity** |
+| Suffix `.*\.txt` | 228 ms | 2.9 ms | 1.3 ms | **78x** | 2.3x slower |
+| Multiline `(?m)^/.*\.php` | 101 ms | 0.35 ms | 0.72 ms | **288x** | **2.0x faster** |
+| Email validation | 258 ms | 0.51 ms | 0.27 ms | **506x** | 1.8x slower |
+| URL extraction | 259 ms | 0.71 ms | 0.35 ms | **364x** | 2.0x slower |
+| IP address | 493 ms | 0.73 ms | 13.5 ms | **675x** | **18.5x faster** |
+| Char class `[\w]+` | 483 ms | 40.9 ms | 56.0 ms | **11x** | **1.3x faster** |
+| Word repeat `(\w{2,8})+` | 628 ms | 167 ms | 54.8 ms | **3x** | 3.0x slower |
 
 **Where coregex excels:**
-- Multiline patterns (`(?m)^/.*\.php`) — near Rust parity, 100x+ vs stdlib
+- Multiline patterns (`(?m)^/.*\.php`) — **2x faster than Rust**, 288x vs stdlib
 - IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — SIMD digit prefilter skips non-digit regions
 - Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search optimization (1000x+)
 - Inner literals (`.*error.*`, `.*@example\.com`) — bidirectional DFA (900x+)

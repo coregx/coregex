@@ -30,7 +30,6 @@ type DFACache struct {
 
 	// stateList provides O(1) lookup of State structs by ID.
 	// Used only in slow path (determinize, word boundary, acceleration).
-	// Hot loop uses flatTrans + matchFlags instead.
 	stateList []*State
 
 	// --- Flat transition table (Rust approach) ---
@@ -46,10 +45,6 @@ type DFACache struct {
 	// Layout: [state0_c0, state0_c1, ..., state0_cN, state1_c0, ...]
 	// InvalidState (0xFFFFFFFF) = unknown transition (needs determinize).
 	flatTrans []StateID
-
-	// matchFlags[stateID] = true if state is a match/accepting state.
-	// Replaces State.IsMatch() in hot loop — no pointer chase needed.
-	matchFlags []bool
 
 	// stride is the number of byte equivalence classes (alphabet size).
 	stride int
@@ -84,6 +79,8 @@ func (c *DFACache) Get(key StateKey) (*State, bool) {
 }
 
 // Insert adds a new state to the cache and returns its assigned ID.
+// The returned StateID is premultiplied (byte offset into flatTrans)
+// and tagged (match bit set if state is accepting).
 // Returns (stateID, nil) on success.
 // Returns (InvalidState, ErrCacheFull) if cache is at capacity.
 func (c *DFACache) Insert(key StateKey, state *State) (StateID, error) {
@@ -99,10 +96,14 @@ func (c *DFACache) Insert(key StateKey, state *State) (StateID, error) {
 		return InvalidState, ErrCacheFull
 	}
 
-	// Assign state ID only if not already set (e.g., StartState = 0)
+	// Assign premultiplied state ID (byte offset into flatTrans).
+	// Tag with match bit if accepting state.
 	if state.id == InvalidState {
 		state.id = c.nextID
-		c.nextID++
+		if state.isMatch {
+			state.id = state.id.WithMatchTag()
+		}
+		c.nextID += StateID(c.stride) // premultiplied: advance by stride
 	}
 
 	// Insert into cache
@@ -111,39 +112,35 @@ func (c *DFACache) Insert(key StateKey, state *State) (StateID, error) {
 
 	// Grow flat transition table for this state's row (all InvalidState initially).
 	if c.stride > 0 {
-		sid := int(state.id)
-		needed := (sid + 1) * c.stride
+		offset := state.id.Offset()
+		needed := offset + c.stride
 		if needed > len(c.flatTrans) {
 			growth := needed - len(c.flatTrans)
 			for i := 0; i < growth; i++ {
 				c.flatTrans = append(c.flatTrans, InvalidState)
 			}
 		}
-		// Grow matchFlags
-		for len(c.matchFlags) <= sid {
-			c.matchFlags = append(c.matchFlags, false)
-		}
-		c.matchFlags[sid] = state.isMatch
 	}
 
 	return state.ID(), nil
 }
 
-// safeOffset computes flat table offset, safe on 386 where int is 32-bit.
-// StateID is uint32; on 386 int(0xFFFFFFFF) = -1 and uint multiply overflows.
-// Returns MaxInt for special state IDs (DeadState, InvalidState) so bounds
-// check (offset < ftLen) always fails safely.
-func safeOffset(sid StateID, stride int, classIdx int) int {
-	if sid >= DeadState {
-		return int(^uint(0) >> 1) // MaxInt — always >= ftLen
+// safeOffset computes flat table offset from premultiplied StateID.
+// For tagged states (dead/invalid), returns MaxInt so bounds check always
+// fails safely. For normal and match-tagged states, returns sid.Offset() + classIdx.
+func safeOffset(sid StateID, classIdx int) int {
+	if sid.IsDeadTag() || sid.IsInvalidTag() {
+		return int(^uint(0) >> 1) // MaxInt
 	}
-	return int(sid)*stride + classIdx
+	return sid.Offset() + classIdx
 }
 
 // SetFlatTransition records a transition in the flat table.
 // Called from determinize when a transition is computed.
+// fromID must be a premultiplied StateID (offset into flatTrans).
+// toID is stored with its tags (match/dead).
 func (c *DFACache) SetFlatTransition(fromID StateID, classIdx int, toID StateID) {
-	offset := safeOffset(fromID, c.stride, classIdx)
+	offset := fromID.Offset() + classIdx
 	if offset < len(c.flatTrans) {
 		c.flatTrans[offset] = toID
 	}
@@ -151,23 +148,16 @@ func (c *DFACache) SetFlatTransition(fromID StateID, classIdx int, toID StateID)
 
 // FlatNext returns the next state ID from the flat table.
 // Returns InvalidState if the transition hasn't been computed yet.
+// sid must be premultiplied (no multiply needed — just add classIdx).
 // This is the hot-path function — should be inlined by the compiler.
 func (c *DFACache) FlatNext(sid StateID, classIdx int) StateID {
-	offset := int(sid)*c.stride + classIdx
-	return c.flatTrans[offset]
+	return c.flatTrans[sid.Offset()+classIdx]
 }
 
 // IsMatchState returns whether the given state ID is a match state.
-// Uses compact matchFlags slice — no pointer chase.
+// Uses tag bit in premultiplied StateID — O(1), no array lookup.
 func (c *DFACache) IsMatchState(sid StateID) bool {
-	if sid >= DeadState {
-		return false
-	}
-	id := int(sid)
-	if id >= len(c.matchFlags) {
-		return false
-	}
-	return c.matchFlags[id]
+	return sid.IsMatchTag()
 }
 
 // GetOrInsert retrieves a state from cache or inserts it if not present.
@@ -212,7 +202,6 @@ func (c *DFACache) Size() int {
 // Components:
 //   - flatTrans: len * 4 bytes (StateID = uint32)
 //   - stateList: len * 8 bytes (pointer)
-//   - matchFlags: len * 1 byte
 //   - states map: ~len * 48 bytes (key + pointer + map overhead)
 //   - State heap: nfaStates slices + accelBytes
 func (c *DFACache) MemoryUsage() int {
@@ -222,7 +211,6 @@ func (c *DFACache) MemoryUsage() int {
 
 	usage := len(c.flatTrans) * stateIDSize
 	usage += len(c.stateList) * ptrSize
-	usage += len(c.matchFlags)
 	usage += len(c.states) * mapEntrySize
 
 	// State struct heap: nfaStates slice per state
@@ -270,7 +258,7 @@ func (c *DFACache) Clear() {
 	c.states = make(map[StateKey]*State)
 	c.stateList = c.stateList[:0]
 	c.startTable = newStartTableFromByteMap(&c.startTable.byteMap)
-	c.nextID = StartState + 1
+	c.nextID = StateID(c.stride)
 	c.clearCount = 0
 	c.hits = 0
 	c.misses = 0
@@ -300,7 +288,7 @@ func (c *DFACache) ClearKeepMemory() {
 	}
 	c.stateList = c.stateList[:0]
 	c.startTable = newStartTableFromByteMap(&c.startTable.byteMap)
-	c.nextID = StartState + 1
+	c.nextID = StateID(c.stride)
 	c.clearCount++
 }
 
@@ -316,18 +304,17 @@ func (c *DFACache) ResetClearCount() {
 	c.clearCount = 0
 }
 
-// getState retrieves a state from the stateList by ID.
+// getState retrieves a state from the stateList by premultiplied ID.
+// Converts premultiplied offset to state index for stateList lookup.
 func (c *DFACache) getState(id StateID) *State {
-	if id == DeadState {
+	// Guard against tagged special states
+	if id.IsTagged() && (id.IsDeadTag() || id.IsInvalidTag()) {
 		return nil
 	}
-
-	// Guard against special state IDs (DeadState=0xFFFFFFFE, InvalidState=0xFFFFFFFF).
-	// On 386, int(uint32(0xFFFFFFFF)) = -1, causing negative index panic.
-	if id >= DeadState {
+	if c.stride == 0 {
 		return nil
 	}
-	idx := int(id)
+	idx := id.Offset() / c.stride
 	if idx >= len(c.stateList) {
 		return nil
 	}
@@ -335,14 +322,16 @@ func (c *DFACache) getState(id StateID) *State {
 }
 
 // registerState adds a state to the stateList for O(1) lookup by ID.
-// StateIDs are assigned sequentially, so we can use direct indexing.
+// Converts premultiplied ID to state index for stateList indexing.
 func (c *DFACache) registerState(state *State) {
-	id := int(state.ID())
-	// Grow slice if needed
-	for len(c.stateList) <= id {
+	if c.stride == 0 {
+		return
+	}
+	idx := state.ID().Offset() / c.stride
+	for len(c.stateList) <= idx {
 		c.stateList = append(c.stateList, nil)
 	}
-	c.stateList[id] = state
+	c.stateList[idx] = state
 }
 
 // Reset prepares the cache for reuse from a sync.Pool.
@@ -355,7 +344,7 @@ func (c *DFACache) Reset() {
 	}
 	c.stateList = c.stateList[:0]
 	c.startTable = newStartTableFromByteMap(&c.startTable.byteMap)
-	c.nextID = StartState + 1
+	c.nextID = StateID(c.stride)
 	c.clearCount = 0
 	c.hits = 0
 	c.misses = 0

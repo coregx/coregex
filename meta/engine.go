@@ -186,6 +186,17 @@ func (e *Engine) IsStartAnchored() bool {
 	return e.isStartAnchored
 }
 
+// IsStartAnchoredWithFirstByteReject returns true if:
+// 1. Pattern is always-anchored (^) AND
+// 2. First byte of haystack doesn't match any possible first byte
+// This allows ultra-fast O(1) rejection without any dispatch overhead.
+func (e *Engine) IsStartAnchoredWithFirstByteReject(haystack []byte) bool {
+	return e.nfa.IsAlwaysAnchored() &&
+		e.anchoredFirstBytes != nil &&
+		len(haystack) > 0 &&
+		!e.anchoredFirstBytes.Contains(haystack[0])
+}
+
 // Stats returns execution statistics.
 //
 // Useful for performance analysis and debugging.
