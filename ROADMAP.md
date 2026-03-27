@@ -97,8 +97,11 @@ v0.12.18 ✅ → Flat DFA transition table, integrated prefilter, PikeVM skip-ah
          ↓
 v0.12.19 ✅ → Zero-alloc FindSubmatch, byte-based DFA cache, Rust-aligned visited limits
          ↓
-v0.12.20 (Current) → Premultiplied/tagged StateIDs, break-at-match DFA determinize,
-                      Phase 3 elimination (2-pass bidirectional DFA)
+v0.12.20 ✅ → Premultiplied/tagged StateIDs, break-at-match DFA determinize,
+               Phase 3 elimination (2-pass bidirectional DFA)
+         ↓
+v0.12.21 (Current) → Tagged start states, zero-alloc API (AllIndex iter.Seq),
+                      1100x fewer mallocs, UseDFA for tiny NFA, -32% LangArena
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓

@@ -222,7 +222,7 @@ func TestDigitPrefilterStrategySelection(t *testing.T) {
 		{`\d+`, UseCharClassSearcher, "simple \\d+ uses CharClassSearcher"},
 
 		// Patterns with good prefix literals use UseDFA
-		{`123\d+`, UseNFA, "literal prefix uses NFA (tiny pattern with literals)"},
+		{`123\d+`, UseDigitPrefilter, "digit-lead literal uses DigitPrefilter"},
 
 		// Non-digit patterns should NOT use UseDigitPrefilter
 		{`[a-z]+`, UseCharClassSearcher, "letter class uses CharClassSearcher"},

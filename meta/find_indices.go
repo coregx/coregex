@@ -219,6 +219,12 @@ func (e *Engine) findIndicesNFAAt(haystack []byte, at int) (int, int, bool) {
 func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) { //nolint:cyclop // DFA with prefilter paths
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 
+	// Longest (POSIX) mode: DFA uses leftmost-first (break-at-match), which is
+	// incompatible with leftmost-longest semantics. Fall back to PikeVM.
+	if e.longest {
+		return e.pikevm.Search(haystack)
+	}
+
 	// Literal fast path — complete prefilter returns match directly
 	if e.prefilter != nil && e.prefilter.IsComplete() {
 		pos := e.prefilter.Find(haystack, 0)
@@ -328,6 +334,11 @@ func (e *Engine) findIndicesDFA(haystack []byte) (int, int, bool) { //nolint:cyc
 func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 
+	// Longest (POSIX) mode: DFA uses leftmost-first, fall back to PikeVM.
+	if e.longest {
+		return e.pikevm.SearchAt(haystack, at)
+	}
+
 	// Prefilter skip-ahead — safe for all prefilters, DFA verifies.
 	if e.prefilter != nil {
 		pos := e.prefilter.Find(haystack, at)
@@ -354,6 +365,86 @@ func (e *Engine) findIndicesDFAAt(haystack []byte, at int) (int, int, bool) {
 
 	// DFA confirmed a match exists - use PikeVM for exact bounds
 	return e.pikevm.SearchAt(haystack, at)
+}
+
+// findIndicesDFAAtWithState searches using DFA starting at position, reusing provided state.
+// Eliminates per-match sync.Pool overhead when called from FindAll/Count loops.
+func (e *Engine) findIndicesDFAAtWithState(haystack []byte, at int, state *SearchState) (int, int, bool) {
+	atomic.AddUint64(&e.stats.DFASearches, 1)
+
+	// Longest (POSIX) mode: DFA uses leftmost-first, fall back to PikeVM.
+	if e.longest {
+		return state.pikevm.SearchAt(haystack, at)
+	}
+
+	// Prefilter skip-ahead — safe for all prefilters, DFA verifies.
+	if e.prefilter != nil {
+		pos := e.prefilter.Find(haystack, at)
+		if pos == -1 {
+			return -1, -1, false
+		}
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		// Bidirectional DFA: forward DFA → end, reverse DFA → start. O(n) total.
+		if e.reverseDFA != nil {
+			return e.findIndicesBidirectionalDFACore(haystack, pos, state)
+		}
+		return state.pikevm.SearchAt(haystack, pos)
+	}
+
+	if e.reverseDFA != nil {
+		return e.findIndicesBidirectionalDFACore(haystack, at, state)
+	}
+	matched := e.dfa.IsMatchAt(state.dfaCache, haystack, at)
+	if !matched {
+		return -1, -1, false
+	}
+
+	// DFA confirmed a match exists - use PikeVM for exact bounds
+	return state.pikevm.SearchAt(haystack, at)
+}
+
+// findIndicesAdaptiveAtWithState tries prefilter+DFA first, falls back to NFA.
+// Reuses provided SearchState to eliminate per-match sync.Pool overhead.
+func (e *Engine) findIndicesAdaptiveAtWithState(haystack []byte, at int, state *SearchState) (int, int, bool) {
+	// Use prefilter if available for fast candidate finding
+	if e.prefilter != nil && e.dfa != nil {
+		pos := e.prefilter.Find(haystack, at)
+		if pos == -1 {
+			return -1, -1, false
+		}
+		atomic.AddUint64(&e.stats.PrefilterHits, 1)
+		atomic.AddUint64(&e.stats.DFASearches, 1)
+
+		// Literal fast path
+		if e.prefilter.IsComplete() {
+			literalLen := e.prefilter.LiteralLen()
+			if literalLen > 0 {
+				return pos, pos + literalLen, true
+			}
+		}
+
+		// Search from prefilter position - O(m) not O(n)
+		return state.pikevm.SearchAt(haystack, pos)
+	}
+
+	// Try DFA without prefilter
+	if e.dfa != nil {
+		atomic.AddUint64(&e.stats.DFASearches, 1)
+		endPos := e.dfa.FindAt(state.dfaCache, haystack, at)
+		if endPos != -1 {
+			// Use estimated start for O(m) search
+			estimatedStart := at
+			if endPos > at+100 {
+				estimatedStart = endPos - 100
+			}
+			return state.pikevm.SearchAt(haystack, estimatedStart)
+		}
+		size, capacity, _, _, _ := e.dfa.CacheStats(state.dfaCache)
+		if size >= int(capacity)*9/10 {
+			atomic.AddUint64(&e.stats.DFACacheFull, 1)
+		}
+	}
+	return e.findIndicesNFAAtWithState(haystack, at, state)
 }
 
 // findIndicesAdaptive tries prefilter+DFA first, falls back to NFA - zero alloc.
@@ -586,6 +677,13 @@ func (e *Engine) findIndicesBidirectionalDFA(haystack []byte, at int) (int, int,
 	atomic.AddUint64(&e.stats.DFASearches, 1)
 	state := e.getSearchState()
 	defer e.putSearchState(state)
+	return e.findIndicesBidirectionalDFACore(haystack, at, state)
+}
+
+// findIndicesBidirectionalDFACore is the poolless core of bidirectional DFA search.
+// Caller must provide a valid SearchState (either from pool or already held).
+// Used by findAllIndicesLoop and Count to avoid per-match pool round-trips.
+func (e *Engine) findIndicesBidirectionalDFACore(haystack []byte, at int, state *SearchState) (int, int, bool) {
 	// Forward DFA: leftmost-first match end (matches Rust find_fwd)
 	end := e.dfa.SearchAt(state.dfaCache, haystack, at)
 	if end == -1 {
@@ -947,6 +1045,48 @@ func (e *Engine) findIndicesDigitPrefilterAt(haystack []byte, at int) (int, int,
 	return -1, -1, false
 }
 
+// findIndicesDigitPrefilterAtWithState searches using digit prefilter, reusing provided state.
+// Eliminates per-match sync.Pool overhead when called from FindAll/Count loops.
+func (e *Engine) findIndicesDigitPrefilterAtWithState(haystack []byte, at int, state *SearchState) (int, int, bool) {
+	if e.digitPrefilter == nil || at >= len(haystack) {
+		return e.findIndicesNFAAtWithState(haystack, at, state)
+	}
+
+	atomic.AddUint64(&e.stats.PrefilterHits, 1)
+	pos := at
+
+	for pos < len(haystack) {
+		digitPos := e.digitPrefilter.Find(haystack, pos)
+		if digitPos < 0 {
+			return -1, -1, false
+		}
+
+		if e.dfa != nil {
+			atomic.AddUint64(&e.stats.DFASearches, 1)
+			// Use anchored search - pattern MUST start at digitPos
+			endPos := e.dfa.SearchAtAnchored(state.dfaCache, haystack, digitPos)
+			if endPos != -1 {
+				return digitPos, endPos, true
+			}
+		} else {
+			atomic.AddUint64(&e.stats.NFASearches, 1)
+			start, end, found := state.pikevm.SearchAt(haystack, digitPos)
+			if found {
+				return start, end, true
+			}
+		}
+
+		pos = digitPos + 1
+		if e.digitRunSkipSafe {
+			for pos < len(haystack) && haystack[pos] >= '0' && haystack[pos] <= '9' {
+				pos++
+			}
+		}
+	}
+
+	return -1, -1, false
+}
+
 // findIndicesAhoCorasick returns indices using Aho-Corasick - zero alloc.
 func (e *Engine) findIndicesAhoCorasick(haystack []byte) (int, int, bool) {
 	if e.ahoCorasick == nil {
@@ -994,11 +1134,9 @@ func (e *Engine) findIndicesAtWithState(haystack []byte, at int, state *SearchSt
 	case UseNFA:
 		return e.findIndicesNFAAtWithState(haystack, at, state)
 	case UseDFA:
-		// DFA uses e.pikevm (shared) for final bounds, not pooled state
-		return e.findIndicesDFAAt(haystack, at)
+		return e.findIndicesDFAAtWithState(haystack, at, state)
 	case UseBoth:
-		// Adaptive uses e.pikevm (shared) or delegates to NFA path
-		return e.findIndicesAdaptiveAt(haystack, at)
+		return e.findIndicesAdaptiveAtWithState(haystack, at, state)
 	case UseReverseSuffix:
 		return e.reverseSuffixSearcher.FindIndicesAtWithCaches(haystack, at, state.stratFwdCache, state.stratRevCache)
 	case UseReverseSuffixSet:
@@ -1016,7 +1154,7 @@ func (e *Engine) findIndicesAtWithState(haystack []byte, at int, state *SearchSt
 	case UseTeddy:
 		return e.findIndicesTeddyAt(haystack, at)
 	case UseDigitPrefilter:
-		return e.findIndicesDigitPrefilterAt(haystack, at)
+		return e.findIndicesDigitPrefilterAtWithState(haystack, at, state)
 	case UseAhoCorasick:
 		return e.findIndicesAhoCorasickAt(haystack, at)
 	case UseMultilineReverseSuffix:

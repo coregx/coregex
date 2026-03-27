@@ -91,6 +91,15 @@ func (sid StateID) IsInvalidTag() bool {
 	return sid&tagInvalid != 0
 }
 
+// IsStartTag returns true if this state has the start tag.
+// Start-tagged states always enter the slow path in the DFA search loop,
+// enabling prefilter skip-ahead only at start states (Rust LazyStateID approach).
+//
+//go:nosplit
+func (sid StateID) IsStartTag() bool {
+	return sid&tagStart != 0
+}
+
 // WithMatchTag returns a copy of this StateID with the match tag set.
 func (sid StateID) WithMatchTag() StateID {
 	return sid | tagMatch

@@ -64,6 +64,9 @@ func (b *Builder) Build() (*DFA, error) {
 	// Check if the NFA contains word boundary assertions
 	hasWordBoundary := b.checkHasWordBoundary()
 
+	// Check if the NFA contains EndLine ($) assertions
+	hasEndLine := b.checkHasEndLine()
+
 	// Check if the pattern is always anchored (has ^ prefix)
 	isAlwaysAnchored := b.nfa.IsAlwaysAnchored()
 
@@ -80,6 +83,7 @@ func (b *Builder) Build() (*DFA, error) {
 		byteClasses:      b.nfa.ByteClasses(),
 		unanchoredStart:  b.nfa.StartUnanchored(),
 		hasWordBoundary:  hasWordBoundary,
+		hasEndLine:       hasEndLine,
 		isAlwaysAnchored: isAlwaysAnchored,
 		startByteMap:     startByteMap,
 	}
@@ -700,6 +704,26 @@ func (b *Builder) checkHasWordBoundary() bool {
 		if state.Kind() == nfa.StateLook {
 			look, _ := state.Look()
 			if look == nfa.LookWordBoundary || look == nfa.LookNoWordBoundary {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkHasEndLine checks if the NFA contains EndLine ($) look assertions.
+// When true, determinize performs look-ahead re-computation on '\n' bytes.
+// Computed once at DFA build time for O(1) check in hot loop.
+func (b *Builder) checkHasEndLine() bool {
+	numStates := b.nfa.States()
+	for i := nfa.StateID(0); int(i) < numStates; i++ {
+		state := b.nfa.State(i)
+		if state == nil {
+			continue
+		}
+		if state.Kind() == nfa.StateLook {
+			look, _ := state.Look()
+			if look == nfa.LookEndLine {
 				return true
 			}
 		}

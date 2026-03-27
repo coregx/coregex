@@ -14,10 +14,10 @@ func TestStrategySelectionComprehensive(t *testing.T) {
 		pattern string
 		want    Strategy
 	}{
-		// ========== UseNFA: tiny patterns without useful literals ==========
-		{"nfa_single_char", "a", UseNFA},
-		{"nfa_single_char_b", "b", UseNFA},
-		{"nfa_two_char_literal", "ab", UseNFA},
+		// ========== UseDFA: tiny patterns — pure DFA with tagged start states ==========
+		{"dfa_single_char", "a", UseDFA},
+		{"dfa_single_char_b", "b", UseDFA},
+		{"dfa_two_char_literal", "ab", UseDFA},
 
 		// ========== UseReverseSuffix: .*suffix patterns ==========
 		{"rsuffix_dot_star_txt", `.*\.txt`, UseReverseSuffix},

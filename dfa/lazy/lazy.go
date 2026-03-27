@@ -78,6 +78,11 @@ type DFA struct {
 	// When false, we can skip expensive word boundary checks in the search loop.
 	hasWordBoundary bool
 
+	// hasEndLine is true if the NFA contains EndLine ($) look assertions.
+	// When true, determinize performs look-ahead re-computation on '\n' bytes.
+	// When false (most patterns), this check is skipped entirely.
+	hasEndLine bool
+
 	// isAlwaysAnchored is true if the pattern is inherently anchored (has ^ prefix).
 	// When true, we only need to try matching from position 0.
 	isAlwaysAnchored bool
@@ -375,31 +380,11 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 
 	canUnroll := !d.hasWordBoundary
 	ftLen := len(ft)
-	startSID := startState.id
 	hasPre := d.prefilter != nil
 
 	for pos < end {
-		// Prefilter skip-ahead at start state
-		if hasPre && sid == startSID && lastMatch < 0 && pos > startPos {
-			candidate := d.prefilter.Find(haystack, pos)
-			if candidate == -1 {
-				return lastMatch
-			}
-			if candidate > pos {
-				pos = candidate
-				newStart := d.getStartStateForUnanchored(cache, haystack, pos)
-				if newStart == nil {
-					return d.nfaFallback(haystack, startPos)
-				}
-				sid = newStart.id
-				startSID = sid
-				ft = cache.flatTrans
-				ftLen = len(ft)
-			}
-		}
-
 		// === 4x UNROLLED FAST PATH ===
-		// With match delay, tagged states (including match) break to slow path.
+		// With match delay, tagged states (including match, start) break to slow path.
 		if canUnroll && pos+3 < end {
 			if sid.Offset()+stride > ftLen {
 				goto searchFirstSlowPath
@@ -450,6 +435,25 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 	searchFirstSlowPath:
 		if pos >= end {
 			break
+		}
+
+		// Start state prefilter skip-ahead (Rust find_fwd_imp).
+		if sid.IsStartTag() && hasPre && lastMatch < 0 && pos > startPos {
+			candidate := d.prefilter.Find(haystack, pos)
+			if candidate == -1 {
+				return lastMatch
+			}
+			if candidate > pos {
+				pos = candidate
+				newStart := d.getStartStateForUnanchored(cache, haystack, pos)
+				if newStart == nil {
+					return d.nfaFallback(haystack, startPos)
+				}
+				sid = newStart.id
+				ft = cache.flatTrans
+				ftLen = len(ft)
+				continue
+			}
 		}
 
 		if d.hasWordBoundary {
@@ -526,12 +530,10 @@ func (d *DFA) IsMatch(cache *DFACache, haystack []byte) bool {
 		return d.matchesEmpty(cache)
 	}
 
-	// Use prefilter for acceleration if available
-	if d.prefilter != nil {
-		return d.isMatchWithPrefilter(cache, haystack)
-	}
-
-	// No prefilter: use optimized DFA search with early termination
+	// With tagged start states, searchEarliestMatch handles prefilter correctly:
+	// start-tagged states always enter slow path where prefilter skip-ahead
+	// runs only at start states — no O(n^2) on start state self-loop.
+	// This replaces the separate isMatchWithPrefilter path.
 	return d.searchEarliestMatch(cache, haystack, 0)
 }
 
@@ -548,136 +550,6 @@ func (d *DFA) IsMatchAt(cache *DFACache, haystack []byte, at int) bool {
 	}
 
 	return d.searchEarliestMatch(cache, haystack, at)
-}
-
-// isMatchWithPrefilter uses an integrated prefilter+DFA loop (Rust approach).
-//
-// Instead of two separate passes (prefilter.Find → DFA.searchAnchored → repeat),
-// this runs a single DFA loop where dead-state transitions trigger prefilter
-// skip-ahead. This eliminates Go function call overhead between passes and
-// avoids redundant start-state setup on each candidate.
-//
-// Reference: rust regex-automata hybrid/search.rs find_fwd_imp — prefilter
-// is called inside the DFA loop when returning to start state.
-func (d *DFA) isMatchWithPrefilter(cache *DFACache, haystack []byte) bool {
-	// If prefilter is complete, its match is sufficient
-	if d.prefilter.IsComplete() {
-		return d.prefilter.Find(haystack, 0) != -1
-	}
-
-	// Find first candidate to start DFA from
-	pos := d.prefilter.Find(haystack, 0)
-	if pos == -1 {
-		return false
-	}
-
-	// Get anchored start state at candidate position
-	currentState := d.getStartState(cache, haystack, pos, true)
-	if currentState == nil {
-		return d.isMatchWithPrefilterFallback(cache, haystack, pos)
-	}
-	// With 1-byte match delay, start states are never match states.
-
-	endPos := len(haystack)
-	sid := currentState.id
-	ft := cache.flatTrans
-	ftLen := len(ft)
-
-	for pos < endPos {
-		if d.hasWordBoundary {
-			st := cache.getState(sid)
-			if st != nil && st.checkWordBoundaryFast(haystack[pos]) {
-				return true
-			}
-		}
-
-		classIdx := int(d.byteToClass(haystack[pos]))
-		offset := sid.Offset() + classIdx
-		var nextID StateID
-		if offset < ftLen {
-			nextID = ft[offset]
-		} else {
-			nextID = InvalidState
-		}
-
-		switch nextID {
-		case InvalidState:
-			currentState = cache.getState(sid)
-			if currentState == nil {
-				start, end, matched := d.pikevm.SearchAt(haystack, pos)
-				return matched && start >= 0 && end >= start
-			}
-			nextState, err := d.determinize(cache, currentState, haystack[pos])
-			if err != nil {
-				start, end, matched := d.pikevm.SearchAt(haystack, pos)
-				return matched && start >= 0 && end >= start
-			}
-			if nextState == nil {
-				goto pfSkip
-			}
-			sid = nextState.id
-			ft = cache.flatTrans
-			ftLen = len(ft)
-
-		case DeadState:
-			goto pfSkip
-
-		default:
-			sid = nextID
-		}
-
-		pos++
-		// 1-byte match delay: check after transition
-		if cache.IsMatchState(sid) {
-			return true
-		}
-		continue
-
-	pfSkip:
-		pos++
-		candidate := d.prefilter.Find(haystack, pos)
-		if candidate == -1 {
-			return false
-		}
-		pos = candidate
-
-		newStart := d.getStartState(cache, haystack, pos, true)
-		if newStart == nil {
-			return d.isMatchWithPrefilterFallback(cache, haystack, pos)
-		}
-		sid = newStart.id
-		ft = cache.flatTrans
-		ftLen = len(ft)
-		// With match delay, start states are never match — continue loop.
-	}
-
-	eoi := cache.getState(sid)
-	if eoi != nil {
-		return d.checkEOIMatch(eoi)
-	}
-	return false
-}
-
-// isMatchWithPrefilterFallback is the old two-pass approach used when
-// DFA start state cannot be obtained (NFA fallback needed).
-func (d *DFA) isMatchWithPrefilterFallback(cache *DFACache, haystack []byte, pos int) bool {
-	// Try anchored DFA search at current position
-	if d.searchEarliestMatchAnchored(cache, haystack, pos) {
-		return true
-	}
-	// Continue with remaining candidates
-	for pos < len(haystack) {
-		pos++
-		candidate := d.prefilter.Find(haystack, pos)
-		if candidate == -1 {
-			return false
-		}
-		pos = candidate
-		if d.searchEarliestMatchAnchored(cache, haystack, pos) {
-			return true
-		}
-	}
-	return false
 }
 
 // searchEarliestMatch performs DFA search with early termination.
@@ -722,6 +594,8 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 	if ftLen > 0 {
 		_ = ft[ftLen-1]
 	}
+
+	hasPre := d.prefilter != nil
 
 	for pos < endPos {
 		// === 4x UNROLLED FAST PATH (earliest match) ===
@@ -802,6 +676,45 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			break
 		}
 
+		// Start state prefilter skip-ahead (Rust find_fwd_imp:232-261).
+		// Start-tagged states ALWAYS enter slow path (never unrolled fast path),
+		// so prefilter check happens only here — no O(n^2) on start state self-loop.
+		if sid.IsStartTag() {
+			if hasPre && pos > startPos {
+				candidate := d.prefilter.Find(haystack, pos)
+				if candidate == -1 {
+					return false
+				}
+				if candidate > pos {
+					pos = candidate
+					newStart := d.getStartStateForUnanchored(cache, haystack, pos)
+					if newStart == nil {
+						start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+						return matched && start >= 0 && end >= start
+					}
+					sid = newStart.id
+					ft = cache.flatTrans
+					ftLen = len(ft)
+					continue
+				}
+			}
+			// Start state fast transition: skip getState/acceleration.
+			classIdx := int(d.byteToClass(haystack[pos]))
+			offset := sid.Offset() + classIdx
+			if offset < ftLen {
+				nextID := ft[offset]
+				if nextID != InvalidState && nextID != DeadState {
+					sid = nextID
+					pos++
+					if cache.IsMatchState(sid) {
+						return true
+					}
+					continue
+				}
+			}
+			// InvalidState/DeadState: fall through to full slow path
+		}
+
 		// Try lazy acceleration detection if not yet checked
 		currentState = cache.getState(sid)
 		if currentState == nil {
@@ -846,21 +759,18 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			// Determinize on demand
 			nextState, err := d.determinize(cache, currentState, b)
 			if err != nil {
-				// Cache cleared or full — fall back to NFA from original start position.
 				start, end, matched := d.pikevm.SearchAt(haystack, startPos)
 				return matched && start >= 0 && end >= start
 			}
 			if nextState == nil {
-				// Dead state - no match possible from here
-				return false
+				goto earliestPreSkip
 			}
 			sid = nextState.id
 			ft = cache.flatTrans
 			ftLen = len(ft)
 
 		case DeadState:
-			// Dead state - no match possible from here
-			return false
+			goto earliestPreSkip
 
 		default:
 			sid = nextID
@@ -872,6 +782,31 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 		if cache.IsMatchState(sid) {
 			return true
 		}
+		continue
+
+	earliestPreSkip:
+		// Dead state with prefilter: advance past failed byte, find next candidate.
+		// Without prefilter: dead = no match.
+		if !hasPre {
+			return false
+		}
+		pos++
+		if pos >= endPos {
+			return false
+		}
+		candidate := d.prefilter.Find(haystack, pos)
+		if candidate == -1 {
+			return false
+		}
+		pos = candidate
+		newStart := d.getStartStateForUnanchored(cache, haystack, pos)
+		if newStart == nil {
+			start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+			return matched && start >= 0 && end >= start
+		}
+		sid = newStart.id
+		ft = cache.flatTrans
+		ftLen = len(ft)
 	}
 
 	// Reached end of input without finding a match in the loop.
@@ -1006,9 +941,27 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 	sid := currentState.id
 	ft := cache.flatTrans
 	ftLen := len(ft)
-	startSID := sid
 
 	for pos < len(haystack) {
+		// Start state prefilter skip-ahead (Rust find_fwd_imp).
+		if sid.IsStartTag() && lastMatch < 0 && pos > startAt {
+			candidate = d.prefilter.Find(haystack, pos)
+			if candidate == -1 {
+				return -1
+			}
+			if candidate > pos {
+				pos = candidate
+				newStart := d.getStartStateForUnanchored(cache, haystack, pos)
+				if newStart == nil {
+					return d.nfaFallback(haystack, 0)
+				}
+				sid = newStart.id
+				ft = cache.flatTrans
+				ftLen = len(ft)
+				continue
+			}
+		}
+
 		if d.hasWordBoundary {
 			st := cache.getState(sid)
 			if st != nil && d.checkWordBoundaryMatch(st, haystack[pos]) {
@@ -1039,7 +992,6 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 						return d.nfaFallback(haystack, 0)
 					}
 					sid = newStart.id
-					startSID = sid
 					ft = cache.flatTrans
 					ftLen = len(ft)
 					continue
@@ -1062,7 +1014,6 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 					return d.nfaFallback(haystack, 0)
 				}
 				sid = newStart.id
-				startSID = sid
 				ft = cache.flatTrans
 				ftLen = len(ft)
 				lastMatch = -1
@@ -1087,7 +1038,6 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 				return d.nfaFallback(haystack, 0)
 			}
 			sid = newStart.id
-			startSID = sid
 			ft = cache.flatTrans
 			ftLen = len(ft)
 			lastMatch = -1
@@ -1103,17 +1053,6 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 		}
 
 		pos++
-
-		// Start state prefilter skip-ahead
-		if lastMatch < 0 && sid == startSID && pos < len(haystack) {
-			candidate = d.prefilter.Find(haystack, pos)
-			if candidate == -1 {
-				return -1
-			}
-			if candidate > pos {
-				pos = candidate
-			}
-		}
 	}
 
 	// EOI check for delayed match
@@ -1195,35 +1134,16 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 		_ = ft[ftLen-1]
 	}
 
-	startSID := currentState.id
 	hasPre := d.prefilter != nil
 
 	for pos < end {
-		// Prefilter skip-ahead at start state (Rust hybrid/search.rs:232-258)
-		if hasPre && sid == startSID && lastMatch < 0 && pos > startPos {
-			candidate := d.prefilter.Find(haystack, pos)
-			if candidate == -1 {
-				return lastMatch
-			}
-			if candidate > pos {
-				pos = candidate
-				newStart := d.getStartStateForUnanchored(cache, haystack, pos)
-				if newStart == nil {
-					return d.nfaFallback(haystack, startPos)
-				}
-				sid = newStart.id
-				startSID = sid
-				ft = cache.flatTrans
-				ftLen = len(ft)
-			}
-		}
-
 		// === 4x UNROLLED FAST PATH ===
 		// Process 4 transitions per iteration when conditions allow.
 		// With match delay, match states break out of the unrolled loop
 		// to the slow path for proper handling.
+		// Start-tagged states also break to slow path for prefilter skip-ahead.
 		if canUnroll && pos+3 < end {
-			// Check acceleration on slow→fast transition
+			// Check acceleration on slow->fast transition
 			accelState := cache.getState(sid)
 			if accelState != nil && accelState.IsAccelerable() {
 				goto slowPath
@@ -1280,6 +1200,45 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 	slowPath:
 		if pos >= end {
 			break
+		}
+
+		// Start state prefilter skip-ahead (Rust find_fwd_imp:232-261).
+		// Start-tagged states always enter slow path, enabling prefilter
+		// check only here — no O(n^2) on start state self-loop.
+		if sid.IsStartTag() {
+			if hasPre && lastMatch < 0 && pos > startPos {
+				candidate := d.prefilter.Find(haystack, pos)
+				if candidate == -1 {
+					return lastMatch
+				}
+				if candidate > pos {
+					pos = candidate
+					newStart := d.getStartStateForUnanchored(cache, haystack, pos)
+					if newStart == nil {
+						return d.nfaFallback(haystack, startPos)
+					}
+					sid = newStart.id
+					ft = cache.flatTrans
+					ftLen = len(ft)
+					continue
+				}
+			}
+			// Start state fast transition: skip getState/acceleration (start is never
+			// accelerable). Do direct flatTrans lookup — same cost as searchFirstAt.
+			classIdx := int(d.byteToClass(haystack[pos]))
+			offset := sid.Offset() + classIdx
+			if offset < ftLen {
+				nextID := ft[offset]
+				if nextID != InvalidState && nextID != DeadState {
+					sid = nextID
+					if cache.IsMatchState(sid) {
+						lastMatch = pos
+					}
+					pos++
+					continue
+				}
+			}
+			// InvalidState/DeadState: fall through to full slow path
 		}
 
 		// Resolve State for slow path (acceleration, word boundary, determinize).
@@ -1381,11 +1340,22 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	// The actual byte value is still used for NFA move operations
 	classIdx := d.byteToClass(b)
 
+	// Look-ahead re-computation (Rust determinize mod.rs:131-212):
+	// Before checking for matches, resolve look-ahead assertions that depend
+	// on the current input byte. When input is '\n', EndLine ($) is satisfied
+	// for the CURRENT state, unlocking paths through $ assertions.
+	// This re-runs epsilon closure on the current state's NFA IDs with the
+	// new look-ahead, potentially adding Match states behind $ assertions.
+	currentNFAStates := current.NFAStates()
+	if d.hasEndLine && b == '\n' {
+		currentNFAStates = builder.epsilonClosure(currentNFAStates, LookEndLine)
+	}
+
 	// 1-byte match delay (Rust determinize mod.rs:254-286):
 	// Check if source (current) state's NFA states contain a match state.
 	// The NEW DFA state will be tagged as match if the OLD state had NFA match.
 	// This delays match reporting by 1 byte, enabling correct look-around (^, $, \b).
-	sourceHasMatch := builder.containsMatchState(current.NFAStates())
+	sourceHasMatch := builder.containsMatchState(currentNFAStates)
 
 	// Compute next NFA state set via move operation WITH word context.
 	// Leftmost-first (Rust determinize::next mod.rs:284):
@@ -1394,7 +1364,7 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	// processed, causing the DFA to reach dead state with the committed match.
 	// BreakAtMatch is disabled for reverse DFAs to allow finding leftmost start.
 	breakAtMatch := sourceHasMatch && d.config.BreakAtMatch
-	nextNFAStates := builder.moveWithWordContextBreak(current.NFAStates(), b, current.IsFromWord(), breakAtMatch)
+	nextNFAStates := builder.moveWithWordContextBreak(currentNFAStates, b, current.IsFromWord(), breakAtMatch)
 
 	isMatch := sourceHasMatch
 
@@ -1520,6 +1490,9 @@ func (d *DFA) tryClearCache(cache *DFACache) error {
 	_, _ = cache.Insert(key, startState) // Cannot fail: cache was just cleared
 	cache.registerState(startState)
 
+	// Tag as start state (same as getStartState)
+	startState.id = startState.id.WithStartTag()
+
 	// Cache the default start state in StartTable
 	cache.startTable.Set(StartText, false, startState.ID())
 
@@ -1624,6 +1597,12 @@ func (d *DFA) getStartState(cache *DFACache, haystack []byte, pos int, anchored 
 	if !existed {
 		cache.registerState(insertedState)
 	}
+
+	// Tag this state as a start state (Rust LazyStateID start tag approach).
+	// Start-tagged IDs always enter the slow path in the DFA hot loop,
+	// enabling prefilter skip-ahead ONLY at start states (not every byte).
+	// Offset() strips tags, so flatTrans lookups still work correctly.
+	insertedState.id = insertedState.id.WithStartTag()
 
 	// Cache in StartTable for fast lookup next time
 	cache.startTable.Set(kind, anchored, insertedState.ID())
@@ -2168,6 +2147,9 @@ func (d *DFA) getStartStateForReverse(cache *DFACache, haystack []byte, end int)
 	if !existed {
 		cache.registerState(insertedState)
 	}
+
+	// Tag as start state (same as forward getStartState)
+	insertedState.id = insertedState.id.WithStartTag()
 
 	cache.startTable.Set(kind, false, insertedState.ID())
 	return insertedState
