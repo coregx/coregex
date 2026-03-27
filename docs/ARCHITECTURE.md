@@ -97,16 +97,18 @@ Input → Prefilter (memchr/memmem/teddy) → Engine Search → Match Result
               ↓            ↓            ↓
         ┌────────────┐ ┌────────────┐ ┌────────────┐
         │ SearchState│ │ SearchState│ │ SearchState│ ← Per-goroutine
-        │(goroutine1)│ │(goroutine2)│ │(goroutine3)│    (sync.Pool)
+        │(goroutine1)│ │(goroutine2)│ │(goroutine3)│    (atomic local + sync.Pool)
         └────────────┘ └────────────┘ └────────────┘
 ```
+
+First goroutine uses atomic local cache (survives GC), concurrent goroutines fall back to sync.Pool.
 
 ## Key Design Decisions
 
 1. **Multi-engine**: Strategy selection at compile time, not runtime
 2. **Rust reference**: Architecture mirrors Rust regex crate (lazy DFA, PikeVM, prefilters)
 3. **Leftmost-first match**: DFA break-at-match matches Rust semantics (verified via cargo run)
-4. **Zero-alloc hot paths**: `IsMatch()`, `FindIndices()`, `Count()` — no heap allocation
+4. **Zero-alloc hot paths**: `IsMatch()`, `FindIndices()`, `Count()`, `AllIndex()` iterator — no heap allocation
 5. **SIMD first**: AVX2/SSSE3 prefilters for x86_64, pure Go fallback for other archs
 
 ## References

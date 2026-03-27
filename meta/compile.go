@@ -603,7 +603,9 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Initialize state pool for thread-safe concurrent searches
 	numCaptures := nfaEngine.CaptureCount()
 
-	return &Engine{
+	ssCfg := buildSearchStateConfig(pikevmNFA, numCaptures, engines, strategy)
+
+	eng := &Engine{
 		nfa:                            nfaEngine,
 		runeNFA:                        runeNFAEngine,
 		asciiNFA:                       asciiNFAEngine,
@@ -636,11 +638,15 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		canMatchEmpty:                  canMatchEmpty,
 		isStartAnchored:                isStartAnchored,
 		fatTeddyFallback:               fatTeddyFallback,
-		statePool: newSearchStatePool(buildSearchStateConfig(
-			pikevmNFA, numCaptures, engines, strategy,
-		)),
-		stats: Stats{},
-	}, nil
+		statePool:                      newSearchStatePool(ssCfg),
+		stats:                          Stats{},
+	}
+
+	// Eagerly create one SearchState and store it in the local GC-proof cache.
+	// This ensures the first search call doesn't allocate via sync.Pool.
+	eng.localState.Store(newSearchState(ssCfg))
+
+	return eng, nil
 }
 
 // adjustForAnchors fixes prefilter for patterns with anchors.

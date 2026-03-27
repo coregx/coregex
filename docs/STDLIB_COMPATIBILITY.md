@@ -151,6 +151,46 @@ input := "world\nhello\ntest"
 
 **Note:** Common case-insensitive patterns work correctly. This affects only complex edge cases with overlapping matches.
 
+## coregex Extensions (beyond stdlib)
+
+These methods are NOT in Go's stdlib `regexp` but provide zero-allocation alternatives:
+
+### Iterator API (Go 1.23+, zero allocation)
+
+```go
+// Iterate over all match indices — zero heap allocation
+for m := range re.AllIndex(data) {
+    fmt.Printf("[%d, %d]\n", m[0], m[1])
+}
+
+// Iterate over match content — zero copy
+for s := range re.AllString(text) {
+    fmt.Println(s)
+}
+```
+
+Methods: `AllIndex`, `AllStringIndex`, `All`, `AllString`
+
+Naming follows Go proposal [#61902](https://github.com/golang/go/issues/61902) (regexp iterator methods).
+
+### Buffer-Reuse API (zero allocation with reused buffer)
+
+```go
+// Append matches to caller's buffer — strconv.Append* pattern
+var buf [][2]int
+buf = re.AppendAllIndex(buf[:0], data, -1)
+```
+
+Methods: `AppendAllIndex`, `AppendAllStringIndex`
+
+### Zero-Allocation Search
+
+```go
+re.IsMatch(data)                    // bool, zero alloc
+start, end, found := re.FindIndices(data)  // indices, zero alloc
+count := re.Count(data, -1)         // count, zero alloc
+```
+
 ## Migration Guide
 
 ### Step 1: Simple Find-and-Replace

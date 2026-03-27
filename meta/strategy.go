@@ -1307,12 +1307,42 @@ func analyzeLiterals(literals *literal.Seq, config Config) literalAnalysis {
 	return result
 }
 
+// hasWordBoundaryAnchorCombo returns true if the pattern combines word boundary
+// assertions (\b, \B) with anchors (^, $) in a way that causes DFA correctness issues.
+// Example: `\b^` matches in stdlib but DFA fails to handle the assertion combo.
+func hasWordBoundaryAnchorCombo(re *syntax.Regexp) bool {
+	return hasWordBoundary(re) && hasAnchorAssertions(re)
+}
+
+// hasCaseInsensitiveUnicode returns true if the pattern uses case-insensitive (?i)
+// flag with non-ASCII characters. DFA may produce incorrect results for case-folded
+// Unicode (e.g., `(?i)привет` matching "ПРИВЕТ" returns partial match).
+func hasCaseInsensitiveUnicode(re *syntax.Regexp) bool {
+	if re == nil {
+		return false
+	}
+	// Check if this node has FoldCase flag AND contains non-ASCII literals
+	if re.Flags&syntax.FoldCase != 0 {
+		for _, r := range re.Rune {
+			if r > 127 {
+				return true
+			}
+		}
+	}
+	for _, sub := range re.Sub {
+		if hasCaseInsensitiveUnicode(sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // SelectStrategy analyzes the NFA and literals to choose the best execution strategy.
 //
 // Algorithm:
 //  1. If end-anchored ($ or \z) and not start-anchored → UseReverseAnchored
 //  2. If DFA disabled in config → UseNFA
-//  3. If NFA is tiny (< 20 states) → UseNFA (DFA overhead not worth it)
+//  3. If NFA is tiny (< 20 states) → UseDFA (tagged start states enable pure DFA)
 //  4. If simple character class pattern without literals → UseNFA (DFA overhead not worth it)
 //  5. If good literals exist → UseDFA (prefilter + DFA is fastest)
 //  6. If NFA is large (> 100 states) → UseDFA (essential for performance)
@@ -1453,27 +1483,27 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 		return strategy
 	}
 
-	// Tiny NFA with literals: use prefilter + NFA (like Rust)
-	// For patterns like "j[a-z]+p", DFA construction overhead is not worth it
-	// on small inputs. NFA with prefilter skip-ahead is faster.
-	// The prefilter (memchr) jumps to candidates, NFA verifies in O(pattern) time.
-	if nfaSize < 20 && litAnalysis.hasGoodLiterals {
-		return UseNFA // findIndicesNFA now uses prefilter for skip-ahead
-	}
-
-	// Check for simple digit-lead patterns BEFORE tiny NFA fallback.
+	// Check for simple digit-lead patterns before general DFA routing.
 	// Patterns like `\d+\.\d+\.\d+` (14 NFA states) benefit more from
-	// DigitPrefilter than plain NFA because SIMD digit scanning skips
+	// DigitPrefilter than DFA because SIMD digit scanning skips
 	// non-digit regions entirely.
 	if shouldUseDigitPrefilter(re, nfaSize, config) {
 		return UseDigitPrefilter
 	}
 
-	// Tiny NFA without literals: use PikeVM directly (DFA overhead not worth it)
-	// For patterns like "a", ".", "[0-9]", the DFA cache lookup and
-	// determinization overhead exceeds the benefit.
+	// Small NFA (< 20 states): use pure DFA (no PikeVM verification).
+	// With tagged start states (Rust LazyStateID approach), DFA search handles
+	// prefilter correctly: start-tagged states always enter slow path for
+	// prefilter skip-ahead. This eliminates the O(n^2) that previously blocked
+	// UseDFA routing.
+	// Benchmarked: UseDFA is 7x faster than UseBoth for 10-14 state NFA on
+	// large inputs (7.2 MB), because UseBoth still uses PikeVM verification.
+	// Guards: some patterns have DFA issues — keep UseNFA for those.
 	if nfaSize < 20 {
-		return UseNFA
+		if hasCaseInsensitiveUnicode(re) || hasWordBoundaryAnchorCombo(re) || canMatchEmpty(re) || hasMultilineLineAnchor(re) {
+			return UseNFA
+		}
+		return UseDFA
 	}
 
 	// Patterns that can match empty string (e.g., `.*`, `a*`, `(a|)`) must use
@@ -1564,11 +1594,14 @@ func strategyReasonComplex(strategy Strategy, n *nfa.NFA, literals *literal.Seq,
 			return "DFA disabled in configuration"
 		}
 		if nfaSize < 20 {
-			return "tiny NFA (< 20 states), DFA overhead not worth it"
+			return "tiny NFA (< 20 states) with empty-match or special guards"
 		}
 		return "no good literals and small NFA"
 
 	case UseDFA:
+		if nfaSize < 20 {
+			return "tiny NFA (< 20 states), pure DFA with tagged start states"
+		}
 		if literals != nil && !literals.IsEmpty() {
 			lcp := literals.LongestCommonPrefix()
 			if len(lcp) >= config.MinLiteralLen {

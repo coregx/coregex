@@ -307,9 +307,33 @@ func (e *Engine) Count(haystack []byte, n int) int {
 	state := e.getSearchState()
 	defer e.putSearchState(state)
 
+	// DFA fast path: call DFA functions directly, skip meta prefilter layer.
+	// SearchAt has integrated prefilter at start state — no duplicate scan.
+	useDFADirect := (e.strategy == UseDFA || e.strategy == UseBoth) &&
+		e.dfa != nil && e.reverseDFA != nil &&
+		state.dfaCache != nil && state.revDFACache != nil
+
 	for pos <= len(haystack) {
-		// Use state-reusing version for zero sync.Pool overhead per match
-		start, end, found := e.findIndicesAtWithState(haystack, pos, state)
+		var start, end int
+		var found bool
+
+		if useDFADirect {
+			matchEnd := e.dfa.SearchAt(state.dfaCache, haystack, pos)
+			if matchEnd < 0 {
+				break
+			}
+			if matchEnd == pos {
+				start, end, found = pos, pos, true
+			} else {
+				matchStart := e.reverseDFA.SearchReverse(state.revDFACache, haystack, pos, matchEnd)
+				if matchStart < 0 {
+					break
+				}
+				start, end, found = matchStart, matchEnd, true
+			}
+		} else {
+			start, end, found = e.findIndicesAtWithState(haystack, pos, state)
+		}
 		if !found {
 			break
 		}

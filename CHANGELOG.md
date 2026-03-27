@@ -12,6 +12,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.21] - 2026-03-27
+
+### Performance
+- **Tagged start states** (Rust `LazyStateID` approach) — start states get tag bit,
+  always route to slow path. Enables prefilter skip-ahead only at start state,
+  eliminating O(n²) from start state self-loop. Unlocks UseDFA for tiny NFA patterns.
+
+- **DFA multiline $ fix** — EndLine look-ahead re-computation in determinize
+  (Rust mod.rs:131-212). `(?m)hello$` now works correctly in DFA.
+
+- **Dead-state prefilter restart** in searchEarliestMatch — IsMatch path uses
+  prefilter to skip past dead states, matching Rust find_fwd_imp approach.
+
+- **1100x fewer mallocs** — FindAllIndex/FindAllSubmatchIndex use flat buffer
+  (`compactToSliceOfSlice`): N matches → 2 allocations instead of N+1.
+
+- **Local SearchState cache** on Engine — atomic.Pointer single-slot cache
+  survives GC, avoids sync.Pool re-allocation overhead.
+
+- **Tiny NFA → UseDFA routing** — patterns with < 20 NFA states now use
+  bidirectional DFA (was PikeVM). 7x faster DFA vs PikeVM on large inputs.
+
+### Added
+- **`AllIndex(b []byte) iter.Seq[[2]int]`** — zero-alloc match index iterator (Go 1.23+)
+- **`AllStringIndex(s string) iter.Seq[[2]int]`** — string version
+- **`All(b []byte) iter.Seq[[]byte]`** — zero-alloc match content iterator
+- **`AllString(s string) iter.Seq[string]`** — string version
+- **`AppendAllIndex(dst [][2]int, b []byte, n int) [][2]int`** — buffer-reuse API
+- **`AppendAllStringIndex(dst [][2]int, s string, n int) [][2]int`** — string version
+
+Naming follows Go proposal #61902 (regexp iterator methods) and `strconv.Append*` convention.
+
+### Fixed
+- DFA `isMatchWithPrefilter` pfSkip off-by-one — `zx+` on "zzx" now correct
+- DFA multiline `$` EndLine look-ahead — `(?m)hello$` now matches before `\n`
+
+### Benchmarks (LangArena LogParser, 7.2 MB, 13 patterns)
+
+| Metric | v0.12.20 | v0.12.21 | Improvement |
+|--------|----------|----------|-------------|
+| Total time (FindAll) | 163ms | **107ms** | **-34%** |
+| errors pattern | 23ms | **8ms** (FindAll) / **5.5ms** (AllIndex) | **-65% / -76%** |
+| vs Rust gap | 3.9x | **2.9x** (FindAll) / **1.7x** (AllIndex) | **-56%** |
+| Mallocs/iter | 203K | **182** | **-99.9%** |
+
+### Zero-Alloc API Benchmarks (new methods vs stdlib-compat)
+
+| Method | errors (33K matches) | Alloc | vs Rust |
+|--------|---------------------|-------|---------|
+| FindAllStringIndex (stdlib) | 8.2ms / 3890 KB | 19 mallocs | 2.6x slower |
+| **AllIndex (iter.Seq)** | **5.9ms / 0 KB** | **0 mallocs** | **1.7x** |
+| **AppendAllIndex (reuse)** | **5.5ms / 0 KB** | **0 mallocs** | **1.7x** |
+| Rust find_iter | 3.2ms / 0 | 0 | — |
+
+emails pattern: `AppendAllIndex` **2.0ms vs Rust 2.6ms** — **faster than Rust!**
+
 ## [0.12.20] - 2026-03-25
 
 ### Performance

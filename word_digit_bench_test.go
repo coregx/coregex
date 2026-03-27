@@ -59,22 +59,22 @@ func BenchmarkAlphaDigit_1MB_Coregex(b *testing.B) {
 	}
 }
 
-// Compact API benchmarks - zero per-match allocations
-func BenchmarkWordDigit_1MB_CoregexCompact(b *testing.B) {
+// AppendAllIndex benchmarks - zero per-match allocations
+func BenchmarkWordDigit_1MB_CoregexAppend(b *testing.B) {
 	re := MustCompile(`\w+[0-9]+`)
 	b.SetBytes(int64(len(benchData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		re.FindAllIndexCompact(benchData, -1, nil)
+		re.AppendAllIndex(nil, benchData, -1)
 	}
 }
 
-func BenchmarkWordDigit_1MB_CoregexCompactReuse(b *testing.B) {
+func BenchmarkWordDigit_1MB_CoregexAppendReuse(b *testing.B) {
 	re := MustCompile(`\w+[0-9]+`)
 	results := make([][2]int, 0, 65536)
 	b.SetBytes(int64(len(benchData)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		results = re.FindAllIndexCompact(benchData, -1, results)
+		results = re.AppendAllIndex(results[:0], benchData, -1)
 	}
 }

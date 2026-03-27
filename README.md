@@ -83,6 +83,7 @@ Cross-language benchmarks on 6MB input, AMD EPYC ([source](https://github.com/ko
 - Multi-pattern (`foo|bar|baz|...`) — Slim Teddy (≤32), Fat Teddy (33-64), or Aho-Corasick (>64)
 - Anchored alternations (`^(\d+|UUID|hex32)`) — O(1) branch dispatch (5-20x)
 - Concatenated char classes (`[a-zA-Z]+[0-9]+`) — DFA with byte classes (5-7x)
+- **Zero-alloc iterators** (`AllIndex`, `AppendAllIndex`) — 0 heap allocs, up to **30% faster** than FindAll. Email pattern **faster than Rust** with `AppendAllIndex`.
 
 ## Features
 
@@ -130,11 +131,28 @@ Supported methods:
 ### Zero-Allocation APIs
 
 ```go
-// Zero allocations — returns bool
+// Zero allocations — boolean match
 matched := re.IsMatch(text)
 
-// Zero allocations — returns (start, end, found)
+// Zero allocations — single match indices
 start, end, found := re.FindIndices(text)
+
+// Zero allocations — iterator over all matches (Go 1.23+)
+for m := range re.AllIndex(data) {
+    fmt.Printf("match at [%d, %d]\n", m[0], m[1])
+}
+
+// Zero allocations — match content iterator
+for s := range re.AllString(text) {
+    fmt.Println(s)
+}
+
+// Buffer-reuse — append to caller's slice (strconv.Append* pattern)
+var buf [][2]int
+for _, chunk := range chunks {
+    buf = re.AppendAllIndex(buf[:0], chunk, -1)
+    process(buf)
+}
 ```
 
 ### Configuration

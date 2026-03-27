@@ -5,6 +5,8 @@
 package meta
 
 import (
+	"sync/atomic"
+
 	"github.com/coregx/ahocorasick"
 	"github.com/coregx/coregex/dfa/lazy"
 	"github.com/coregx/coregex/dfa/onepass"
@@ -122,6 +124,16 @@ type Engine struct {
 	// statePool provides thread-safe pooling of per-search mutable state.
 	// This enables concurrent searches on the same Engine instance.
 	statePool *searchStatePool
+
+	// localState is a single-slot GC-proof cache for the common single-goroutine path.
+	// Unlike sync.Pool entries which are collected every GC cycle, this pointer is a
+	// strong reference that survives GC indefinitely. On LangArena (13 patterns × 10
+	// iterations), this eliminates ~221 MB of DFACache re-allocation caused by GC
+	// clearing the sync.Pool between iterations.
+	//
+	// Thread safety: atomic swap ensures only one goroutine gets the cached state.
+	// Additional concurrent goroutines fall through to statePool.
+	localState atomic.Pointer[SearchState]
 
 	// longest enables leftmost-longest (POSIX) matching semantics
 	// By default (false), uses leftmost-first (Perl) semantics
@@ -243,11 +255,16 @@ func (e *Engine) SetLongest(longest bool) {
 	}
 }
 
-// getSearchState retrieves a SearchState from the pool.
+// getSearchState retrieves a SearchState, trying the local GC-proof cache first.
 // Caller must call putSearchState when done.
 // The returned state contains its own PikeVM instance for thread-safe concurrent use.
 func (e *Engine) getSearchState() *SearchState {
-	state := e.statePool.get()
+	// Fast path: grab from local cache (survives GC, zero-alloc steady state).
+	state := e.localState.Swap(nil)
+	if state == nil {
+		// Slow path: concurrent access or first call before eager init.
+		state = e.statePool.get()
+	}
 
 	// Initialize state for BoundedBacktracker if needed
 	if e.boundedBacktracker != nil && state.backtracker != nil {
@@ -262,7 +279,18 @@ func (e *Engine) getSearchState() *SearchState {
 	return state
 }
 
-// putSearchState returns a SearchState to the pool.
+// putSearchState returns a SearchState, trying the local cache first.
+// The local cache slot holds one state as a strong reference that survives GC.
+// Overflow goes to sync.Pool (may be collected by GC).
 func (e *Engine) putSearchState(state *SearchState) {
+	if state == nil {
+		return
+	}
+	state.reset()
+	// Try to store in local cache (GC-proof single slot).
+	if e.localState.CompareAndSwap(nil, state) {
+		return
+	}
+	// Local slot occupied (concurrent goroutine), fall back to pool.
 	e.statePool.put(state)
 }

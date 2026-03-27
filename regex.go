@@ -47,6 +47,7 @@ package coregex
 
 import (
 	"io"
+	"iter"
 	"regexp/syntax"
 	"strings"
 	"unsafe"
@@ -696,132 +697,72 @@ func (r *Regex) FindAllIndex(b []byte, n int) [][]int {
 		return nil
 	}
 
-	// Fast path: CharClassSearcher uses streaming state machine (single-pass, no per-match overhead)
-	// This is 2-3x faster than the loop below for patterns like \w+, \d+, [a-z]+
-	if r.engine.Strategy() == meta.UseCharClassSearcher {
-		return r.findAllIndexStreaming(b, n)
-	}
-
-	var indices [][]int
-	pos := 0
-	lastMatchEnd := -1 // Track where the last non-empty match ended
-
-	for {
-		// Use zero-allocation FindIndicesAt instead of FindAt (avoids Match object creation)
-		start, end, found := r.engine.FindIndicesAt(b, pos)
-		if !found {
-			break
-		}
-
-		// Lazy allocation: only allocate once we find the first match
-		if indices == nil {
-			// Pre-allocate with estimated capacity
-			// Heuristic: for typical patterns, estimate ~10 matches per 1KB
-			estimatedCap := len(b) / 100
-			if estimatedCap < 4 {
-				estimatedCap = 4
-			}
-			if n > 0 && estimatedCap > n {
-				estimatedCap = n
-			}
-			indices = make([][]int, 0, estimatedCap)
-		}
-
-		// Skip empty matches that start exactly where the previous non-empty match ended.
-		// This matches Go's stdlib behavior:
-		// - "a*" on "ab" returns [[0 1] [2 2]], not [[0 1] [1 1] [2 2]]
-		// - After matching "a" at [0,1], an empty match at [1,1] is skipped
-		// - But empty matches at [2,2] (after the 'b') are allowed
-		//nolint:gocritic // badCond: intentional - checking empty match (start==end) at lastMatchEnd
-		if start == end && start == lastMatchEnd {
-			// Skip this empty match and try at the next position
-			pos++
-			if pos > len(b) {
-				break
-			}
-			continue
-		}
-
-		indices = append(indices, []int{start, end})
-
-		// Track non-empty match ends for the skip rule
-		if start != end {
-			lastMatchEnd = end
-		}
-
-		// Move position past this match
-		switch {
-		case start == end:
-			// Empty match: advance by 1 to avoid infinite loop
-			pos = end + 1
-		case end > pos:
-			pos = end
-		default:
-			// Fallback (shouldn't normally happen)
-			pos++
-		}
-
-		if pos > len(b) {
-			break
-		}
-
-		// Check limit
-		if n > 0 && len(indices) >= n {
-			break
-		}
-	}
-
-	return indices
+	// Use compact [][2]int internally, convert at the boundary.
+	// This reduces allocations from N+1 (one []int per match) to 2 (one flat buffer + one slice header).
+	compact := r.engine.FindAllIndicesStreaming(b, n, nil)
+	return compactToSliceOfSlice(compact)
 }
 
-// findAllIndexStreaming uses single-pass streaming state machine for CharClassSearcher patterns.
-// This avoids per-match function call overhead (2-3x faster than the loop approach).
-// CharClassSearcher patterns like \w+, \d+, [a-z]+ cannot produce empty matches (minMatch=1),
-// so the empty match handling logic is not needed here.
-func (r *Regex) findAllIndexStreaming(b []byte, n int) [][]int {
-	// Get streaming results ([][2]int format)
-	streamResults := r.engine.FindAllIndicesStreaming(b, n, nil)
-
-	if len(streamResults) == 0 {
+// compactToSliceOfSlice converts [][2]int to [][]int using a flat buffer.
+// This reduces allocations from N+1 (one []int heap alloc per match) to exactly 2:
+// one flat []int buffer for all indices, one [][]int for slice headers.
+// Each result[i] is a length-2/capacity-2 slice into the flat buffer.
+func compactToSliceOfSlice(compact [][2]int) [][]int {
+	if len(compact) == 0 {
 		return nil
 	}
 
-	// Convert [][2]int to [][]int for stdlib-compatible API
-	// This allocation is necessary for API compatibility, but still faster than per-match overhead
-	indices := make([][]int, len(streamResults))
-	for i, m := range streamResults {
-		indices[i] = []int{m[0], m[1]}
+	buf := make([]int, len(compact)*2)
+	result := make([][]int, len(compact))
+	for i, m := range compact {
+		buf[i*2] = m[0]
+		buf[i*2+1] = m[1]
+		result[i] = buf[i*2 : i*2+2 : i*2+2]
 	}
-
-	return indices
+	return result
 }
 
-// FindAllIndexCompact returns all successive matches as a compact [][2]int slice.
-// This is a zero-allocation API (single allocation for the result slice).
-// Unlike FindAllIndex which returns [][]int (N allocations for N matches),
-// this method pre-allocates the entire result in one contiguous block.
+// AppendAllIndex appends all successive match index pairs to dst and returns
+// the extended slice. This follows the Go stdlib append pattern (like
+// strconv.AppendInt) with dst as the first parameter.
 //
-// Performance: ~2x fewer allocations than FindAllIndex for high match counts.
+// Zero-allocation when dst has sufficient capacity. Unlike FindAllIndex which
+// returns [][]int (N heap allocations for N matches), AppendAllIndex uses a
+// flat [][2]int layout requiring at most one allocation for the backing array.
 //
-// If n > 0, it returns at most n matches. If n <= 0, it returns all matches.
-// The optional 'results' slice can be provided for reuse (set to nil for fresh allocation).
+// If n > 0, it appends at most n matches. If n <= 0, it appends all matches.
+// Pass nil as dst for a fresh allocation.
 //
 // Example:
 //
 //	re := coregex.MustCompile(`\d+`)
-//	indices := re.FindAllIndexCompact([]byte("a1b2c3"), -1, nil)
+//	indices := re.AppendAllIndex(nil, []byte("a1b2c3"), -1)
 //	// indices = [[1,2], [3,4], [5,6]]
-func (r *Regex) FindAllIndexCompact(b []byte, n int, results [][2]int) [][2]int {
+//
+//	// Reuse buffer across calls:
+//	buf := make([][2]int, 0, 64)
+//	buf = re.AppendAllIndex(buf[:0], data1, -1)
+//	process(buf)
+//	buf = re.AppendAllIndex(buf[:0], data2, -1)
+//	process(buf)
+func (r *Regex) AppendAllIndex(dst [][2]int, b []byte, n int) [][2]int {
 	if n == 0 {
 		return nil
 	}
-	return r.engine.FindAllIndicesStreaming(b, n, results)
+	return r.engine.FindAllIndicesStreaming(b, n, dst)
 }
 
-// FindAllStringIndexCompact returns all successive matches as a compact [][2]int slice.
-// This is the string version of FindAllIndexCompact.
-func (r *Regex) FindAllStringIndexCompact(s string, n int, results [][2]int) [][2]int {
-	return r.FindAllIndexCompact(stringToBytes(s), n, results)
+// AppendAllStringIndex appends all successive match index pairs for the string
+// s to dst and returns the extended slice. This is the string version of
+// AppendAllIndex.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	indices := re.AppendAllStringIndex(nil, "a1b2c3", -1)
+//	// indices = [[1,2], [3,4], [5,6]]
+func (r *Regex) AppendAllStringIndex(dst [][2]int, s string, n int) [][2]int {
+	return r.AppendAllIndex(dst, stringToBytes(s), n)
 }
 
 // FindAllStringIndex returns a slice of all successive matches of the pattern in s,
@@ -1485,21 +1426,25 @@ func (r *Regex) FindAllSubmatchIndex(b []byte, n int) [][]int {
 		return nil
 	}
 
+	// All matches have same number of capture groups, so use a flat buffer.
+	// This reduces allocations from N+1 to exactly 2 (flat buffer + slice headers).
+	numGroups := matches[0].NumCaptures()
+	stride := numGroups * 2
+	buf := make([]int, len(matches)*stride)
 	result := make([][]int, len(matches))
 	for i, m := range matches {
-		numGroups := m.NumCaptures()
-		indices := make([]int, numGroups*2)
+		base := i * stride
 		for j := 0; j < numGroups; j++ {
 			idx := m.GroupIndex(j)
 			if len(idx) >= 2 {
-				indices[j*2] = idx[0]
-				indices[j*2+1] = idx[1]
+				buf[base+j*2] = idx[0]
+				buf[base+j*2+1] = idx[1]
 			} else {
-				indices[j*2] = -1
-				indices[j*2+1] = -1
+				buf[base+j*2] = -1
+				buf[base+j*2+1] = -1
 			}
 		}
-		result[i] = indices
+		result[i] = buf[base : base+stride : base+stride]
 	}
 	return result
 }
@@ -1514,6 +1459,119 @@ func (r *Regex) FindAllSubmatchIndex(b []byte, n int) [][]int {
 //	indices := re.FindAllStringSubmatchIndex("a@b.c x@y.z", -1)
 func (r *Regex) FindAllStringSubmatchIndex(s string, n int) [][]int {
 	return r.FindAllSubmatchIndex(stringToBytes(s), n)
+}
+
+// AllIndex returns an iterator over all successive non-overlapping match index
+// pairs in b. Each yielded [2]int contains the start and end byte offsets of a
+// match. Matches are returned left-to-right.
+//
+// Zero allocation: the iterator uses FindIndicesAt internally and yields
+// stack-allocated [2]int values. No slice is allocated for the results.
+//
+// Empty match handling follows Go stdlib regexp semantics: an empty match at a
+// position where a non-empty match just ended is skipped, and the search
+// advances by one byte after each empty match.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	for m := range re.AllIndex([]byte("a1b22c333")) {
+//	    fmt.Printf("match at [%d, %d]\n", m[0], m[1])
+//	}
+//	// Output:
+//	// match at [1, 2]
+//	// match at [3, 5]
+//	// match at [6, 9]
+func (r *Regex) AllIndex(b []byte) iter.Seq[[2]int] {
+	return func(yield func([2]int) bool) {
+		pos := 0
+		lastMatchEnd := -1
+		for pos <= len(b) {
+			start, end, found := r.engine.FindIndicesAt(b, pos)
+			if !found {
+				return
+			}
+			// Skip empty matches at the position where a non-empty match just ended.
+			// This matches Go stdlib behavior.
+			//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
+			if start == end && start == lastMatchEnd {
+				pos++
+				if pos > len(b) {
+					return
+				}
+				continue
+			}
+			if !yield([2]int{start, end}) {
+				return
+			}
+			if start != end {
+				lastMatchEnd = end
+			}
+			if end == pos {
+				pos++
+			} else {
+				pos = end
+			}
+		}
+	}
+}
+
+// AllStringIndex returns an iterator over all successive non-overlapping match
+// index pairs in s. This is the string version of AllIndex.
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\w+`)
+//	for m := range re.AllStringIndex("hello world") {
+//	    fmt.Printf("%s\n", s[m[0]:m[1]])
+//	}
+func (r *Regex) AllStringIndex(s string) iter.Seq[[2]int] {
+	return r.AllIndex(stringToBytes(s))
+}
+
+// All returns an iterator over all successive non-overlapping matches in b.
+// Each yielded []byte is a sub-slice of b (no copy, no allocation).
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\d+`)
+//	for m := range re.All([]byte("a1b22c333")) {
+//	    fmt.Println(string(m))
+//	}
+//	// Output:
+//	// 1
+//	// 22
+//	// 333
+func (r *Regex) All(b []byte) iter.Seq[[]byte] {
+	return func(yield func([]byte) bool) {
+		for m := range r.AllIndex(b) {
+			if !yield(b[m[0]:m[1]]) {
+				return
+			}
+		}
+	}
+}
+
+// AllString returns an iterator over all successive non-overlapping matches in s.
+// Each yielded string is a substring of s (no copy, no allocation).
+//
+// Example:
+//
+//	re := coregex.MustCompile(`\w+`)
+//	for word := range re.AllString("hello world") {
+//	    fmt.Println(word)
+//	}
+//	// Output:
+//	// hello
+//	// world
+func (r *Regex) AllString(s string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for m := range r.AllStringIndex(s) {
+			if !yield(s[m[0]:m[1]]) {
+				return
+			}
+		}
+	}
 }
 
 // Copy returns a new Regex object copied from re.
