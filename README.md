@@ -10,6 +10,7 @@
 [![GitHub Stars](https://img.shields.io/github/stars/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/stargazers)
 [![GitHub Issues](https://img.shields.io/github/issues/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/issues)
 [![GitHub Discussions](https://img.shields.io/github/discussions/coregx/coregex?style=flat-square&logo=github)](https://github.com/coregx/coregex/discussions)
+[![Financial Contributors on Open Collective](https://opencollective.com/coregx/all/badge.svg?label=financial+contributors)](https://opencollective.com/coregx)
 
 High-performance regex engine for Go. Drop-in replacement for `regexp` with **3-3000x speedup**.\*
 
@@ -284,6 +285,18 @@ uawk '/error/ { print $0 }' server.log
 - [Rust regex](https://github.com/rust-lang/regex) — Architecture
 - [RE2](https://github.com/google/re2) — O(n) guarantees
 - [Hyperscan](https://github.com/intel/hyperscan) — SIMD algorithms
+
+## Sponsors
+
+coregex is an independent open-source project. Development is sustained by contributors and sponsors.
+
+<a href="https://opencollective.com/coregx"><img src="https://opencollective.com/coregx/sponsors.svg?width=890&button=false" alt="Sponsors"></a>
+
+### Backers
+
+<a href="https://opencollective.com/coregx"><img src="https://opencollective.com/coregx/backers.svg?width=890&button=false" alt="Backers"></a>
+
+<a href="https://opencollective.com/coregx"><img src="https://img.shields.io/badge/Sponsor-Open%20Collective-7FADF2?logo=opencollective" alt="Sponsor on Open Collective"></a>
 
 ## License
 
