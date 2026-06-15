@@ -604,16 +604,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	numCaptures := nfaEngine.CaptureCount()
 
 	ssCfg := buildSearchStateConfig(pikevmNFA, numCaptures, engines, strategy, onePassRes != nil)
-
-	// Issue #158: Share PikeVM with forward DFAs to eliminate duplicate allocations.
-	// Each DFA's Build() creates nfa.NewPikeVM(nfaEngine), but they all use the same
-	// base NFA. Create one shared PikeVM and inject it into all forward DFAs.
-	// This saves ~15-20 KB per DFA for 100-state NFA patterns.
-	// Reverse DFAs use different (reversed) NFAs so they keep their own PikeVMs.
-	nfaFallbackPikeVM := nfa.NewPikeVM(nfaEngine)
-	if engines.dfa != nil {
-		engines.dfa.SetPikeVM(nfaFallbackPikeVM)
-	}
+	sharePikeVMWithDFAs(nfaEngine, engines)
 
 	eng := &Engine{
 		nfa:                            nfaEngine,
@@ -717,6 +708,16 @@ func hasNonLineAnchors(re *syntax.Regexp) bool {
 func configurePikeVMSkipAhead(pikevm *nfa.PikeVM, pf prefilter.Prefilter, isStartAnchored bool) {
 	if pf != nil && !isStartAnchored {
 		pikevm.SetSkipAhead(pf)
+	}
+}
+
+// sharePikeVMWithDFAs creates a single shared PikeVM and injects it into forward
+// DFAs to eliminate duplicate allocations (~15-20 KB per DFA for 100-state NFA).
+// Reverse DFAs use different (reversed) NFAs so they keep their own PikeVMs.
+func sharePikeVMWithDFAs(nfaEngine *nfa.NFA, engines strategyEngines) {
+	shared := nfa.NewPikeVM(nfaEngine)
+	if engines.dfa != nil {
+		engines.dfa.SetPikeVM(shared)
 	}
 }
 
