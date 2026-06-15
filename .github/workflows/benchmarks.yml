@@ -14,6 +14,12 @@ on:
     branches:
       - main
       - develop
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.github/FUNDING.yml'
 
 permissions:
   contents: read

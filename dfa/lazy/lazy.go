@@ -52,7 +52,7 @@ import (
 //   - An NFA (the source automaton) — immutable
 //   - A configuration — immutable
 //   - An optional prefilter for fast candidate finding — immutable
-//   - A PikeVM for NFA fallback — immutable (Search methods are safe)
+//   - A PikeVM for NFA fallback — shared with Engine (Issue #158)
 //   - ByteClasses for alphabet reduction — immutable
 //
 // Thread safety: The DFA struct is immutable after compilation and safe
@@ -64,7 +64,7 @@ type DFA struct {
 	nfa       *nfa.NFA
 	config    Config
 	prefilter prefilter.Prefilter
-	pikevm    *nfa.PikeVM
+	pikevm    *nfa.PikeVM // NFA fallback — may be shared with Engine (Issue #158)
 
 	// byteClasses maps bytes to equivalence classes for alphabet reduction.
 	// Bytes in the same class have identical transitions in all DFA states.
@@ -102,9 +102,11 @@ type DFA struct {
 //   - A stateList for O(1) state-by-ID lookup
 //   - A StartTable with the DFA's immutable byteMap
 func (d *DFA) NewCache() *DFACache {
-	// Start small — grow on demand. Pre-allocating MaxStates (10,000) wastes
-	// ~400KB per cache and dominates cold-start cost for pooled caches.
-	const initCap = 64
+	// Start small — grow on demand during search. Most WAF patterns never
+	// exercise more than a handful of DFA states. Reducing from 64 to 16
+	// saves ~48 map entries + 48*stride flatTrans slots per cache.
+	// Issue #158: with ~900 OWASP CRS patterns, this alone saves ~3 MB.
+	const initCap = 16
 	stride := d.AlphabetLen()
 	return &DFACache{
 		states:        make(map[StateKey]*State, initCap),

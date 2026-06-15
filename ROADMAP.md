@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-03-25 | **Current Version**: v0.12.19 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-06-15 | **Current Version**: v0.12.22 | **Target**: v1.0.0 stable
 
 ---
 
@@ -100,8 +100,11 @@ v0.12.19 ✅ → Zero-alloc FindSubmatch, byte-based DFA cache, Rust-aligned vis
 v0.12.20 ✅ → Premultiplied/tagged StateIDs, break-at-match DFA determinize,
                Phase 3 elimination (2-pass bidirectional DFA)
          ↓
-v0.12.21 (Current) → Tagged start states, zero-alloc API (AllIndex iter.Seq),
-                      1100x fewer mallocs, UseDFA for tiny NFA, -32% LangArena
+v0.12.21 ✅ → Tagged start states, zero-alloc API (AllIndex iter.Seq),
+               1100x fewer mallocs, UseDFA for tiny NFA, -32% LangArena
+         ↓
+v0.12.22 (Current) → Lazy memory architecture (Rust Cache model), 5-7x memory
+                      reduction per pattern, WAF adoption unblocked (#158)
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
