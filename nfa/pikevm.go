@@ -259,7 +259,8 @@ type MatchWithCaptures struct {
 	Captures [][]int // Captures[i] = [start, end] for group i, or nil if not captured
 }
 
-// NewPikeVM creates a new PikeVM for executing the given NFA
+// NewPikeVM creates a new PikeVM for executing the given NFA.
+// Internal state (thread queues, sparse set) is pre-allocated immediately.
 func NewPikeVM(nfa *NFA) *PikeVM {
 	p := &PikeVM{
 		nfa: nfa,
@@ -267,6 +268,31 @@ func NewPikeVM(nfa *NFA) *PikeVM {
 	// Initialize internal state
 	p.initState(&p.internalState)
 	return p
+}
+
+// NewPikeVMLazy creates a new PikeVM with deferred internal state allocation.
+// The NFA reference is stored immediately, but the expensive mutable state
+// (thread queues, sparse set, epsilon stack) is NOT allocated until the first
+// search method is called. This saves ~10 KB per 100-state NFA.
+//
+// Issue #158: In WAF workloads with ~900 compiled patterns, each SearchState's
+// PikeVM is pre-allocated but may never be used (e.g., CharClass, Teddy, AC
+// strategies rarely need PikeVM). Lazy initialization avoids this waste.
+//
+// The first search call will be slightly slower due to allocation, but subsequent
+// calls reuse the allocated state (no per-search allocation overhead).
+func NewPikeVMLazy(nfa *NFA) *PikeVM {
+	return &PikeVM{
+		nfa: nfa,
+	}
+}
+
+// ensureInternalState lazily initializes the internal PikeVMState if needed.
+// Called at the entry point of every search method that uses internalState.
+func (p *PikeVM) ensureInternalState() {
+	if p.internalState.Visited == nil {
+		p.initState(&p.internalState)
+	}
 }
 
 // initState initializes a PikeVMState for use with this PikeVM.
@@ -387,6 +413,7 @@ func updateCapture(caps cowCaptures, groupIndex uint32, isStart bool, pos int) c
 // This method uses internal state and is NOT thread-safe.
 // For concurrent usage, use SearchWithState.
 func (p *PikeVM) Search(haystack []byte) (int, int, bool) {
+	p.ensureInternalState()
 	return p.SearchAt(haystack, 0)
 }
 
@@ -397,6 +424,7 @@ func (p *PikeVM) Search(haystack []byte) (int, int, bool) {
 // This is significantly faster than Search() when you only need to know
 // if a match exists, not where it is.
 func (p *PikeVM) IsMatch(haystack []byte) bool {
+	p.ensureInternalState()
 	if len(haystack) == 0 {
 		return p.matchesEmpty()
 	}
@@ -717,6 +745,7 @@ func (p *PikeVM) addThreadToNextForMatch(id StateID, haystack []byte, pos int) {
 // Unlike Search, it takes the FULL haystack and a starting position, so assertions
 // like ^ correctly check against the original input start, not a sliced position.
 func (p *PikeVM) SearchAt(haystack []byte, at int) (int, int, bool) {
+	p.ensureInternalState()
 	if at > len(haystack) {
 		return -1, -1, false
 	}
@@ -865,6 +894,7 @@ func (p *PikeVM) searchUnanchoredAt(haystack []byte, startAt int) (int, int, boo
 //
 // Performance: O(maxEnd - startAt) instead of O(len(haystack) - startAt).
 func (p *PikeVM) SearchBetween(haystack []byte, startAt, maxEnd int) (int, int, bool) {
+	p.ensureInternalState()
 	if startAt > len(haystack) || startAt >= maxEnd {
 		return -1, -1, false
 	}
@@ -963,6 +993,7 @@ func (p *PikeVM) searchUnanchoredBetween(haystack []byte, startAt, maxEnd int) (
 // SearchWithCaptures finds the first match with capture group positions.
 // Returns nil if no match is found.
 func (p *PikeVM) SearchWithCaptures(haystack []byte) *MatchWithCaptures {
+	p.ensureInternalState()
 	return p.SearchWithCapturesAt(haystack, 0)
 }
 
@@ -973,6 +1004,7 @@ func (p *PikeVM) SearchWithCaptures(haystack []byte) *MatchWithCaptures {
 // This method is used by FindAll* operations to correctly handle anchors like ^.
 // Unlike SearchWithCaptures, it takes the FULL haystack and a starting position.
 func (p *PikeVM) SearchWithCapturesAt(haystack []byte, at int) *MatchWithCaptures {
+	p.ensureInternalState()
 	if at > len(haystack) {
 		return nil
 	}
@@ -1176,6 +1208,7 @@ func (p *PikeVM) searchAtWithCaptures(haystack []byte, startPos int) *MatchWithC
 //
 //nolint:gocognit // Merged match-check + step loop (Rust's nexts pattern) is inherently complex
 func (p *PikeVM) SearchWithCapturesInSpan(haystack []byte, spanStart, spanEnd int) *MatchWithCaptures {
+	p.ensureInternalState()
 	if spanStart > spanEnd || spanEnd > len(haystack) {
 		return nil
 	}
@@ -1279,6 +1312,7 @@ func (p *PikeVM) buildCapturesResult(caps []int, matchStart, matchEnd int) [][]i
 // SearchAll finds all non-overlapping matches in the haystack.
 // Returns a slice of matches in order of occurrence.
 func (p *PikeVM) SearchAll(haystack []byte) []Match {
+	p.ensureInternalState()
 	var matches []Match
 	pos := 0
 
@@ -1661,6 +1695,7 @@ func checkLookAssertion(look Look, haystack []byte, pos int) bool {
 //
 // This method uses internal state and is NOT thread-safe.
 func (p *PikeVM) SearchWithSlotTable(haystack []byte, mode SearchMode) (int, int, bool) {
+	p.ensureInternalState()
 	return p.SearchWithSlotTableAt(haystack, 0, mode)
 }
 
@@ -1674,6 +1709,7 @@ func (p *PikeVM) SearchWithSlotTable(haystack []byte, mode SearchMode) (int, int
 //
 // Returns (start, end, found) for the first match.
 func (p *PikeVM) SearchWithSlotTableAt(haystack []byte, at int, mode SearchMode) (int, int, bool) {
+	p.ensureInternalState()
 	if at > len(haystack) {
 		return -1, -1, false
 	}
@@ -2140,6 +2176,7 @@ func (p *PikeVM) addSearchThreadToNext(t searchThread, srcState StateID, haystac
 // SearchWithSlotTableCaptures finds the first match and returns captures.
 // Uses zero-allocation SlotTable architecture (Rust approach).
 func (p *PikeVM) SearchWithSlotTableCaptures(haystack []byte) *MatchWithCaptures {
+	p.ensureInternalState()
 	return p.SearchWithSlotTableCapturesAt(haystack, 0)
 }
 
@@ -2147,6 +2184,7 @@ func (p *PikeVM) SearchWithSlotTableCaptures(haystack []byte) *MatchWithCaptures
 // Uses dual SlotTable (curr/next) for zero-allocation capture tracking.
 // Matches Rust's PikeVM Cache with curr/next ActiveStates (pikevm.rs:1878).
 func (p *PikeVM) SearchWithSlotTableCapturesAt(haystack []byte, at int) *MatchWithCaptures {
+	p.ensureInternalState()
 	if at > len(haystack) {
 		return nil
 	}

@@ -603,7 +603,17 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	// Initialize state pool for thread-safe concurrent searches
 	numCaptures := nfaEngine.CaptureCount()
 
-	ssCfg := buildSearchStateConfig(pikevmNFA, numCaptures, engines, strategy)
+	ssCfg := buildSearchStateConfig(pikevmNFA, numCaptures, engines, strategy, onePassRes != nil)
+
+	// Issue #158: Share PikeVM with forward DFAs to eliminate duplicate allocations.
+	// Each DFA's Build() creates nfa.NewPikeVM(nfaEngine), but they all use the same
+	// base NFA. Create one shared PikeVM and inject it into all forward DFAs.
+	// This saves ~15-20 KB per DFA for 100-state NFA patterns.
+	// Reverse DFAs use different (reversed) NFAs so they keep their own PikeVMs.
+	nfaFallbackPikeVM := nfa.NewPikeVM(nfaEngine)
+	if engines.dfa != nil {
+		engines.dfa.SetPikeVM(nfaFallbackPikeVM)
+	}
 
 	eng := &Engine{
 		nfa:                            nfaEngine,
@@ -642,9 +652,12 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		stats:                          Stats{},
 	}
 
-	// Eagerly create one SearchState and store it in the local GC-proof cache.
-	// This ensures the first search call doesn't allocate via sync.Pool.
-	eng.localState.Store(newSearchState(ssCfg))
+	// Issue #158: Defer SearchState allocation to first search.
+	// The localState cache is NOT populated at compile time. Instead, it will be
+	// lazily created on the first search call via getSearchState(). This saves
+	// ~15-50 KB per compiled pattern for WAF workloads where patterns may be
+	// compiled but never searched (e.g., pattern sets loaded at startup).
+	// The sync.Pool in statePool handles subsequent allocations efficiently.
 
 	return eng, nil
 }
@@ -709,12 +722,15 @@ func configurePikeVMSkipAhead(pikevm *nfa.PikeVM, pf prefilter.Prefilter, isStar
 
 // buildSearchStateConfig extracts all DFA references needed for per-search caches.
 // Strategy-specific DFAs come from reverse searchers (which have their own DFAs).
-func buildSearchStateConfig(nfaEngine *nfa.NFA, numCaptures int, engines strategyEngines, strategy Strategy) searchStateConfig {
+// The strategy is stored so newSearchState can conditionally allocate only what's needed.
+func buildSearchStateConfig(nfaEngine *nfa.NFA, numCaptures int, engines strategyEngines, strategy Strategy, hasOnePass bool) searchStateConfig {
 	cfg := searchStateConfig{
 		nfaEngine:   nfaEngine,
 		numCaptures: numCaptures,
 		forwardDFA:  engines.dfa,
 		reverseDFA:  engines.reverseDFA,
+		strategy:    strategy,
+		hasOnePass:  hasOnePass,
 	}
 
 	// Extract strategy-specific DFAs from reverse searchers
