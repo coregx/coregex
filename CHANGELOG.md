@@ -12,6 +12,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.22] - 2026-06-15
+
+### Performance
+- **Lazy memory architecture** — adopts Rust regex Cache separation model to reduce
+  per-pattern memory overhead from 16x to ~3x vs stdlib ([#158](https://github.com/coregx/coregex/issues/158)).
+  Unblocks WAF adoption (Coraza with 900 OWASP CRS patterns).
+
+  - **PikeVM lazy init** — `NewPikeVMLazy()` defers thread queues/sparse set allocation
+    to first search (~10 KB saved per unused PikeVM)
+  - **Shared DFA PikeVM** — `SetPikeVM()` eliminates duplicate PikeVM per DFA
+    (~15-20 KB per DFA pattern)
+  - **Deferred SearchState** — removed eager allocation at compile time
+    (~15-50 KB per pattern)
+  - **Strategy-aware caches** — `newSearchState()` only allocates caches needed by
+    active strategy (30-70% fewer allocations per SearchState)
+  - **DFA cache initCap 64→16** — smaller initial maps/slices (~3 MB across 900 patterns)
+
+### Added
+- Open Collective sponsorship badges and Sponsors section in README
+
+### Fixed
+- CI: benchmark workflow now skips docs-only PRs (`paths-ignore` for `.md`, `docs/`, etc.)
+
 ## [0.12.21] - 2026-03-27
 
 ### Performance
