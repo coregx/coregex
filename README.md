@@ -65,23 +65,24 @@ Cross-language benchmarks on 6MB input, AMD EPYC ([source](https://github.com/ko
 
 | Pattern | Go stdlib | coregex | Rust regex | vs stdlib | vs Rust |
 |---------|-----------|---------|------------|-----------|---------|
-| Literal alternation | 554 ms | 4.5 ms | 0.72 ms | **122x** | 6.2x slower |
-| Multi-literal | 1572 ms | 12.4 ms | 5.5 ms | **126x** | 2.2x slower |
-| Inner `.*keyword.*` | 238 ms | 0.27 ms | 0.33 ms | **881x** | **1.2x faster** |
-| Suffix `.*\.txt` | 239 ms | 1.9 ms | 1.2 ms | **125x** | 1.5x slower |
-| Multiline `(?m)^/.*\.php` | 102 ms | 0.34 ms | 0.75 ms | **299x** | **2.2x faster** |
-| Email validation | 257 ms | 0.46 ms | 0.31 ms | **557x** | 1.4x slower |
-| URL extraction | 256 ms | 0.62 ms | 0.37 ms | **413x** | 1.6x slower |
-| IP address | 494 ms | 0.72 ms | 13.5 ms | **685x** | **18.8x faster** |
-| Version `\d+.\d+.\d+` | 164 ms | 0.62 ms | 0.79 ms | **263x** | **1.2x faster** |
-| Char class `[\w]+` | 478 ms | 42.1 ms | 56.4 ms | **11x** | **1.3x faster** |
-| Word repeat `(\w{2,8})+` | 690 ms | 180 ms | 54.7 ms | **3x** | 3.2x slower |
+| Inner `.*keyword.*` | 232 ms | 0.26 ms | 13.6 ms | **893x** | **52x faster** |
+| IP address | 489 ms | 0.77 ms | 13.5 ms | **635x** | **17.6x faster** |
+| Email validation | 257 ms | 0.55 ms | 0.26 ms | **467x** | 2.1x slower |
+| URL extraction | 258 ms | 0.61 ms | 0.34 ms | **424x** | 1.8x slower |
+| Multiline `(?m)^/.*\.php` | 101 ms | 0.38 ms | 0.76 ms | **266x** | **2.0x faster** |
+| Version `\d+.\d+.\d+` | 163 ms | 0.65 ms | 0.79 ms | **250x** | **1.2x faster** |
+| Suffix `.*\.txt` | 236 ms | 1.79 ms | 13.7 ms | **132x** | **7.7x faster** |
+| HTTP methods | 103 ms | 1.51 ms | 0.64 ms | **68x** | 2.4x slower |
+| Literal alternation | 232 ms | 4.69 ms | 0.63 ms | **49x** | 7.4x slower |
+| Multi-literal | 236 ms | 12.9 ms | 5.3 ms | **18x** | 2.4x slower |
+| Char class `[\w]+` | 507 ms | 41.9 ms | 58.4 ms | **12x** | **1.4x faster** |
+| Word repeat `(\w{2,8})+` | 647 ms | 179 ms | 56 ms | **3.6x** | 3.2x slower |
 
 **Where coregex excels:**
-- Multiline patterns (`(?m)^/.*\.php`) — **2.2x faster than Rust**, 299x vs stdlib
-- IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — SIMD digit prefilter skips non-digit regions
-- Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search optimization (1000x+)
-- Inner literals (`.*error.*`, `.*@example\.com`) — bidirectional DFA (900x+)
+- Inner literals (`.*error.*`) — bidirectional DFA, **52x faster than Rust**
+- IP/phone patterns (`\d+\.\d+\.\d+\.\d+`) — SIMD digit prefilter, **17.6x faster than Rust**
+- Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search, **7.7x faster than Rust**
+- Multiline patterns (`(?m)^/.*\.php`) — **2.0x faster than Rust**, 266x vs stdlib
 - Multi-pattern (`foo|bar|baz|...`) — Slim Teddy (≤32), Fat Teddy (33-64), or Aho-Corasick (>64)
 - Anchored alternations (`^(\d+|UUID|hex32)`) — O(1) branch dispatch (5-20x)
 - Concatenated char classes (`[a-zA-Z]+[0-9]+`) — DFA with byte classes (5-7x)
