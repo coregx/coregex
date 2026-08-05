@@ -7,14 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- **Dependency**: `github.com/coregx/ahocorasick` v0.2.1 → v0.3.0 — zero-allocation
-  `Find`/`FindAt` API (returns `(Match, bool)` instead of `*Match`)
-
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
+
+## [0.12.23] - 2026-08-05
+
+### Changed
+- **Dependency**: `github.com/coregx/ahocorasick` v0.2.1 → v0.3.0 — zero-allocation
+  `Find`/`FindAt` API (returns `(Match, bool)` instead of `*Match`)
 
 ## [0.12.22] - 2026-06-15
 
