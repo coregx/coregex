@@ -1094,8 +1094,8 @@ func (e *Engine) findIndicesAhoCorasick(haystack []byte) (int, int, bool) {
 	}
 	atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 
-	m := e.ahoCorasick.Find(haystack, 0)
-	if m == nil {
+	m, found := e.ahoCorasick.Find(haystack, 0)
+	if !found {
 		return -1, -1, false
 	}
 	return m.Start, m.End, true
@@ -1108,8 +1108,8 @@ func (e *Engine) findIndicesAhoCorasickAt(haystack []byte, at int) (int, int, bo
 	}
 	atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 
-	m := e.ahoCorasick.Find(haystack, at)
-	if m == nil {
+	m, found := e.ahoCorasick.Find(haystack, at)
+	if !found {
 		return -1, -1, false
 	}
 	return m.Start, m.End, true
