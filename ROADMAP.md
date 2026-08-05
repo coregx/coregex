@@ -103,8 +103,10 @@ v0.12.20 ✅ → Premultiplied/tagged StateIDs, break-at-match DFA determinize,
 v0.12.21 ✅ → Tagged start states, zero-alloc API (AllIndex iter.Seq),
                1100x fewer mallocs, UseDFA for tiny NFA, -32% LangArena
          ↓
-v0.12.22 (Current) → Lazy memory architecture (Rust Cache model), 5-7x memory
-                      reduction per pattern, WAF adoption unblocked (#158)
+v0.12.22 ✅ → Lazy memory architecture (Rust Cache model), 5-7x memory
+               reduction per pattern, WAF adoption unblocked (#158)
+         ↓
+v0.12.23 (Current) → ahocorasick v0.3.0 (zero-alloc Find/FindAt API)
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓

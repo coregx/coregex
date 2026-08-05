@@ -590,8 +590,8 @@ func (e *Engine) findTeddy(haystack []byte) *Match {
 	// Fat Teddy's AVX2 SIMD setup overhead exceeds benefit on small inputs.
 	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
 		atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
-		match := e.fatTeddyFallback.Find(haystack, 0)
-		if match == nil {
+		match, found := e.fatTeddyFallback.Find(haystack, 0)
+		if !found {
 			return nil
 		}
 		return NewMatch(match.Start, match.End, haystack)
@@ -630,8 +630,8 @@ func (e *Engine) findTeddyAt(haystack []byte, at int) *Match {
 	// For Fat Teddy with small haystacks, use Aho-Corasick fallback.
 	if e.fatTeddyFallback != nil && len(haystack) < fatTeddySmallHaystackThreshold {
 		atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
-		match := e.fatTeddyFallback.FindAt(haystack, at)
-		if match == nil {
+		match, found := e.fatTeddyFallback.FindAt(haystack, at)
+		if !found {
 			return nil
 		}
 		return NewMatch(match.Start, match.End, haystack)
@@ -772,8 +772,8 @@ func (e *Engine) findAhoCorasick(haystack []byte) *Match {
 	}
 	atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 
-	m := e.ahoCorasick.Find(haystack, 0)
-	if m == nil {
+	m, found := e.ahoCorasick.Find(haystack, 0)
+	if !found {
 		return nil
 	}
 	return NewMatch(m.Start, m.End, haystack)
@@ -786,8 +786,8 @@ func (e *Engine) findAhoCorasickAt(haystack []byte, at int) *Match {
 	}
 	atomic.AddUint64(&e.stats.AhoCorasickSearches, 1)
 
-	m := e.ahoCorasick.Find(haystack, at)
-	if m == nil {
+	m, found := e.ahoCorasick.Find(haystack, at)
+	if !found {
 		return nil
 	}
 	return NewMatch(m.Start, m.End, haystack)

@@ -54,8 +54,8 @@ func (p *AhoCorasickPrefilter) Find(haystack []byte, start int) int {
 	if start < 0 || start >= len(haystack) {
 		return -1
 	}
-	m := p.ac.Find(haystack, start)
-	if m == nil {
+	m, found := p.ac.Find(haystack, start)
+	if !found {
 		return -1
 	}
 	return m.Start
