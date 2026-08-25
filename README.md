@@ -311,10 +311,10 @@ MIT — see [LICENSE](LICENSE).
 
 ## Star History
 
-<a href="https://star-history.com/#coregx/coregex&Date">
+<a href="https://starhistory.io">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=coregx/coregex&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=coregx/coregex&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=coregx/coregex&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.starhistory.io/png?repos=coregx/coregex&style=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.starhistory.io/png?repos=coregx/coregex&style=professional" />
+   <img alt="Star History Chart" src="https://api.starhistory.io/png?repos=coregx/coregex" width="800" />
  </picture>
 </a>
