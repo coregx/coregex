@@ -27,7 +27,7 @@ on:
 jobs:
   # Unit tests - Cross-platform
   unit-tests:
-    name: Unit Tests - ${{ matrix.os }} - Go ${{ matrix.go-version }}
+    name: Unit Tests - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -59,7 +59,7 @@ jobs:
       run: go test -short -v -race -coverprofile=coverage.txt -covermode=atomic ./...
 
     - name: Upload coverage to Codecov
-      if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.27'
+      if: matrix.os == 'ubuntu-latest'
       uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
