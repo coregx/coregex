@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-08-22 | **Current Version**: v0.12.24 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-09-06 | **Current Version**: v0.12.25 | **Target**: v1.0.0 stable
 
 ---
 
@@ -109,6 +109,8 @@ v0.12.22 ✅ → Lazy memory architecture (Rust Cache model), 5-7x memory
 v0.12.23 ✅ → ahocorasick v0.3.0 (zero-alloc Find/FindAt API)
          ↓
 v0.12.24 ✅ → deps: ahocorasick v0.3.1, x/sys v0.47.0
+         ↓
+v0.12.25 ✅ → Go 1.27.1 toolchain, CI modernization
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
@@ -305,17 +307,8 @@ Cross-language benchmarks via [regex-bench](https://github.com/kolkov/regex-benc
 
 ## Research Documentation
 
-All optimization research is documented:
-
-| Document | Content |
-|----------|---------|
-| `docs/dev/research/RE2_SMALL_INPUT_OPTIMIZATION_ANALYSIS.md` | RE2 thresholds and strategies |
-| `docs/dev/research/RUST_REGEX_SMALL_INPUT_OPTIMIZATION_ANALYSIS.md` | rust-regex analysis |
-| `docs/dev/research/OPTIMIZATION_OPPORTUNITIES.md` | Comprehensive gap analysis with code examples |
-
-Reference implementations available locally:
-- `docs/dev/reference/re2/` - RE2 source code
-- `docs/dev/reference/rust-regex/` - rust-regex source code
+Optimization research based on RE2 and rust-regex reference implementations.
+Covers thresholds, strategies, and comprehensive gap analysis with code examples.
 
 ---
 
