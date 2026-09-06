@@ -1,6 +1,6 @@
 module github.com/coregx/coregex
 
-go 1.25.4
+go 1.27.1
 
 require (
 	github.com/coregx/ahocorasick v0.3.1
