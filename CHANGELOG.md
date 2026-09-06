@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.24] - 2026-08-22
+
+### Changed
+- **Dependencies**: `github.com/coregx/ahocorasick` v0.3.0 → v0.3.1 (LeftmostLongest
+  early return at maxPatternLen), `golang.org/x/sys` v0.40.0 → v0.47.0
+
 ## [0.12.23] - 2026-08-05
 
 ### Changed

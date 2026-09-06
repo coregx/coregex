@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-08-05 | **Current Version**: v0.12.23 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-08-22 | **Current Version**: v0.12.24 | **Target**: v1.0.0 stable
 
 ---
 
@@ -107,6 +107,8 @@ v0.12.22 ✅ → Lazy memory architecture (Rust Cache model), 5-7x memory
                reduction per pattern, WAF adoption unblocked (#158)
          ↓
 v0.12.23 ✅ → ahocorasick v0.3.0 (zero-alloc Find/FindAt API)
+         ↓
+v0.12.24 ✅ → deps: ahocorasick v0.3.1, x/sys v0.47.0
          ↓
 v1.0.0-rc → Feature freeze, API locked
          ↓
