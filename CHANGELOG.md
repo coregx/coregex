@@ -9,8 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned
 - Look-around assertions
-- ARM NEON SIMD support (Go 1.26 `simd/archsimd` intrinsics — [#120](https://github.com/coregx/coregex/issues/120))
+- ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
+
+## [0.12.25] - 2026-09-06
+
+### Changed
+- **Go toolchain**: 1.25.4 → 1.27.1 — compiler improvements (known-bits dataflow,
+  LICM, switch-to-lookup-table), `simd/archsimd` fixes, Green Tea GC
+- **CI**: job names no longer include Go version (stable branch protection),
+  golangci-lint v2.10 → v2.13, branch protection migrated to GitHub Rulesets
 
 ## [0.12.24] - 2026-08-22
 

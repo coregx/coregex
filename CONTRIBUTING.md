@@ -418,7 +418,7 @@ func BenchmarkMemchr(b *testing.B) {
 - Check existing issues and discussions
 - Read ROADMAP.md for project roadmap and progress
 - Ask questions in GitHub Issues
-- Reference implementation guides in `docs/dev/`
+- Reference implementations: RE2 and rust-regex source code (see ROADMAP.md)
 
 ## Performance Expectations
 
