@@ -152,12 +152,15 @@ func MustCompile(pattern string) *Regex {
 // that early regular expression implementations used and that POSIX
 // specifies.
 func CompilePOSIX(pattern string) (*Regex, error) {
-	if _, err := syntax.Parse(pattern, syntax.POSIX); err != nil {
-		return nil, err
-	}
-	re, err := Compile(pattern)
+	config := meta.DefaultConfig()
+	config.POSIX = true
+	engine, err := meta.CompileWithConfig(pattern, config)
 	if err != nil {
 		return nil, err
+	}
+	re := &Regex{
+		engine:  engine,
+		pattern: pattern,
 	}
 	re.Longest()
 	return re, nil

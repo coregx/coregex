@@ -55,7 +55,11 @@ func CompileWithConfig(pattern string, config Config) (*Engine, error) {
 	}
 
 	// Parse pattern
-	re, err := syntax.Parse(pattern, syntax.Perl)
+	flags := syntax.Perl
+	if config.POSIX {
+		flags = syntax.POSIX
+	}
+	re, err := syntax.Parse(pattern, flags)
 	if err != nil {
 		return nil, &CompileError{
 			Pattern: pattern,
