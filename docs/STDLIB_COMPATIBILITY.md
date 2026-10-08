@@ -10,16 +10,16 @@ This document describes the compatibility of coregex with Go's standard library 
 
 | Category | Status |
 |----------|--------|
-| **API Surface** | **100%** (all stdlib methods implemented) |
+| **API Surface** | All stdlib methods implemented |
 | **Pattern Syntax** | Full RE2 syntax support |
-| **Core Semantics** | Compatible for typical use cases |
-| **Edge Case Behavior** | Minor differences documented below |
+| **Core Semantics** | Compatible for typical ASCII use cases |
+| **Non-ASCII Edge Cases** | Known differences documented below |
 
 ## API Compatibility
 
 ### Implemented Functions
 
-The following functions have identical behavior to stdlib:
+The following functions are implemented with stdlib-compatible signatures:
 
 ```go
 // Compilation
@@ -94,7 +94,7 @@ MatchReader(pattern string, r io.RuneReader) (bool, error)
 QuoteMeta(s string) string
 ```
 
-> **Note:** As of v0.10.7, coregex implements **100% of the stdlib regexp API**. All methods are fully functional.
+> **Note:** All stdlib regexp API methods are implemented. See known differences below.
 
 ## Known Behavioral Differences
 

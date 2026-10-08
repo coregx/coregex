@@ -1,6 +1,6 @@
 // Package coregex provides a high-performance regex engine for Go.
 //
-// coregex achieves 5-50x speedup over Go's stdlib regexp through:
+// coregex achieves 3-3000x speedup over Go's stdlib regexp through:
 //   - Multi-engine architecture (NFA, Lazy DFA, prefilters)
 //   - SIMD-accelerated primitives (memchr, memmem, teddy)
 //   - Literal extraction and prefiltering
@@ -34,7 +34,7 @@
 //	re, err := coregex.CompileWithConfig("(a|b|c)*", config)
 //
 // Performance characteristics:
-//   - Patterns with literals: 5-50x faster (prefilter optimization)
+//   - Patterns with literals: 3-3000x faster (prefilter optimization)
 //   - Simple patterns: comparable to stdlib
 //   - Complex patterns: 2-10x faster (DFA avoids backtracking)
 //   - Worst case: guaranteed O(m*n) (ReDoS safe)
@@ -971,14 +971,14 @@ func (r *Regex) ExpandString(dst []byte, template string, src string, match []in
 // This matches Go stdlib regexp.Regexp.expand behavior.
 func (r *Regex) expand(dst []byte, template []byte, src []byte, match []int) []byte {
 	tmpl := string(template)
-	for len(tmpl) > 0 {
+	for tmpl != "" {
 		before, after, ok := strings.Cut(tmpl, "$")
 		if !ok {
 			break
 		}
 		dst = append(dst, before...)
 		tmpl = after
-		if len(tmpl) > 0 && tmpl[0] == '$' {
+		if tmpl != "" && tmpl[0] == '$' {
 			dst = append(dst, '$')
 			tmpl = tmpl[1:]
 			continue
@@ -1009,9 +1009,9 @@ func (r *Regex) expand(dst []byte, template []byte, src []byte, match []int) []b
 // extractDollar parses a group reference after '$': "name", "{name}", "12", "{12}".
 // Returns the name string, a numeric index (or -1 for named groups), the remaining
 // template, and whether parsing succeeded. Matches Go stdlib regexp.extract.
-func extractDollar(str string) (name string, num int, rest string, ok bool) {
+func extractDollar(str string) (string, int, string, bool) {
 	if str == "" {
-		return
+		return "", 0, "", false
 	}
 	brace := false
 	if str[0] == '{' {
@@ -1027,16 +1027,16 @@ func extractDollar(str string) (name string, num int, rest string, ok bool) {
 		i += size
 	}
 	if i == 0 {
-		return
+		return "", 0, "", false
 	}
-	name = str[:i]
+	name := str[:i]
 	if brace {
 		if i >= len(str) || str[i] != '}' {
-			return
+			return "", 0, "", false
 		}
 		i++
 	}
-	num = 0
+	num := 0
 	for j := 0; j < len(name); j++ {
 		if name[j] < '0' || '9' < name[j] || num >= 1e8 {
 			num = -1
@@ -1047,9 +1047,7 @@ func extractDollar(str string) (name string, num int, rest string, ok bool) {
 	if name[0] == '0' && len(name) > 1 {
 		num = -1
 	}
-	rest = str[i:]
-	ok = true
-	return
+	return name, num, str[i:], true
 }
 
 func isIdentRune(r rune) bool {
@@ -1350,7 +1348,7 @@ func (r *Regex) Split(s string, n int) []string {
 	if n == 0 {
 		return nil
 	}
-	if len(r.pattern) > 0 && len(s) == 0 {
+	if r.pattern != "" && s == "" {
 		return []string{""}
 	}
 

@@ -1,6 +1,7 @@
 package coregex
 
 import (
+	"bytes"
 	"regexp"
 	"testing"
 )
@@ -100,7 +101,7 @@ func TestExpandExpand(t *testing.T) {
 		cgxResult := re.ExpandString(cgxBuf, tmpl, src, match)
 		stdResult := reStd.ExpandString(stdBuf, tmpl, src, matchStd)
 
-		if string(cgxResult) != string(stdResult) {
+		if !bytes.Equal(cgxResult, stdResult) {
 			t.Errorf("ExpandString(%q):\n  coregex=%q\n  stdlib =%q",
 				tmpl, cgxResult, stdResult)
 		}
