@@ -1195,13 +1195,6 @@ func cloneRegexp(re *syntax.Regexp) *syntax.Regexp {
 		}
 	}
 
-	// Clone Sub0 (inline storage)
-	for i := range re.Sub0 {
-		if re.Sub0[i] != nil {
-			clone.Sub0[i] = cloneRegexp(re.Sub0[i])
-		}
-	}
-
 	return clone
 }
 
