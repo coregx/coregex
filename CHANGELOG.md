@@ -10,6 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))
+
+## [0.12.27] - 2026-10-09
+
+### Fixed
+- **Anchored alternation false results** ([#166](https://github.com/coregx/coregex/issues/166)):
+  `^x(a|bc)` on `"xbc"` returned false. BranchDispatch strategy removed — it
+  ignored prefix/suffix around alternation and produced both false negatives
+  (`^HTTP/(1.0|1.1|2)` on `"HTTP/2"`) and false positives (`^(GET|POST) /` on
+  `"GET x"`). Anchored alternations now use BoundedBacktracker with O(1) first-byte
+  reject. Performance: 13→66 ns on short strings (still 1.5× faster than stdlib)
+- **First-byte extraction ignored FoldCase**: `^[Vv]\d+` rejected `"v1"` because
+  `ExtractFirstBytes` only took uppercase rune without SimpleFold orbit.
+  Non-ASCII runes (`é`) now use UTF-8 lead-byte correctly
+
+### Removed
+- **`UseBranchDispatch` strategy and `nfa/branch_dispatch.go`**: O(1) branch
+  dispatch for anchored alternations. Removed due to fundamental correctness
+  issues — the simple branch matcher could not safely verify complex AST shapes
+  from `syntax.Simplify`. The lazy DFA and BoundedBacktracker already provide
+  correct O(1) first-byte dispatch inherently (as Rust regex does)
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
 ## [0.12.26] - 2026-10-09

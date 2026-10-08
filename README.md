@@ -21,7 +21,7 @@ High-performance regex engine for Go. Drop-in replacement for `regexp` with **3-
 Go's stdlib `regexp` is intentionally simple — single NFA engine, no optimizations. This guarantees O(n) time but leaves performance on the table.
 
 coregex brings Rust regex-crate architecture to Go:
-- **Multi-engine**: 17 strategies — Lazy DFA, PikeVM, OnePass, BoundedBacktracker, and more
+- **Multi-engine**: 16 strategies — Lazy DFA, PikeVM, OnePass, BoundedBacktracker, and more
 - **SIMD prefilters**: AVX2/SSSE3 for fast candidate rejection
 - **Reverse search**: Suffix/inner literal patterns run 1000x+ faster
 - **O(n) guarantee**: No backtracking, no ReDoS vulnerabilities
@@ -84,7 +84,6 @@ Cross-language benchmarks on 6MB input, AMD EPYC ([source](https://github.com/ko
 - Suffix patterns (`.*\.log`, `.*\.txt`) — reverse search, **7.7x faster than Rust**
 - Multiline patterns (`(?m)^/.*\.php`) — **2.0x faster than Rust**, 266x vs stdlib
 - Multi-pattern (`foo|bar|baz|...`) — Slim Teddy (≤32), Fat Teddy (33-64), or Aho-Corasick (>64)
-- Anchored alternations (`^(\d+|UUID|hex32)`) — O(1) branch dispatch (5-20x)
 - Concatenated char classes (`[a-zA-Z]+[0-9]+`) — DFA with byte classes (5-7x)
 - **Zero-alloc iterators** (`AllIndex`, `AppendAllIndex`) — 0 heap allocs, up to **30% faster** than FindAll. Email pattern **faster than Rust** with `AppendAllIndex`.
 
@@ -100,7 +99,6 @@ coregex automatically selects the optimal engine:
 | **MultilineReverseSuffix** | `(?m)^/.*\.php` | **100-552x** ⚡ |
 | ReverseInner | `.*keyword.*` | 100-900x |
 | ReverseSuffix | `.*\.txt` | 100-1100x |
-| BranchDispatch | `^(\d+\|UUID\|hex32)` | 5-20x |
 | CompositeSequenceDFA | `[a-zA-Z]+[0-9]+` | 5-7x |
 | LazyDFA | IP, complex patterns | 10-150x |
 | AhoCorasick | `a\|b\|c\|...\|z` (>64 patterns) | 75-113x |
@@ -209,14 +207,14 @@ Uses Go's `regexp/syntax` parser:
 Pattern → Parse → NFA → Literal Extract → Strategy Select
                                                ↓
                   ┌────────────────────────────────────────────┐
-                  │ Engines (17 strategies):                   │
+                  │ Engines (16 strategies):                   │
                   │  LazyDFA, PikeVM, OnePass,                 │
                   │  BoundedBacktracker, ReverseAnchored,      │
                   │  ReverseInner, ReverseSuffix,              │
                   │  ReverseSuffixSet, MultilineReverseSuffix, │
                   │  AnchoredLiteral, CharClassSearcher,       │
                   │  Teddy, DigitPrefilter, AhoCorasick,       │
-                  │  CompositeSearcher, BranchDispatch, Both   │
+                  │  CompositeSearcher, Both                   │
                   └────────────────────────────────────────────┘
                                                ↓
 Input → Prefilter (SIMD) → Engine → Match Result

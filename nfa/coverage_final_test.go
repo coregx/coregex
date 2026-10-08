@@ -326,32 +326,6 @@ func TestIsCompositeSequenceDFAPattern(t *testing.T) {
 	}
 }
 
-// --- branch_dispatch.go: IsBranchDispatchPattern ---
-
-func TestIsBranchDispatchPattern(t *testing.T) {
-	tests := []struct {
-		pattern string
-		want    bool
-	}{
-		{"^(abc|def)", true},
-		{"abc|def", false}, // No start anchor
-		{"^abc", false},    // No alternation
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.pattern, func(t *testing.T) {
-			re, err := syntax.Parse(tt.pattern, syntax.Perl)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := IsBranchDispatchPattern(re)
-			if got != tt.want {
-				t.Errorf("IsBranchDispatchPattern(%q) = %v, want %v", tt.pattern, got, tt.want)
-			}
-		})
-	}
-}
-
 // --- backtrack.go: runeWidth ---
 
 func TestRuneWidth(t *testing.T) {

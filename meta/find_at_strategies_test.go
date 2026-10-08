@@ -573,10 +573,6 @@ func TestNilGuard_Strategies(t *testing.T) {
 		// CompositeSearcher
 		{"Composite match", `[a-z]+[0-9]+`, "abc123", true},
 		{"Composite no match", `[a-z]+[0-9]+`, "abc", false},
-
-		// BranchDispatch
-		{"BranchDispatch match", `^(PUT|GET|POST|DELETE)`, "GET /api", true},
-		{"BranchDispatch no match", `^(PUT|GET|POST|DELETE)`, "PATCH /api", false},
 	}
 
 	for _, tt := range tests {

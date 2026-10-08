@@ -886,9 +886,6 @@ func TestFindIndicesAhoCorasickAt_Through_FindAll(t *testing.T) {
 	}
 }
 
-// --- Test 101: findIndicesBranchDispatchAt at position 0 vs >0 ---
-// Covers: find_indices.go findIndicesBranchDispatchAt lines 650-655
-
 func TestIsDigitLeadPattern_MoreShapes(t *testing.T) {
 	// These patterns exercise different branches of isDigitLeadPattern
 	patterns := []struct {

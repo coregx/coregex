@@ -48,8 +48,6 @@ func (e *Engine) IsMatch(haystack []byte) bool {
 		return e.isMatchCharClassSearcher(haystack)
 	case UseCompositeSearcher:
 		return e.isMatchCompositeSearcher(haystack)
-	case UseBranchDispatch:
-		return e.isMatchBranchDispatch(haystack)
 	case UseTeddy:
 		return e.isMatchTeddy(haystack)
 	case UseDigitPrefilter:
@@ -254,15 +252,6 @@ func (e *Engine) isMatchCompositeSearcher(haystack []byte) bool {
 	}
 	atomic.AddUint64(&e.stats.NFASearches, 1)
 	return e.compositeSearcher.IsMatch(haystack)
-}
-
-// isMatchBranchDispatch checks for match using O(1) branch dispatch.
-func (e *Engine) isMatchBranchDispatch(haystack []byte) bool {
-	if e.branchDispatcher == nil {
-		return e.isMatchBoundedBacktracker(haystack)
-	}
-	atomic.AddUint64(&e.stats.NFASearches, 1)
-	return e.branchDispatcher.IsMatch(haystack)
 }
 
 // isMatchTeddy checks for match using Teddy prefilter.

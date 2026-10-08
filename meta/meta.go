@@ -29,7 +29,6 @@
 //   - UseDigitPrefilter: SIMD digit prefilter for digit-lead patterns
 //   - UseOnePass: OnePass DFA for anchored patterns with captures
 //   - UseBoundedBacktracker: Bounded backtracker for char class patterns
-//   - UseBranchDispatch: O(1) branch dispatch for anchored alternations
 //   - UseCompositeSearcher: For concatenated char classes
 //   - UseAnchoredLiteral: O(1) matching for ^prefix.*suffix$ patterns (32-133x)
 //

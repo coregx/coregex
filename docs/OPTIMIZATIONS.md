@@ -11,7 +11,6 @@ These algorithms are critical to coregex's competitive advantage and **MUST NOT 
 | **Flat SlotTable** | `nfa/pikevm.go`, `nfa/slot_table.go` | FindSubmatch | **-95% memory** | submatch |
 | CharClassSearcher | `nfa/charclass_searcher.go` | `[\w]+`, `[a-z]+` | **23x faster** | char_class |
 | CompositeSearcher | `nfa/composite.go` | `[a-zA-Z]+[0-9]+` | **5x faster** | composite |
-| BranchDispatch | `nfa/branch_dispatch.go` | `^(\d+\|UUID\|hex32)` | **5-20x faster** | anchored_alt |
 | DigitPrefilter | `prefilter/digit.go` | IP addresses, `\d+` | **3324x faster**\* | ip |
 | ReverseSuffixSet | `meta/reverse_suffix_set.go` | `.*\.(txt\|log\|md)` | **260x faster** | suffix |
 | ReverseInner | `meta/reverse_inner.go` | `.*email@.*` | **909x faster** | email |
@@ -217,64 +216,7 @@ Speedup: 4.75x faster
 
 ---
 
-## 4. BranchDispatch (5-20x faster than stdlib)
-
-**File**: `nfa/branch_dispatch.go`
-
-**Pattern types**: Anchored alternations with distinct first bytes like `^(\d+|UUID|hex32)`
-
-### Algorithm
-
-BranchDispatch uses **O(1) first-byte dispatch** for anchored alternation patterns.
-Instead of trying all branches sequentially, it builds a dispatch table that maps
-each possible first byte to the correct branch.
-
-```go
-type BranchDispatcher struct {
-    dispatch [256]int8  // first_byte → branch_index (-1 = no match)
-    branches []*syntax.Regexp
-}
-
-// For pattern ^(\d+|UUID|hex32):
-// dispatch['0'-'9'] = 0  (digit branch)
-// dispatch['U'] = 1       (UUID branch)
-// dispatch['h'] = 2       (hex32 branch)
-// dispatch[others] = -1   (no match)
-
-func (d *BranchDispatcher) IsMatch(haystack []byte) bool {
-    if len(haystack) == 0 {
-        return d.canMatchEmpty
-    }
-    branchIdx := d.dispatch[haystack[0]]  // O(1) lookup
-    if branchIdx < 0 {
-        return false  // Early rejection
-    }
-    // Only try the selected branch
-    return d.matchBranch(branchIdx, haystack)
-}
-```
-
-### Why faster than stdlib
-
-1. **O(1) branch selection**: Single array lookup vs O(branches) iteration
-2. **Early rejection**: Non-matching first bytes rejected immediately
-3. **Specialized matchers**: Each branch has optimized literal/charclass matcher
-
-### Benchmark data
-
-```
-Pattern: ^(\d+|UUID|hex32)
-Input: Various test cases
-
-Case        stdlib    coregex   Speedup
-Digits      225 ns    42 ns     5.4x faster
-UUID        173 ns    39 ns     4.4x faster
-No match    101 ns    4.9 ns    20.7x faster
-```
-
----
-
-## 5. DigitPrefilter (3324x faster on no-match)
+## 4. DigitPrefilter (3324x faster on no-match)
 
 **File**: `prefilter/digit.go`
 

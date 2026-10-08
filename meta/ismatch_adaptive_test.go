@@ -102,10 +102,6 @@ func TestIsMatchAllStrategies(t *testing.T) {
 		// CompositeSearcher
 		{"composite_match", `[a-z]+\d+`, "abc123", true},
 		{"composite_no_match", `[a-z]+\d+`, "abc", false},
-
-		// BranchDispatch
-		{"branch_match", `^(?:GET|POST|PUT|DELETE)\b`, "GET /index", true},
-		{"branch_no_match", `^(?:GET|POST|PUT|DELETE)\b`, "UNKNOWN /index", false},
 	}
 
 	for _, tt := range tests {

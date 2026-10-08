@@ -298,12 +298,11 @@ func buildReverseSearchers(
 
 // charClassSearcherResult holds the result of building specialized searchers.
 type charClassSearcherResult struct {
-	boundedBT        *nfa.BoundedBacktracker
-	charClassSrch    *nfa.CharClassSearcher
-	compositeSrch    *nfa.CompositeSearcher
-	compositeSeqDFA  *nfa.CompositeSequenceDFA // DFA (faster than backtracking)
-	branchDispatcher *nfa.BranchDispatcher
-	finalStrategy    Strategy
+	boundedBT       *nfa.BoundedBacktracker
+	charClassSrch   *nfa.CharClassSearcher
+	compositeSrch   *nfa.CompositeSearcher
+	compositeSeqDFA *nfa.CompositeSequenceDFA // DFA (faster than backtracking)
+	finalStrategy   Strategy
 }
 
 func buildCharClassSearchers(
@@ -345,28 +344,6 @@ func buildCharClassSearchers(
 		} else {
 			// Try to build faster DFA (uses subset construction for overlapping patterns)
 			result.compositeSeqDFA = nfa.NewCompositeSequenceDFA(re)
-		}
-	}
-
-	// BranchDispatcher for anchored alternations with distinct first bytes
-	// Reference: https://github.com/coregx/coregex/issues/79
-	if strategy == UseBranchDispatch {
-		// Extract the alternation part (skip ^ anchor)
-		altPart := re
-		if re.Op == syntax.OpConcat && len(re.Sub) >= 2 {
-			// Skip start anchor, get the rest
-			for _, sub := range re.Sub[1:] {
-				if sub.Op == syntax.OpAlternate || sub.Op == syntax.OpCapture {
-					altPart = sub
-					break
-				}
-			}
-		}
-		result.branchDispatcher = nfa.NewBranchDispatcher(altPart)
-		if result.branchDispatcher == nil {
-			// Fallback to BoundedBacktracker if dispatch not possible
-			result.finalStrategy = UseBoundedBacktracker
-			result.boundedBT = nfa.NewBoundedBacktracker(btNFA)
 		}
 	}
 
@@ -623,7 +600,6 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		charClassSearcher:              charClassResult.charClassSrch,
 		compositeSearcher:              charClassResult.compositeSrch,
 		compositeSequenceDFA:           charClassResult.compositeSeqDFA,
-		branchDispatcher:               charClassResult.branchDispatcher,
 		anchoredFirstBytes:             anchoredFirstBytes,
 		anchoredSuffix:                 anchoredSuffix,
 		reverseSearcher:                engines.reverseSearcher,

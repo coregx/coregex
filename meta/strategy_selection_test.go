@@ -271,7 +271,6 @@ func TestStrategyStringCoverage(t *testing.T) {
 		{UseReverseSuffixSet, "UseReverseSuffixSet"},
 		{UseCharClassSearcher, "UseCharClassSearcher"},
 		{UseCompositeSearcher, "UseCompositeSearcher"},
-		{UseBranchDispatch, "UseBranchDispatch"},
 		{UseDigitPrefilter, "UseDigitPrefilter"},
 		{UseAhoCorasick, "UseAhoCorasick"},
 		{UseAnchoredLiteral, "UseAnchoredLiteral"},
@@ -527,14 +526,14 @@ func TestStrategyCorrectnessAcrossAllStrategies(t *testing.T) {
 }
 
 // TestStrategySelectionBranchDispatch verifies that anchored alternations with
-// distinct first bytes use BranchDispatch strategy.
+// distinct first bytes use BoundedBacktracker strategy.
 func TestStrategySelectionBranchDispatch(t *testing.T) {
 	tests := []struct {
 		name    string
 		pattern string
 		want    Strategy
 	}{
-		{"branch_digit_uuid", `^(\d+|UUID)`, UseBranchDispatch},
+		{"branch_digit_uuid", `^(\d+|UUID)`, UseBoundedBacktracker},
 	}
 
 	config := DefaultConfig()
