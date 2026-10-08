@@ -726,7 +726,10 @@ func (e *Engine) findIndicesBidirectionalDFALongest(haystack []byte, at int, exi
 	}
 	start := e.reverseDFA.SearchReverse(state.revDFACache, haystack, at, end)
 	if start < 0 {
-		return -1, -1, false // Reverse DFA failed (cache full)
+		// Reverse DFA failed (cache full or nfaFallbackReverse can't handle
+		// multi-byte UTF-8). Fall back to forward PikeVM which finds both
+		// start and end correctly within [at, end).
+		return e.pikevm.SearchBetween(haystack, at, end)
 	}
 	return start, end, true
 }

@@ -55,7 +55,11 @@ func CompileWithConfig(pattern string, config Config) (*Engine, error) {
 	}
 
 	// Parse pattern
-	re, err := syntax.Parse(pattern, syntax.Perl)
+	flags := syntax.Perl
+	if config.POSIX {
+		flags = syntax.POSIX
+	}
+	re, err := syntax.Parse(pattern, flags)
 	if err != nil {
 		return nil, &CompileError{
 			Pattern: pattern,
@@ -521,7 +525,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	debugEngine("reverse DFA", engines.reverseDFA != nil, "")
 
 	// Debug: log final strategy selection
-	debugStrategy(re.String(), strategy, nfaEngine.States(), literals, "")
+	debugStrategy(re, strategy, nfaEngine.States(), literals, "")
 
 	// Prefilter selection: Slim Teddy (2-32 patterns), AC DFA (>32 patterns).
 	// FatTeddy replaced by AC for >32 patterns (130x faster, zero false positives).

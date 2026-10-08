@@ -32,7 +32,7 @@ coregex brings Rust regex-crate architecture to Go:
 go get github.com/coregx/coregex
 ```
 
-Requires Go 1.25+. Minimal dependencies (`golang.org/x/sys`, `github.com/coregx/ahocorasick`).
+Requires Go 1.27+. Minimal dependencies (`golang.org/x/sys`, `github.com/coregx/ahocorasick`).
 
 ## Quick Start
 
@@ -162,7 +162,7 @@ for _, chunk := range chunks {
 
 ```go
 config := coregex.DefaultConfig()
-config.DFAMaxStates = 10000      // Limit DFA cache
+config.MaxDFAStates = 10000      // Limit DFA cache
 config.EnablePrefilter = true    // SIMD acceleration
 
 re, err := coregex.CompileWithConfig(pattern, config)

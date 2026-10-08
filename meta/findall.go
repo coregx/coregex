@@ -6,7 +6,19 @@ package meta
 
 import (
 	"sync/atomic"
+	"unicode/utf8"
 )
+
+// advanceAfterEmpty returns the next position after an empty match.
+// Advances by one UTF-8 rune (not one byte) to respect codepoint boundaries,
+// matching Go stdlib regexp behavior. Invalid UTF-8 lead bytes advance by 1.
+func advanceAfterEmpty(b []byte, pos int) int {
+	if pos < len(b) {
+		_, w := utf8.DecodeRune(b[pos:])
+		return pos + w
+	}
+	return pos + 1
+}
 
 // FindSubmatch returns the first match with capture group information.
 // Returns nil if no match is found.
@@ -88,7 +100,8 @@ func (e *Engine) findSubmatchAtWithState(haystack []byte, at int, state *SearchS
 	// stack on large inputs with deep UTF-8 NFA chains (386/macOS 250MB limit).
 	switch e.strategy {
 	case UseBoundedBacktracker, UseNFA,
-		UseDFA, UseBoth, UseDigitPrefilter:
+		UseDFA, UseBoth, UseDigitPrefilter,
+		UseReverseAnchored:
 		atomic.AddUint64(&e.stats.NFASearches, 1)
 		nfaMatch := state.pikevm.SearchWithSlotTableCapturesAt(haystack, at)
 		if nfaMatch == nil {
@@ -249,7 +262,7 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 		// - "a*" on "ab" returns [[0 1] [2 2]], not [[0 1] [1 1] [2 2]]
 		//nolint:gocritic // badCond: intentional - checking empty match (start==end) at lastMatchEnd
 		if start == end && start == lastMatchEnd {
-			pos++
+			pos = advanceAfterEmpty(haystack, pos)
 			if pos > len(haystack) {
 				break
 			}
@@ -266,12 +279,11 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 		// Move position past this match
 		switch {
 		case start == end:
-			// Empty match: advance by 1 to avoid infinite loop
-			pos = end + 1
+			pos = advanceAfterEmpty(haystack, end)
 		case end > pos:
 			pos = end
 		default:
-			pos++
+			pos = advanceAfterEmpty(haystack, pos)
 		}
 
 		if pos > len(haystack) {
@@ -341,7 +353,7 @@ func (e *Engine) Count(haystack []byte, n int) int {
 		// Skip empty matches at lastNonEmptyEnd (stdlib behavior)
 		//nolint:gocritic // badCond: intentional - checking empty match (start==end) at lastNonEmptyEnd
 		if start == end && start == lastNonEmptyEnd {
-			pos++
+			pos = advanceAfterEmpty(haystack, pos)
 			if pos > len(haystack) {
 				break
 			}
@@ -358,12 +370,11 @@ func (e *Engine) Count(haystack []byte, n int) int {
 		// Move position past this match
 		switch {
 		case start == end:
-			// Empty match: advance by 1 to avoid infinite loop
-			pos = end + 1
+			pos = advanceAfterEmpty(haystack, end)
 		case end > pos:
 			pos = end
 		default:
-			pos++
+			pos = advanceAfterEmpty(haystack, pos)
 		}
 
 		// Check limit
@@ -413,7 +424,7 @@ func (e *Engine) FindAllSubmatch(haystack []byte, n int) []*MatchWithCaptures {
 		// Skip empty matches at the end of previous non-empty match (stdlib behavior)
 		//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
 		if matchStart == matchEnd && matchStart == lastMatchEnd {
-			pos++
+			pos = advanceAfterEmpty(haystack, pos)
 			if pos > len(haystack) {
 				break
 			}
@@ -430,11 +441,11 @@ func (e *Engine) FindAllSubmatch(haystack []byte, n int) []*MatchWithCaptures {
 		// Move position past this match
 		switch {
 		case matchStart == matchEnd:
-			pos = matchEnd + 1
+			pos = advanceAfterEmpty(haystack, matchEnd)
 		case matchEnd > pos:
 			pos = matchEnd
 		default:
-			pos++
+			pos = advanceAfterEmpty(haystack, pos)
 		}
 
 		// Check limit

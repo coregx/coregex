@@ -3,6 +3,7 @@ package nfa
 import (
 	"fmt"
 	"regexp/syntax"
+	"unicode"
 
 	"github.com/coregx/coregex/internal/conv"
 )
@@ -240,23 +241,19 @@ func (c *Compiler) compileLiteral(re *syntax.Regexp) (start, end StateID, err er
 		return c.compileEmptyMatch()
 	}
 
-	// Check if case-insensitive matching is enabled
 	foldCase := re.Flags&syntax.FoldCase != 0
 
-	// Convert runes to UTF-8 bytes
 	var prev = InvalidState
 	var first = InvalidState
 
 	for _, r := range runes {
-		// For case-insensitive matching of ASCII letters, create alternation
-		if foldCase && isASCIILetter(r) {
+		if foldCase && hasFoldEquivalent(r) {
 			nextState, err := c.compileFoldCaseRune(r, prev, &first)
 			if err != nil {
 				return InvalidState, InvalidState, err
 			}
 			prev = nextState
 		} else {
-			// Normal case-sensitive matching
 			prev, err = c.compileCaseSensitiveRune(r, prev, &first)
 			if err != nil {
 				return InvalidState, InvalidState, err
@@ -267,47 +264,71 @@ func (c *Compiler) compileLiteral(re *syntax.Regexp) (start, end StateID, err er
 	return first, prev, nil
 }
 
-// compileFoldCaseRune compiles a case-insensitive ASCII letter
-// by creating alternation between upper and lower case versions
+// hasFoldEquivalent reports whether r has any case-fold equivalent rune
+// via the unicode.SimpleFold orbit (e.g., К↔к, Σ↔σ↔ς, K↔k↔K).
+func hasFoldEquivalent(r rune) bool {
+	return unicode.SimpleFold(r) != r
+}
+
+// compileFoldCaseRune compiles a case-insensitive rune by creating an
+// alternation (split) across all runes in the unicode.SimpleFold orbit.
+// For ASCII letters, the orbit is {A,a}. For Greek sigma, it is {Σ,σ,ς}.
 func (c *Compiler) compileFoldCaseRune(r rune, prev StateID, first *StateID) (StateID, error) {
-	upper := toUpperASCII(r)
-	lower := toLowerASCII(r)
+	orbit := foldOrbit(r)
 
-	// Build UTF-8 sequences for both cases
-	upperStart, upperEnd, err := c.compileSingleRune(upper)
-	if err != nil {
-		return InvalidState, err
+	// Compile each fold-equivalent rune to its UTF-8 byte sequence
+	type runeFragment struct {
+		start, end StateID
 	}
-	lowerStart, lowerEnd, err := c.compileSingleRune(lower)
-	if err != nil {
-		return InvalidState, err
+	frags := make([]runeFragment, len(orbit))
+	for i, fr := range orbit {
+		s, e, err := c.compileSingleRune(fr)
+		if err != nil {
+			return InvalidState, err
+		}
+		frags[i] = runeFragment{s, e}
 	}
 
-	// Create join state
+	// Create join state — all alternatives converge here
 	nextState := c.builder.AddEpsilon(InvalidState)
-
-	// Connect both paths to join
-	if err := c.builder.Patch(upperEnd, nextState); err != nil {
-		return InvalidState, err
-	}
-	if err := c.builder.Patch(lowerEnd, nextState); err != nil {
-		return InvalidState, err
+	for _, f := range frags {
+		if err := c.builder.Patch(f.end, nextState); err != nil {
+			return InvalidState, err
+		}
 	}
 
-	// Create split state
-	split := c.builder.AddSplit(upperStart, lowerStart)
+	// Build split tree: chain of splits for N alternatives.
+	// 2 alternatives: Split(a, b)
+	// 3 alternatives: Split(a, Split(b, c))
+	// N alternatives: Split(a, Split(b, Split(c, ...)))
+	splitHead := frags[len(frags)-1].start
+	for i := len(frags) - 2; i >= 0; i-- {
+		splitHead = c.builder.AddSplit(frags[i].start, splitHead)
+	}
 
 	if prev == InvalidState {
-		// First character - split becomes the start
-		*first = split
+		*first = splitHead
 	} else {
-		// Subsequent character - connect from previous
-		if err := c.builder.Patch(prev, split); err != nil {
+		if err := c.builder.Patch(prev, splitHead); err != nil {
 			return InvalidState, err
 		}
 	}
 
 	return nextState, nil
+}
+
+// foldOrbit returns all runes in the unicode.SimpleFold orbit of r.
+// The orbit always includes r itself. For example:
+//
+//	foldOrbit('K') = ['K', 'k', 'K'] (U+004B, U+006B, U+212A)
+//	foldOrbit('Σ') = ['Σ', 'σ', 'ς']
+//	foldOrbit('К') = ['К', 'к']
+func foldOrbit(r rune) []rune {
+	orbit := []rune{r}
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		orbit = append(orbit, f)
+	}
+	return orbit
 }
 
 // compileCaseSensitiveRune compiles a single rune in case-sensitive mode

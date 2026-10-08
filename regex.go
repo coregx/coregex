@@ -1,6 +1,6 @@
 // Package coregex provides a high-performance regex engine for Go.
 //
-// coregex achieves 5-50x speedup over Go's stdlib regexp through:
+// coregex achieves 3-3000x speedup over Go's stdlib regexp through:
 //   - Multi-engine architecture (NFA, Lazy DFA, prefilters)
 //   - SIMD-accelerated primitives (memchr, memmem, teddy)
 //   - Literal extraction and prefiltering
@@ -34,15 +34,10 @@
 //	re, err := coregex.CompileWithConfig("(a|b|c)*", config)
 //
 // Performance characteristics:
-//   - Patterns with literals: 5-50x faster (prefilter optimization)
+//   - Patterns with literals: 3-3000x faster (prefilter optimization)
 //   - Simple patterns: comparable to stdlib
 //   - Complex patterns: 2-10x faster (DFA avoids backtracking)
 //   - Worst case: guaranteed O(m*n) (ReDoS safe)
-//
-// Limitations (v1.0):
-//   - No capture groups (coming in v1.1)
-//   - No replace functions (coming in v1.1)
-//   - No multiline/case-insensitive flags (coming in v1.1)
 package coregex
 
 import (
@@ -50,10 +45,23 @@ import (
 	"iter"
 	"regexp/syntax"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/coregx/coregex/meta"
 )
+
+// advanceAfterEmpty returns the next position after an empty match.
+// Advances by one UTF-8 rune (not one byte) to respect codepoint boundaries,
+// matching Go stdlib regexp behavior. Invalid UTF-8 lead bytes advance by 1.
+func advanceAfterEmpty(b []byte, pos int) int {
+	if pos < len(b) {
+		_, w := utf8.DecodeRune(b[pos:])
+		return pos + w
+	}
+	return pos + 1
+}
 
 // stringToBytes converts string to []byte without allocation.
 // This is the Go equivalent of Rust's str.as_bytes() - a zero-cost reinterpret cast.
@@ -144,9 +152,15 @@ func MustCompile(pattern string) *Regex {
 // that early regular expression implementations used and that POSIX
 // specifies.
 func CompilePOSIX(pattern string) (*Regex, error) {
-	re, err := Compile(pattern)
+	config := meta.DefaultConfig()
+	config.POSIX = true
+	engine, err := meta.CompileWithConfig(pattern, config)
 	if err != nil {
 		return nil, err
+	}
+	re := &Regex{
+		engine:  engine,
+		pattern: pattern,
 	}
 	re.Longest()
 	return re, nil
@@ -310,7 +324,7 @@ func (r *Regex) Find(b []byte) []byte {
 	if !found {
 		return nil
 	}
-	return b[start:end]
+	return b[start:end:end]
 }
 
 // FindString returns a string holding the text of the leftmost match in s.
@@ -401,7 +415,7 @@ func (r *Regex) findAllStreaming(b []byte, n int) [][]byte {
 	// Convert indices to byte slices
 	matches := make([][]byte, len(streamResults))
 	for i, m := range streamResults {
-		matches[i] = b[m[0]:m[1]]
+		matches[i] = b[m[0]:m[1]:m[1]]
 	}
 
 	return matches
@@ -492,6 +506,9 @@ func (r *Regex) LiteralPrefix() (prefix string, complete bool) {
 func literalPrefix(re *syntax.Regexp) (string, bool) {
 	switch re.Op {
 	case syntax.OpLiteral:
+		if re.Flags&syntax.FoldCase != 0 {
+			return "", false
+		}
 		return string(re.Rune), true
 	case syntax.OpConcat:
 		// Concatenation: collect literal prefixes from the beginning
@@ -500,6 +517,9 @@ func literalPrefix(re *syntax.Regexp) (string, bool) {
 		for _, sub := range re.Sub {
 			switch sub.Op {
 			case syntax.OpLiteral:
+				if sub.Flags&syntax.FoldCase != 0 {
+					return string(prefix), false
+				}
 				prefix = append(prefix, sub.Rune...)
 			case syntax.OpCapture:
 				// Look inside capture group
@@ -804,7 +824,7 @@ func (r *Regex) ReplaceAllLiteral(src, repl []byte) []byte {
 		// This matches Go stdlib behavior (see FindAllIndex for details).
 		//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
 		if start == end && start == lastMatchEnd {
-			pos++
+			pos = advanceAfterEmpty(src, pos)
 			if pos > len(src) {
 				break
 			}
@@ -827,11 +847,11 @@ func (r *Regex) ReplaceAllLiteral(src, repl []byte) []byte {
 
 		switch {
 		case start == end:
-			pos = end + 1
+			pos = advanceAfterEmpty(src, end)
 		case end > pos:
 			pos = end
 		default:
-			pos++
+			pos = advanceAfterEmpty(src, pos)
 		}
 
 		if pos > len(src) {
@@ -875,7 +895,7 @@ func (r *Regex) ReplaceAllLiteralString(src, repl string) string {
 
 		//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
 		if start == end && start == lastMatchEnd {
-			pos++
+			pos = advanceAfterEmpty(b, pos)
 			if pos > len(src) {
 				break
 			}
@@ -897,11 +917,11 @@ func (r *Regex) ReplaceAllLiteralString(src, repl string) string {
 
 		switch {
 		case start == end:
-			pos = end + 1
+			pos = advanceAfterEmpty(b, end)
 		case end > pos:
 			pos = end
 		default:
-			pos++
+			pos = advanceAfterEmpty(b, pos)
 		}
 
 		if pos > len(src) {
@@ -945,52 +965,93 @@ func (r *Regex) ExpandString(dst []byte, template string, src string, match []in
 	return r.expand(dst, []byte(template), []byte(src), match)
 }
 
-// expand appends template to dst and returns the result; during the
-// append, it replaces $1, $2, etc. with the corresponding submatch.
-// $0 is the entire match.
+// expand appends template to dst, replacing $1, ${2}, $name, ${name}
+// with the corresponding submatch from match. $0 is the entire match.
+// $$ is replaced with a literal $. Unrecognized $ sequences are left as-is.
+// This matches Go stdlib regexp.Regexp.expand behavior.
 func (r *Regex) expand(dst []byte, template []byte, src []byte, match []int) []byte {
-	i := 0
-	for i < len(template) {
-		if template[i] != '$' || i+1 >= len(template) {
-			dst = append(dst, template[i])
-			i++
+	tmpl := string(template)
+	for tmpl != "" {
+		before, after, ok := strings.Cut(tmpl, "$")
+		if !ok {
+			break
+		}
+		dst = append(dst, before...)
+		tmpl = after
+		if tmpl != "" && tmpl[0] == '$' {
+			dst = append(dst, '$')
+			tmpl = tmpl[1:]
 			continue
 		}
-
-		// Handle $ escape sequences
-		next := template[i+1]
-
-		// Check for $0-$9
-		if next >= '0' && next <= '9' {
-			groupNum := int(next - '0')
-			// Each group occupies 2 indices in match array
-			groupIdx := groupNum * 2
-			if groupIdx+1 < len(match) && match[groupIdx] >= 0 {
-				dst = append(dst, src[match[groupIdx]:match[groupIdx+1]]...)
+		name, num, rest, ok := extractDollar(tmpl)
+		if !ok {
+			dst = append(dst, '$')
+			continue
+		}
+		tmpl = rest
+		if num >= 0 {
+			if 2*num+1 < len(match) && match[2*num] >= 0 {
+				dst = append(dst, src[match[2*num]:match[2*num+1]]...)
 			}
-			i += 2
-			continue
+		} else {
+			for i, namei := range r.SubexpNames() {
+				if name == namei && 2*i+1 < len(match) && match[2*i] >= 0 {
+					dst = append(dst, src[match[2*i]:match[2*i+1]]...)
+					break
+				}
+			}
 		}
+	}
+	dst = append(dst, tmpl...)
+	return dst
+}
 
-		// Check for ${name} - not supported yet, treat as literal
-		if next == '{' {
-			dst = append(dst, '$')
-			i++
-			continue
+// extractDollar parses a group reference after '$': "name", "{name}", "12", "{12}".
+// Returns the name string, a numeric index (or -1 for named groups), the remaining
+// template, and whether parsing succeeded. Matches Go stdlib regexp.extract.
+func extractDollar(str string) (string, int, string, bool) {
+	if str == "" {
+		return "", 0, "", false
+	}
+	brace := false
+	if str[0] == '{' {
+		brace = true
+		str = str[1:]
+	}
+	i := 0
+	for i < len(str) {
+		r, size := utf8.DecodeRuneInString(str[i:])
+		if !isIdentRune(r) {
+			break
 		}
-
-		// $$ -> $
-		if next == '$' {
-			dst = append(dst, '$')
-			i += 2
-			continue
+		i += size
+	}
+	if i == 0 {
+		return "", 0, "", false
+	}
+	name := str[:i]
+	if brace {
+		if i >= len(str) || str[i] != '}' {
+			return "", 0, "", false
 		}
-
-		// Unknown $ escape, treat as literal
-		dst = append(dst, '$')
 		i++
 	}
-	return dst
+	num := 0
+	for j := 0; j < len(name); j++ {
+		if name[j] < '0' || '9' < name[j] || num >= 1e8 {
+			num = -1
+			break
+		}
+		num = num*10 + int(name[j]) - '0'
+	}
+	if name[0] == '0' && len(name) > 1 {
+		num = -1
+	}
+	return name, num, str[i:], true
+}
+
+func isIdentRune(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // ReplaceAll returns a copy of src, replacing matches of the pattern
@@ -1064,7 +1125,7 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 		// This matches Go's stdlib behavior for preventing duplicate empty matches.
 		//nolint:gocritic // badCond: intentional - checking empty match at lastNonEmptyMatchEnd
 		if absStart == absEnd && absStart == lastNonEmptyMatchEnd {
-			pos++
+			pos = advanceAfterEmpty(src, pos)
 			if pos > len(src) {
 				break
 			}
@@ -1087,13 +1148,11 @@ func (r *Regex) ReplaceAll(src, repl []byte) []byte {
 		// Move position past this match
 		switch {
 		case absStart == absEnd:
-			// Empty match: advance by 1 to avoid infinite loop
-			pos = absEnd + 1
+			pos = advanceAfterEmpty(src, absEnd)
 		case absEnd > pos:
 			pos = absEnd
 		default:
-			// Fallback (shouldn't normally happen)
-			pos++
+			pos = advanceAfterEmpty(src, pos)
 		}
 
 		if pos > len(src) {
@@ -1148,7 +1207,7 @@ func (r *Regex) ReplaceAllFunc(src []byte, repl func([]byte) []byte) []byte {
 
 		//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
 		if start == end && start == lastMatchEnd {
-			pos++
+			pos = advanceAfterEmpty(src, pos)
 			if pos > len(src) {
 				break
 			}
@@ -1170,11 +1229,11 @@ func (r *Regex) ReplaceAllFunc(src []byte, repl func([]byte) []byte) []byte {
 
 		switch {
 		case start == end:
-			pos = end + 1
+			pos = advanceAfterEmpty(src, end)
 		case end > pos:
 			pos = end
 		default:
-			pos++
+			pos = advanceAfterEmpty(src, pos)
 		}
 
 		if pos > len(src) {
@@ -1222,7 +1281,7 @@ func (r *Regex) ReplaceAllStringFunc(src string, repl func(string) string) strin
 
 		//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
 		if start == end && start == lastMatchEnd {
-			pos++
+			pos = advanceAfterEmpty(b, pos)
 			if pos > len(src) {
 				break
 			}
@@ -1244,11 +1303,11 @@ func (r *Regex) ReplaceAllStringFunc(src string, repl func(string) string) strin
 
 		switch {
 		case start == end:
-			pos = end + 1
+			pos = advanceAfterEmpty(b, end)
 		case end > pos:
 			pos = end
 		default:
-			pos++
+			pos = advanceAfterEmpty(b, pos)
 		}
 
 		if pos > len(src) {
@@ -1289,50 +1348,30 @@ func (r *Regex) Split(s string, n int) []string {
 	if n == 0 {
 		return nil
 	}
-
-	indices := r.FindAllStringIndex(s, -1)
-	if len(indices) == 0 {
-		// No matches, return entire string
-		return []string{s}
+	if r.pattern != "" && s == "" {
+		return []string{""}
 	}
 
-	// Determine the number of splits
-	numSplits := len(indices) + 1
-	if n > 0 && n < numSplits {
-		numSplits = n
-	}
+	matches := r.FindAllStringIndex(s, n)
+	result := make([]string, 0, len(matches))
 
-	// Pre-allocate result slice
-	result := make([]string, 0, numSplits)
-
-	lastEnd := 0
-	for _, idx := range indices {
-		// Skip empty match at the beginning (position 0 with zero-width match)
-		// This matches stdlib behavior: Split("", "abc") = ["a", "b", "c"], not ["", "a", "b", "c", ""]
-		if lastEnd == 0 && idx[0] == 0 && idx[1] == 0 {
-			continue
-		}
-
-		// Skip empty match at the very end of string
-		if idx[0] == len(s) && idx[1] == len(s) {
+	beg := 0
+	end := 0
+	for _, match := range matches {
+		if n > 0 && len(result) >= n-1 {
 			break
 		}
-
-		// Add substring before match
-		result = append(result, s[lastEnd:idx[0]])
-		lastEnd = idx[1]
-
-		// Check if we've reached the limit (but need room for final element)
-		if n > 0 && len(result) >= n-1 {
-			// Add the rest as the final element
-			result = append(result, s[lastEnd:])
-			return result
+		end = match[0]
+		if match[1] != 0 {
+			result = append(result, s[beg:end])
 		}
+		beg = match[1]
 	}
 
-	// Add remaining text after last match
-	// Always add even if empty (matches stdlib behavior)
-	result = append(result, s[lastEnd:])
+	if end != len(s) {
+		result = append(result, s[beg:])
+	}
+
 	return result
 }
 
@@ -1495,7 +1534,7 @@ func (r *Regex) AllIndex(b []byte) iter.Seq[[2]int] {
 			// This matches Go stdlib behavior.
 			//nolint:gocritic // badCond: intentional - checking empty match at lastMatchEnd
 			if start == end && start == lastMatchEnd {
-				pos++
+				pos = advanceAfterEmpty(b, pos)
 				if pos > len(b) {
 					return
 				}
@@ -1504,11 +1543,9 @@ func (r *Regex) AllIndex(b []byte) iter.Seq[[2]int] {
 			if !yield([2]int{start, end}) {
 				return
 			}
-			if start != end {
-				lastMatchEnd = end
-			}
+			lastMatchEnd = end
 			if end == pos {
-				pos++
+				pos = advanceAfterEmpty(b, pos)
 			} else {
 				pos = end
 			}
@@ -1545,7 +1582,7 @@ func (r *Regex) AllStringIndex(s string) iter.Seq[[2]int] {
 func (r *Regex) All(b []byte) iter.Seq[[]byte] {
 	return func(yield func([]byte) bool) {
 		for m := range r.AllIndex(b) {
-			if !yield(b[m[0]:m[1]]) {
+			if !yield(b[m[0]:m[1]:m[1]]) {
 				return
 			}
 		}

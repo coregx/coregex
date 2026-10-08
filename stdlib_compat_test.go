@@ -734,7 +734,7 @@ var replaceTests = []ReplaceTest{
 }
 
 var replaceLiteralTests = []ReplaceTest{
-	// Substitutions should be literal
+	// Substitutions should be literal (no $ expansion in ReplaceAllLiteral)
 	{"a+", "($0)", "banana", "b($0)n($0)n($0)"},
 	{"a+", "(${0})", "banana", "b(${0})n(${0})n(${0})"},
 	{"hello, (.+)", "goodbye, ${1}", "hello, world", "goodbye, ${1}"},
@@ -1348,12 +1348,7 @@ func TestStdlibCompat_LiteralPrefix(t *testing.T) {
 }
 
 func TestStdlibCompat_CaseFolding(t *testing.T) {
-	// Known differences: case-insensitive matching with overlapping matches
-	// may produce different match boundaries
-	caseFoldingKnownDiffs := map[string]string{
-		`(?i)hello`: "case-insensitive overlapping match boundaries differ",
-		`(?i)abc`:   "case-insensitive overlapping match boundaries differ",
-	}
+	caseFoldingKnownDiffs := map[string]string{}
 
 	patterns := []struct {
 		pattern string

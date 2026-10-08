@@ -418,10 +418,7 @@ func TestUnicodeEdgeCases(t *testing.T) {
 		{`[A-Za-zА-Яа-я]+`, "Hello Мир", ""},
 		// Dot with unicode
 		{`.+`, "hello мир", ""},
-		// KNOWN LIMITATION: . matches bytes, not Unicode codepoints
-		// This is a design tradeoff for performance. Use (?s:.) for codepoint matching.
-		// See: https://github.com/coregx/coregex/issues/TBD for tracking.
-		{`.{3}`, "абв", "known limitation: . matches bytes, not Unicode codepoints"},
+		{`.{3}`, "абв", ""},
 		// Case insensitive with unicode
 		{"(?i)hello", "HELLO", ""},
 		{"(?i)привет", "ПРИВЕТ", ""},

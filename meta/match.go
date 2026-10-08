@@ -196,7 +196,7 @@ func (m *MatchWithCaptures) Group(index int) []byte {
 	}
 	start, end := m.captures[index][0], m.captures[index][1]
 	if start >= 0 && end >= start && end <= len(m.haystack) {
-		return m.haystack[start:end]
+		return m.haystack[start:end:end]
 	}
 	return nil
 }

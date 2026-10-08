@@ -12,6 +12,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))
 - SIMD prefilter for CompositeSequenceDFA (#83)
 
+## [0.12.26] - 2026-10-09
+
+### Security
+- **Compile-time DoS**: `cloneRegexp` in `literal/extractor.go` cloned both `Sub` and
+  `Sub0` arrays, causing 2^depth blowup. A 15-character pattern (`.(?:ac*d|ac)xy*`)
+  caused >3 GB allocation and >15 s compile time. Now instant.
+
+### Fixed
+- **DFA cache overflow**: `\pL+` FindAll on inputs ≥10 KB returned only 1 match instead
+  of thousands. Reverse DFA NFA fallback ran PikeVM forward on reversed UTF-8 byte
+  sequences, producing no matches for multi-byte characters
+- **UTF-8 empty match advancement**: empty matches advanced by byte instead of rune,
+  producing invalid UTF-8 from `ReplaceAllString` on multibyte input and wrong results
+  from `Split`/`FindAll` on non-ASCII text (8 functions, 22 call sites)
+- **Unicode `(?i)` case folding**: NFA compiler only folded ASCII letters. Cyrillic,
+  Greek sigma (Σ/σ/ς), Kelvin sign (K/k/K), long s (ſ/s/S), and all other
+  `unicode.SimpleFold` orbits now handled correctly
+- **`expand()` templates**: `${N}`, `${name}`, `$name`, multi-digit `$10` now work,
+  matching stdlib `regexp.Regexp.Expand` behavior
+- **`CompilePOSIX`**: validated POSIX syntax but compiled with Perl flags — `^`/`$`
+  multiline and `[^a]` newline semantics now correct. Also rejects Perl-only syntax
+  (`\d`, `\w`, `(?i)`, `\pL`)
+- **Empty capture at end of input**: `()` on `"abc"` last FindAll match gave `[-1,-1]`
+  instead of `[3,3]` — PikeVM short-circuit bypassed capture slot population
+- **`AllIndex` iterator**: `\b` produced duplicate zero-width matches
+- **`Split(n=1)`**: returned 2 elements instead of original string
+- **`Split("","",n)`**: returned `[""]` instead of `[]`
+- **`LiteralPrefix`**: returned `("ABC", true)` for `(?i)abc` — ignored FoldCase flag
+- **`Find`/`FindAll`/`FindSubmatch`**: returned slices with `cap > len`, allowing
+  `append` to corrupt the original buffer. Now uses three-index slicing
+- **Repeated capture groups**: `(aa)*$` via `UseReverseAnchored` two-phase search
+  lost capture slot data
+- **`debugStrategy`**: `re.String()` evaluated unconditionally — `uri` compile time
+  reduced from 9 ms to ~0.1 ms
+- **DFA/NFA threshold**: raised from 200 to 250 to accommodate SimpleFold NFA state
+  growth (prevents strategy misrouting for `(?i)` patterns near the boundary)
+- Removed outdated godoc "Limitations (v1.0): No capture groups, no replace, no flags"
+- Removed outdated skip entries in fuzz/compat tests for `.{3}` and `(?i)` patterns
+
+### Known Issues
+- Negated character classes (`\S`, `\W`, `\D`, `[^a]`) match individual bytes, not
+  Unicode codepoints — false positives on multibyte input
+- Lazy quantifiers on top-level (`\d+?`, `\w+?`) behave as greedy when not followed
+  by a consuming tail
+- `FindAllIndex` and `FindAllSubmatchIndex` may return different match boundaries for
+  patterns with optional prefixes
+- `.` does not match a single invalid UTF-8 lead byte (intentional deviation)
+- `FindReaderIndex` returns shifted byte offsets on invalid UTF-8 input;
+  `MatchReader` reads entire stream instead of stopping at first match
+- `\pL+` on inputs >10 KB is correct but slow (~50 μs/byte via PikeVM fallback)
+- `Copy()` recompiles the pattern and loses custom `Config`
+
 ## [0.12.25] - 2026-09-06
 
 ### Changed

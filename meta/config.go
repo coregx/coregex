@@ -63,6 +63,12 @@ type Config struct {
 	// Default: 100
 	MaxRecursionDepth int
 
+	// POSIX enables POSIX ERE syntax and semantics.
+	// When true, ^ and $ are multiline, [^a] doesn't match \n, and
+	// leftmost-longest match semantics are used.
+	// Default: false
+	POSIX bool
+
 	// EnableASCIIOptimization enables ASCII runtime detection (V11-002 optimization).
 	// When true and the pattern contains '.', two NFAs are compiled:
 	//   - UTF-8 NFA: handles all valid UTF-8 codepoints (~28 states per '.')
