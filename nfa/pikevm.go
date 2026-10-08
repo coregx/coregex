@@ -2198,19 +2198,12 @@ func (p *PikeVM) SearchWithSlotTableCapturesAt(haystack []byte, at int) *MatchWi
 
 	numGroups := p.nfa.CaptureCount()
 
-	if at == len(haystack) {
-		if p.matchesEmptyAt(haystack, at) {
-			return p.buildCapturesFromSlots(nil, at, at)
-		}
-		return nil
-	}
-	if len(haystack) == 0 {
-		if p.matchesEmpty() {
-			return p.buildCapturesFromSlots(nil, 0, 0)
-		}
-		return nil
-	}
 	_ = numGroups
+
+	if at == len(haystack) || len(haystack) == 0 {
+		// Fall through to full search — it handles EOI via epsilon closure
+		// and produces proper capture slots (unlike matchesEmptyAt which has none).
+	}
 
 	if p.nfa.IsAnchored() {
 		return p.searchWithSlotTableCapturesAnchored(haystack, at)

@@ -1350,53 +1350,30 @@ func (r *Regex) Split(s string, n int) []string {
 	if n == 0 {
 		return nil
 	}
-	if n == 1 {
-		return []string{s}
+	if len(r.pattern) > 0 && len(s) == 0 {
+		return []string{""}
 	}
 
-	indices := r.FindAllStringIndex(s, -1)
-	if len(indices) == 0 {
-		// No matches, return entire string
-		return []string{s}
-	}
+	matches := r.FindAllStringIndex(s, n)
+	result := make([]string, 0, len(matches))
 
-	// Determine the number of splits
-	numSplits := len(indices) + 1
-	if n > 0 && n < numSplits {
-		numSplits = n
-	}
-
-	// Pre-allocate result slice
-	result := make([]string, 0, numSplits)
-
-	lastEnd := 0
-	for _, idx := range indices {
-		// Skip empty match at the beginning (position 0 with zero-width match)
-		// This matches stdlib behavior: Split("", "abc") = ["a", "b", "c"], not ["", "a", "b", "c", ""]
-		if lastEnd == 0 && idx[0] == 0 && idx[1] == 0 {
-			continue
-		}
-
-		// Skip empty match at the very end of string
-		if idx[0] == len(s) && idx[1] == len(s) {
+	beg := 0
+	end := 0
+	for _, match := range matches {
+		if n > 0 && len(result) >= n-1 {
 			break
 		}
-
-		// Add substring before match
-		result = append(result, s[lastEnd:idx[0]])
-		lastEnd = idx[1]
-
-		// Check if we've reached the limit (but need room for final element)
-		if n > 0 && len(result) >= n-1 {
-			// Add the rest as the final element
-			result = append(result, s[lastEnd:])
-			return result
+		end = match[0]
+		if match[1] != 0 {
+			result = append(result, s[beg:end])
 		}
+		beg = match[1]
 	}
 
-	// Add remaining text after last match
-	// Always add even if empty (matches stdlib behavior)
-	result = append(result, s[lastEnd:])
+	if end != len(s) {
+		result = append(result, s[beg:])
+	}
+
 	return result
 }
 
@@ -1568,9 +1545,7 @@ func (r *Regex) AllIndex(b []byte) iter.Seq[[2]int] {
 			if !yield([2]int{start, end}) {
 				return
 			}
-			if start != end {
-				lastMatchEnd = end
-			}
+			lastMatchEnd = end
 			if end == pos {
 				pos = advanceAfterEmpty(b, pos)
 			} else {
@@ -1609,7 +1584,7 @@ func (r *Regex) AllStringIndex(s string) iter.Seq[[2]int] {
 func (r *Regex) All(b []byte) iter.Seq[[]byte] {
 	return func(yield func([]byte) bool) {
 		for m := range r.AllIndex(b) {
-			if !yield(b[m[0]:m[1]]) {
+			if !yield(b[m[0]:m[1]:m[1]]) {
 				return
 			}
 		}

@@ -41,18 +41,19 @@ func TestCompilePOSIX_Semantics(t *testing.T) {
 	}
 }
 
-// === (2) Empty capture at end of input ===
+// === (2) Empty capture at end of input — FindALL last match ===
 
-func TestEmptyCaptureAtEnd(t *testing.T) {
+func TestEmptyCaptureAtEnd_FindAll(t *testing.T) {
 	tests := []struct {
 		pattern string
 		input   string
 	}{
+		{`()`, "abc"},
+		{`(|a)*`, "aa"},
+		{`()`, "日"},
 		{`(x?)`, "ab"},
 		{`(a*)`, "b"},
-		{`()`, "abc"},
 		{`(a?)`, "b"},
-		{`(z*)`, "abc"},
 	}
 
 	for _, tt := range tests {
@@ -60,71 +61,95 @@ func TestEmptyCaptureAtEnd(t *testing.T) {
 			re := MustCompile(tt.pattern)
 			reStd := regexp.MustCompile(tt.pattern)
 
-			cgx := re.FindStringSubmatchIndex(tt.input)
-			std := reStd.FindStringSubmatchIndex(tt.input)
+			cgxAll := re.FindAllStringSubmatchIndex(tt.input, -1)
+			stdAll := reStd.FindAllStringSubmatchIndex(tt.input, -1)
 
-			if fmt.Sprintf("%v", cgx) != fmt.Sprintf("%v", std) {
-				t.Errorf("FindStringSubmatchIndex(%q, %q):\n  coregex=%v\n  stdlib =%v",
-					tt.pattern, tt.input, cgx, std)
+			if len(cgxAll) != len(stdAll) {
+				t.Errorf("FindAllStringSubmatchIndex(%q, %q): coregex %d matches, stdlib %d matches",
+					tt.pattern, tt.input, len(cgxAll), len(stdAll))
+				return
+			}
+
+			for i := range stdAll {
+				if fmt.Sprintf("%v", cgxAll[i]) != fmt.Sprintf("%v", stdAll[i]) {
+					t.Errorf("FindAllStringSubmatchIndex(%q, %q) match[%d]:\n  coregex=%v\n  stdlib =%v",
+						tt.pattern, tt.input, i, cgxAll[i], stdAll[i])
+				}
 			}
 		})
 	}
 }
 
-// === (3) AllIndex duplicates zero-width matches ===
+// === (3) AllStringIndex/AllIndex iterator duplicates zero-width ===
 
-func TestAllIndexNoDuplicateZeroWidth(t *testing.T) {
+func TestAllStringIndex_NoDuplicates(t *testing.T) {
 	tests := []struct {
 		pattern string
 		input   string
 	}{
 		{`\b`, "ab cd"},
-		{`\b`, "hello"},
-		{`^`, "abc"},
-		{`$`, "abc"},
+		{`\B`, "ab cd"},
+		{`$`, "a\n"},
+		{`(?m)^`, "日\n本"},
 	}
 
 	for _, tt := range tests {
-		t.Run(fmt.Sprintf("%s/%s", tt.pattern, tt.input), func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/%q", tt.pattern, tt.input), func(t *testing.T) {
 			re := MustCompile(tt.pattern)
 			reStd := regexp.MustCompile(tt.pattern)
 
-			cgx := re.FindAllStringIndex(tt.input, -1)
-			std := reStd.FindAllStringIndex(tt.input, -1)
+			// Collect via iterator
+			var cgxResults [][]int
+			for m := range re.AllStringIndex(tt.input) {
+				cgxResults = append(cgxResults, []int{m[0], m[1]})
+			}
 
-			if fmt.Sprintf("%v", cgx) != fmt.Sprintf("%v", std) {
-				t.Errorf("FindAllStringIndex(%q, %q):\n  coregex=%v\n  stdlib =%v",
-					tt.pattern, tt.input, cgx, std)
+			stdResults := reStd.FindAllStringIndex(tt.input, -1)
+
+			if fmt.Sprintf("%v", cgxResults) != fmt.Sprintf("%v", stdResults) {
+				t.Errorf("AllStringIndex(%q, %q):\n  coregex=%v\n  stdlib =%v",
+					tt.pattern, tt.input, cgxResults, stdResults)
 			}
 		})
 	}
 }
 
-// === (4) Trivial: Split("","",n) ===
+// === (4a) Split("","",n): nil vs []string{} ===
 
 func TestSplitEmptyEmpty(t *testing.T) {
-	tests := []struct {
-		input string
-		n     int
-	}{
-		{"", -1},
-		{"", 0},
-		{"", 1},
-		{"", 2},
-	}
-
 	re := MustCompile("")
 	reStd := regexp.MustCompile("")
 
-	for _, tt := range tests {
-		t.Run(fmt.Sprintf("n=%d", tt.n), func(t *testing.T) {
-			cgx := re.Split(tt.input, tt.n)
-			std := reStd.Split(tt.input, tt.n)
+	for _, n := range []int{-1, 0, 1, 2} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			cgx := re.Split("", n)
+			std := reStd.Split("", n)
 
-			if fmt.Sprintf("%v", cgx) != fmt.Sprintf("%v", std) {
-				t.Errorf("Split(\"\", \"\", %d):\n  coregex=%v (len=%d)\n  stdlib =%v (len=%d)",
-					tt.n, cgx, len(cgx), std, len(std))
+			cgxNil := cgx == nil
+			stdNil := std == nil
+
+			if cgxNil != stdNil {
+				t.Errorf("Split(\"\", \"\", %d): coregex nil=%v (len=%d), stdlib nil=%v (len=%d)",
+					n, cgxNil, len(cgx), stdNil, len(std))
+			}
+			if len(cgx) != len(std) {
+				t.Errorf("Split(\"\", \"\", %d): coregex len=%d, stdlib len=%d",
+					n, len(cgx), len(std))
 			}
 		})
+	}
+}
+
+// === (4b) All(b) iterator: cap == len ===
+
+func TestAllIterator_ThreeIndexSlice(t *testing.T) {
+	re := MustCompile(`\w+`)
+	input := []byte("hello world")
+
+	for m := range re.All(input) {
+		if cap(m) != len(m) {
+			t.Errorf("All() match %q: cap=%d > len=%d — append would corrupt buffer",
+				m, cap(m), len(m))
+		}
 	}
 }
