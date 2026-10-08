@@ -28,10 +28,11 @@ func init() {
 }
 
 // debugStrategy logs strategy selection details at compile time.
-func debugStrategy(pattern string, strategy Strategy, nfaStates int, lits *literal.Seq, reason string) {
+func debugStrategy(re *syntax.Regexp, strategy Strategy, nfaStates int, lits *literal.Seq, reason string) {
 	if debugLevel < 1 {
 		return
 	}
+	pattern := re.String()
 	litCount := 0
 	litComplete := false
 	if lits != nil {
