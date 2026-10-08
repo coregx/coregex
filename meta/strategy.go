@@ -1518,11 +1518,12 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	// Patterns like "ABXBYXCX" or "(foo|foobar)\d+" benefit massively from:
 	//  1. Prefilter finds literal candidates quickly (5-50x speedup)
 	//  2. DFA verifies with O(n) deterministic scan
-	// BUT: very large NFAs (>200 states, e.g., (?i) case-fold expansions)
-	// cause DFA cache thrashing even with prefilter — incomplete literals
-	// mean DFA must explore many states per candidate. Fall back to NFA.
+	// BUT: very large NFAs cause DFA cache thrashing even with prefilter —
+	// incomplete literals mean DFA must explore many states per candidate.
+	// Threshold 250 accommodates (?i) case-fold expansion via SimpleFold
+	// orbits (adds ~3-10% NFA states for non-ASCII fold equivalents).
 	if litAnalysis.hasGoodLiterals || litAnalysis.hasTeddyLiterals {
-		if nfaSize > 200 && !literals.AllComplete() {
+		if nfaSize > 250 && !literals.AllComplete() {
 			return UseNFA
 		}
 		return UseDFA
