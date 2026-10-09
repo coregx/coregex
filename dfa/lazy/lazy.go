@@ -320,9 +320,11 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 		}
 	}
 
+	// EOI: truncated UTF-8 at end → PikeVM fallback
+	if d.needsEOIFallback(cache, sid) {
+		return d.nfaFallbackAnchored(haystack, at)
+	}
 	// EOI: check for delayed match at end of input.
-	// The current state's NFA states may contain a match that hasn't been
-	// reported yet (no more bytes to trigger the delay).
 	eoi := cache.getState(sid)
 	if eoi != nil && d.checkEOIMatch(eoi) {
 		return len(haystack)
@@ -517,7 +519,10 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 		pos++
 	}
 
-	// EOI match check
+	// EOI: truncated UTF-8 at end → PikeVM fallback
+	if d.needsEOIFallback(cache, sid) {
+		return d.nfaFallback(haystack, startPos)
+	}
 	eoi := cache.getState(sid)
 	if eoi != nil && d.checkEOIMatch(eoi) {
 		return len(haystack)
@@ -826,10 +831,10 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 	}
 
 	// Reached end of input without finding a match in the loop.
-	// But we might still match if there are pending word boundary assertions
-	// that are satisfied at end-of-input.
-	// Example: pattern `test\b` matching "test" - the \b is satisfied at EOI
-	// because prev='t'(word), next=none(non-word) → word boundary.
+	if d.needsEOIFallback(cache, sid) {
+		start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+		return matched && start >= 0 && end >= start
+	}
 	eoi := cache.getState(sid)
 	return eoi != nil && d.checkEOIMatch(eoi)
 }
@@ -929,6 +934,10 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 		}
 	}
 
+	if d.needsEOIFallback(cache, sid) {
+		start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+		return matched && start == startPos && end >= start
+	}
 	eoi := cache.getState(sid)
 	return eoi != nil && d.checkEOIMatch(eoi)
 }
@@ -1078,7 +1087,10 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 		pos++
 	}
 
-	// EOI check for delayed match
+	// EOI: truncated UTF-8 at end → PikeVM fallback
+	if d.needsEOIFallback(cache, sid) {
+		return d.nfaFallback(haystack, 0)
+	}
 	eoi := cache.getState(sid)
 	if eoi != nil && d.checkEOIMatch(eoi) {
 		return len(haystack)
@@ -1328,7 +1340,10 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 		pos++
 	}
 
-	// EOI: check for delayed match at end of input
+	// EOI: truncated UTF-8 at end → PikeVM fallback
+	if d.needsEOIFallback(cache, sid) {
+		return d.nfaFallback(haystack, startPos)
+	}
 	eoi := cache.getState(sid)
 	if eoi != nil && d.checkEOIMatch(eoi) {
 		return len(haystack)
@@ -1357,14 +1372,23 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 //
 //	or if determinization limit exceeded.
 func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, error) {
-	// Temporary 3c: when the NFA has LookInvalidUTF8 assertions, the DFA
-	// cannot evaluate them (requires look-ahead/look-behind). Quit on any
-	// byte >= 0x80 and let PikeVM handle it. Phase 3 replaces this with a
-	// UTF-8 validator product that quits only on structurally invalid bytes.
+	// UTF-8 validator product: when the NFA has LookInvalidUTF8, track
+	// the validator state to distinguish valid continuations from invalid
+	// bytes. Quit only on structurally invalid UTF-8 — valid non-ASCII
+	// bytes stay in DFA (no more blanket 3c quit).
+	var nextValidatorState uint8
 	if d.hasInvalidUTF8Look && b >= 0x80 {
-		classIdx := d.byteToClass(b)
-		cache.SetFlatTransition(current.id, int(classIdx), QuitState)
-		return nil, &DFAError{Kind: NFAFallback, Message: "quit: byte >= 0x80 with LookInvalidUTF8"}
+		vs := current.ValidatorState()
+		nextVS, quit := ValidatorTransition(vs, b)
+		if quit {
+			classIdx := d.byteToClass(b)
+			cache.SetFlatTransition(current.id, int(classIdx), QuitState)
+			return nil, &DFAError{Kind: NFAFallback, Message: "quit: invalid UTF-8 byte"}
+		}
+		nextValidatorState = nextVS
+	} else if d.hasInvalidUTF8Look {
+		// ASCII byte resets validator to VS0 (codepoint boundary)
+		nextValidatorState = VS0
 	}
 
 	// Need builder for move operations.
@@ -1427,10 +1451,8 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 	// needs to know what byte got us there (for the next transition's word boundary check)
 	nextIsFromWord := isWordByte(b)
 
-	// Compute state key INCLUDING word context AND match delay flag.
-	// With match delay, the same NFA state set can produce both match and
-	// non-match DFA states (depending on whether the source had NFA match).
-	key := ComputeStateKeyWithWordAndMatch(nextNFAStates, nextIsFromWord, isMatch)
+	// Compute state key INCLUDING word context, match delay, and validator state.
+	key := ComputeStateKeyFull(nextNFAStates, nextIsFromWord, isMatch, nextValidatorState)
 
 	// Check if state already exists in cache
 	if existing, ok := cache.Get(key); ok {
@@ -1442,6 +1464,7 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 
 	// Create new DFA state with word context and compressed alphabet stride
 	newState := NewStateWithStride(InvalidState, nextNFAStates, isMatch, nextIsFromWord, d.AlphabetLen())
+	newState.validatorState = nextValidatorState
 
 	// Pre-compute word boundary match flags to avoid per-byte checkWordBoundaryMatch.
 	// This eliminates the expensive Builder + resolveWordBoundaries call in the hot loop.
@@ -1649,6 +1672,17 @@ func (d *DFA) getStartState(cache *DFACache, haystack []byte, pos int, anchored 
 // This is the common case for Find() operations.
 func (d *DFA) getStartStateForUnanchored(cache *DFACache, haystack []byte, pos int) *State {
 	return d.getStartState(cache, haystack, pos, false)
+}
+
+// needsEOIFallback returns true if the DFA is inside a truncated UTF-8
+// sequence at end of input. The DFA consumed lead bytes that should have
+// been matched as U+FFFD by PikeVM. Only relevant when hasInvalidUTF8Look.
+func (d *DFA) needsEOIFallback(cache *DFACache, sid StateID) bool {
+	if !d.hasInvalidUTF8Look {
+		return false
+	}
+	st := cache.getState(sid)
+	return st != nil && st.ValidatorState() != VS0
 }
 
 // nfaFallback executes the NFA (PikeVM) when DFA gives up.
