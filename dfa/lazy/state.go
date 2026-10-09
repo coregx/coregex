@@ -27,11 +27,11 @@ type StateID uint32
 
 // Tag bit masks for StateID high bits.
 const (
-	tagInvalid  StateID = 1 << 31 // Unknown/not yet computed transition
-	tagDead     StateID = 1 << 30 // Dead state — no match possible
-	tagQuit     StateID = 1 << 29 // DFA cannot handle this byte — fall back to NFA
-	tagStart    StateID = 1 << 28 // Start state
-	tagMatch    StateID = 1 << 27 // Match/accepting state
+	tagInvalid StateID = 1 << 31 // Unknown/not yet computed transition
+	tagDead    StateID = 1 << 30 // Dead state — no match possible
+	tagQuit    StateID = 1 << 29 // DFA cannot handle this byte — fall back to NFA
+	tagStart   StateID = 1 << 28 // Start state
+	tagMatch   StateID = 1 << 27 // Match/accepting state
 
 	// TagMask extracts the offset (lower 27 bits).
 	// Any bit above this = special state requiring slow path.

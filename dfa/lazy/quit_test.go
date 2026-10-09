@@ -99,6 +99,42 @@ func TestQuitStateIsMatch(t *testing.T) {
 	}
 }
 
+// TestQuitStateAnchored verifies that QuitState in SearchAtAnchored does NOT
+// produce false positives from unanchored matches at other positions.
+// Pattern "b+" at position 0 of "ab": anchored answer is -1 (no 'b' at 0),
+// but unanchored would return 2 (match at position 1). QuitState must use
+// the anchored fallback.
+func TestQuitStateAnchored(t *testing.T) {
+	dfa, err := CompilePattern("b+")
+	if err != nil {
+		t.Fatalf("CompilePattern: %v", err)
+	}
+
+	hay := []byte("ab")
+
+	// Baseline: anchored search at 0 should find no match (first byte is 'a')
+	cache := dfa.NewCache()
+	baseline := dfa.SearchAtAnchored(cache, hay, 0)
+	if baseline != -1 {
+		t.Fatalf("baseline SearchAtAnchored = %d, want -1", baseline)
+	}
+
+	// Inject QuitState on 'a' from anchored start state at position 0
+	cache2 := dfa.NewCache()
+	startState := dfa.getStartState(cache2, hay, 0, true)
+	if startState == nil {
+		t.Fatal("failed to get anchored start state")
+	}
+	classIdx := int(dfa.byteToClass('a'))
+	cache2.SetFlatTransition(startState.id, classIdx, QuitState)
+
+	got := dfa.SearchAtAnchored(cache2, hay, 0)
+	if got != -1 {
+		t.Errorf("SearchAtAnchored with QuitState on 'a' = %d, want -1 "+
+			"(anchored fallback must not return unanchored match)", got)
+	}
+}
+
 // TestQuitStateConstants verifies tag bit semantics.
 func TestQuitStateConstants(t *testing.T) {
 	if !QuitState.IsTagged() {

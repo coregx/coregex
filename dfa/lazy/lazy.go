@@ -304,7 +304,7 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 			return lastMatch
 
 		case QuitState:
-			return d.nfaFallback(haystack, at)
+			return d.nfaFallbackAnchored(haystack, at)
 
 		default:
 			sid = nextID
@@ -1665,6 +1665,17 @@ func (d *DFA) nfaFallback(haystack []byte, startPos int) int {
 	return end
 }
 
+// nfaFallbackAnchored is like nfaFallback but requires the match to start
+// exactly at startPos. Used by SearchAtAnchored where unanchored fallback
+// would produce false positives from matches after the expected position.
+func (d *DFA) nfaFallbackAnchored(haystack []byte, startPos int) int {
+	start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+	if !matched || start != startPos {
+		return -1
+	}
+	return end
+}
+
 // matchesEmpty checks if the pattern matches an empty string
 func (d *DFA) matchesEmpty(cache *DFACache) bool {
 	// With 1-byte match delay, the start state is never tagged as match.
@@ -2143,7 +2154,7 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 			return false
 
 		case QuitState:
-			_, _, matched := d.pikevm.Search(haystack[start:end])
+			_, _, matched := d.pikevm.SearchBetween(haystack, start, end)
 			return matched
 
 		default:
@@ -2201,11 +2212,12 @@ func (d *DFA) getStartStateForReverse(cache *DFACache, haystack []byte, end int)
 }
 
 // nfaFallbackReverse handles NFA fallback for reverse search.
+// Uses SearchBetween to preserve full haystack context (word boundaries,
+// LookInvalidUTF8 rune-boundary check need bytes before start).
 func (d *DFA) nfaFallbackReverse(haystack []byte, start, end int) int {
-	// For reverse fallback, we need to search the region and find match start
-	matchStart, _, matched := d.pikevm.Search(haystack[start:end])
+	matchStart, _, matched := d.pikevm.SearchBetween(haystack, start, end)
 	if !matched {
 		return -1
 	}
-	return start + matchStart
+	return matchStart
 }
