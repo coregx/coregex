@@ -568,24 +568,17 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 	}
 
 	// Build non-ASCII part
-	if len(nonASCIIRanges) > 0 {
-		if coversAllNonASCII {
-			// Optimization: use efficient "any valid UTF-8 multi-byte" approach
-			// This is correct because we're matching ALL non-ASCII codepoints
-			multiByteStarts := c.buildUTF8NonASCIIBranches(target)
-			altStarts = append(altStarts, multiByteStarts...)
-			// Invalid UTF-8 single-byte matching (0x80-0xFF) removed: it caused
-			// negated classes to match individual bytes of valid multi-byte runes
-			// (e.g. \S{2} matched "К" by seeing two bytes). Invalid UTF-8 handling
-			// requires look-ahead design — tracked as #179.
-		} else {
-			// Precise: build UTF-8 automata for specific ranges (Issue #91 fix)
-			// For partial Unicode classes like \P{Han}, we DON'T add invalid UTF-8
-			// handling because it would incorrectly match bytes of valid UTF-8.
-			for _, rng := range nonASCIIRanges {
-				rangeStarts := c.compileUTF8Range(rng[0], rng[1], target)
-				altStarts = append(altStarts, rangeStarts...)
-			}
+	if len(nonASCIIRanges) > 0 && coversAllNonASCII {
+		multiByteStarts := c.buildUTF8NonASCIIBranches(target)
+		altStarts = append(altStarts, multiByteStarts...)
+		altStarts = append(altStarts, c.buildInvalidUTF8Fallback(target))
+	} else if len(nonASCIIRanges) > 0 {
+		for _, rng := range nonASCIIRanges {
+			rangeStarts := c.compileUTF8Range(rng[0], rng[1], target)
+			altStarts = append(altStarts, rangeStarts...)
+		}
+		if containsRuneFFFD(nonASCIIRanges) {
+			altStarts = append(altStarts, c.buildInvalidUTF8Fallback(target))
 		}
 	}
 
@@ -607,6 +600,25 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 //
 // UTF-8 encoding:
 //   - 1-byte: U+0000-U+007F → 0x00-0x7F
+// containsRuneFFFD checks if U+FFFD is within any of the given rune ranges.
+func containsRuneFFFD(ranges [][2]rune) bool {
+	for _, rng := range ranges {
+		if rng[0] <= 0xFFFD && rng[1] >= 0xFFFD {
+			return true
+		}
+	}
+	return false
+}
+
+// buildInvalidUTF8Fallback creates the Look-gated fallback for invalid UTF-8 bytes.
+// Returns the start StateID of: LookInvalidUTF8 → ByteRange(0x80, 0xFF) → endState.
+// The Look assertion ensures the transition fires only at positions where
+// utf8.DecodeRune returns (RuneError, 1) AND the position is at a rune boundary.
+func (c *Compiler) buildInvalidUTF8Fallback(endState StateID) StateID {
+	invalidByte := c.builder.AddByteRange(0x80, 0xFF, endState)
+	return c.builder.AddLook(LookInvalidUTF8, invalidByte)
+}
+
 //   - 2-byte: U+0080-U+07FF → 0xC2-0xDF, 0x80-0xBF
 //   - 3-byte: U+0800-U+FFFF → 0xE0-0xEF, 0x80-0xBF, 0x80-0xBF
 //   - 4-byte: U+10000-U+10FFFF → 0xF0-0xF4, 0x80-0xBF, 0x80-0xBF, 0x80-0xBF
@@ -1105,31 +1117,24 @@ func (c *Compiler) compileUTF8AnySparse(includeNL bool) (start, end StateID, err
 		)
 	}
 
-	// Invalid standalone bytes → endState (match as single byte for stdlib compat)
-	transitions = append(transitions,
-		Transition{Lo: 0x80, Hi: 0xBF, Next: endState}, // standalone continuation
-		Transition{Lo: 0xC0, Hi: 0xC1, Next: endState}, // overlong 2-byte
-	)
-
 	// Multi-byte sequences: leading byte → first continuation state
 	for _, seq := range sequences {
-		// Build continuation chain in REVERSE for suffix sharing
 		target := endState
 		for i := len(seq) - 1; i >= 1; i-- {
 			br := seq[i]
 			target = cache.getOrCreate(c.builder, target, br.lo, br.hi)
 		}
-		// seq[0] is the leading byte range, target is the first continuation state
 		transitions = append(transitions, Transition{Lo: seq[0].lo, Hi: seq[0].hi, Next: target})
 	}
 
-	// Invalid high bytes → endState
-	transitions = append(transitions,
-		Transition{Lo: 0xF5, Hi: 0xFF, Next: endState},
-	)
+	// Sparse state handles ASCII + valid multi-byte (no invalid bytes here)
+	validState := c.builder.AddSparse(transitions)
 
-	// Single sparse state replaces the entire split chain
-	startState := c.builder.AddSparse(transitions)
+	// Invalid UTF-8 bytes handled via Look-gated fallback (separate branch)
+	invalidState := c.buildInvalidUTF8Fallback(endState)
+
+	// Combine: split between valid sparse state and Look-gated invalid fallback
+	startState := c.buildSplitChain([]StateID{validState, invalidState})
 	return startState, endState, nil
 }
 
@@ -1210,23 +1215,10 @@ func (c *Compiler) compileUTF8Any(includeNL bool) (start, end StateID, err error
 		branches = append(branches, target)
 	}
 
-	// Invalid UTF-8 bytes - match as single bytes for stdlib compatibility.
-	// Go regexp's . matches invalid UTF-8 bytes as single characters.
-	// Invalid bytes: 0x80-0xBF (standalone continuation), 0xC0-0xC1 (overlong),
-	// 0xF5-0xFF (out of range for Unicode).
-	//
-	// NOTE: We don't add 0xC2-0xF4 (valid lead bytes) here because:
-	// 1. Adding them causes capture group bugs with zero-width matches ((.*)on "")
-	// 2. The multi-byte paths already handle these bytes in valid sequences
-	// 3. When these bytes appear standalone, the NFA won't match them (correct behavior
-	//    differs from stdlib, but preserves capture group correctness which is more important)
-	invalidTrans := []Transition{
-		{Lo: 0x80, Hi: 0xBF, Next: endState}, // standalone continuation bytes
-		{Lo: 0xC0, Hi: 0xC1, Next: endState}, // overlong 2-byte encodings
-		{Lo: 0xF5, Hi: 0xFF, Next: endState}, // out of Unicode range
-	}
-	invalidUTF8 := c.builder.AddSparse(invalidTrans)
-	branches = append(branches, invalidUTF8)
+	// Invalid UTF-8 bytes: match as U+FFFD width 1, gated by LookInvalidUTF8.
+	// The Look assertion ensures this fires only at rune boundaries where
+	// utf8.DecodeRune returns (RuneError, 1) — not inside valid multi-byte sequences.
+	branches = append(branches, c.buildInvalidUTF8Fallback(endState))
 
 	// Create split state for alternation
 	startState := c.buildSplitChain(branches)
