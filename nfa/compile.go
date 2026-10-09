@@ -574,18 +574,10 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 			// This is correct because we're matching ALL non-ASCII codepoints
 			multiByteStarts := c.buildUTF8NonASCIIBranches(target)
 			altStarts = append(altStarts, multiByteStarts...)
-
-			// Also match invalid UTF-8 bytes for stdlib compatibility.
-			// Go regexp treats invalid UTF-8 bytes as single characters that
-			// match negated char classes like \D, \S, \W, [^x].
-			// NOTE: We only add this for coversAllNonASCII case because:
-			// 1. For classes like \D, [^x] - they match any non-digit/non-x, including invalid UTF-8
-			// 2. For partial Unicode classes like \P{Han} - we can't add 0x80-0xFF
-			//    because it would incorrectly match valid UTF-8 bytes (e.g., each byte
-			//    of "中" separately instead of treating it as one Han character).
-			// The multi-byte paths take precedence for valid UTF-8 (longer match wins).
-			invalidUTF8 := c.builder.AddByteRange(0x80, 0xFF, target)
-			altStarts = append(altStarts, invalidUTF8)
+			// Invalid UTF-8 single-byte matching (0x80-0xFF) removed: it caused
+			// negated classes to match individual bytes of valid multi-byte runes
+			// (e.g. \S{2} matched "К" by seeing two bytes). Invalid UTF-8 handling
+			// requires look-ahead design — tracked as #179.
 		} else {
 			// Precise: build UTF-8 automata for specific ranges (Issue #91 fix)
 			// For partial Unicode classes like \P{Han}, we DON'T add invalid UTF-8
