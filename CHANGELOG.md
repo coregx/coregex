@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **FindAll/Count O(n²) for `$`-anchored patterns** ([#183](https://github.com/coregx/coregex/issues/183)):
+  `UseReverseAnchored` strategy was missing from the `findIndicesAtWithState`
+  dispatch, causing `FindAll`/`Count` to fall through to PikeVM loop — O(n)
+  calls × O(n) each. `Match`/`Find` were correct (single reverse scan).
+  Fix: short-circuit for `$`-anchored patterns — one reverse searcher call,
+  at most one match. `ERROR.*$` on 2400-line log: 3.3 s → instant
 - **Invalid UTF-8 bytes now match as U+FFFD width 1** ([#179](https://github.com/coregx/coregex/issues/179)):
   `.`, `\S`, `\D`, `\W`, `[^x]`, `\P{Han}`, and literal `\x{FFFD}` now match
   invalid UTF-8 bytes (orphan continuations, overlong leads, out-of-range bytes,
