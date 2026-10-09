@@ -13,10 +13,11 @@ type Builder struct {
 	nfa *nfa.NFA
 
 	// Working state for DFS during one-pass check
-	seen      *sparse.SparseSet // visited NFA states during epsilon closure
-	stack     []stackEntry      // DFS stack
-	matched   bool              // true if we've reached a match state in current closure
-	matchMask uint32            // slot mask accumulated to reach match state
+	seen        *sparse.SparseSet // visited NFA states during epsilon closure
+	stack       []stackEntry      // DFS stack
+	matched     bool              // true if we've reached a match state in current closure
+	matchMask   uint32            // slot mask accumulated to reach match state
+	fffdTargets []closureEntry    // NFA states behind LookInvalidUTF8 (for FFFD fallback)
 
 	// DFA state being built
 	numStates  int                     // number of DFA states created
@@ -162,6 +163,7 @@ func (b *Builder) epsilonClosureOnePass(root nfa.StateID) ([]closureEntry, bool,
 	b.seen.Clear()
 	b.matched = false
 	b.matchMask = 0
+	b.fffdTargets = b.fffdTargets[:0]
 	b.stack = b.stack[:0]
 
 	// Start DFS from root
@@ -230,19 +232,20 @@ func (b *Builder) epsilonClosureOnePass(root nfa.StateID) ([]closureEntry, bool,
 			}
 
 		case nfa.StateLook:
-			// Handle anchors (^, $, \A, \z) as epsilon transitions.
-			// For onepass DFA (which is always anchored at start):
-			// - Start anchors (^, \A): Always satisfied - follow epsilon
-			// - End anchors ($, \z): Follow epsilon; match checked at input end
-			_, next := state.Look()
-			if next != nfa.InvalidState {
+			look, next := state.Look()
+			if look == nfa.LookInvalidUTF8 {
+				// Don't follow as epsilon — it would create byte-range
+				// overlap with multi-byte UTF-8 transitions. Record the
+				// target; buildTransitions fills dead byte classes ≥ 0x80
+				// with conditional FFFD transitions checked at runtime.
+				if next != nfa.InvalidState {
+					b.fffdTargets = append(b.fffdTargets, closureEntry{next, slots})
+				}
+			} else if next != nfa.InvalidState {
 				if err := b.stackPush(next, slots); err != nil {
 					return nil, false, err
 				}
 			}
-
-			// ByteRange and Sparse are not epsilon transitions
-			// They will be handled in buildTransitions
 		}
 	}
 
@@ -276,7 +279,7 @@ type transInfo struct {
 // (entry.slots), not from the target state. These slots represent capture
 // positions that should be recorded BEFORE consuming the byte.
 //
-//nolint:gocognit // complexity inherent to DFA construction algorithm
+//nolint:gocognit,cyclop // complexity inherent to DFA construction algorithm
 func (b *Builder) buildTransitions(tableIdx int, closure []closureEntry) error {
 	// Track which byte classes have transitions
 	// Key: byte class, Value: target NFA state + source slots
@@ -339,21 +342,64 @@ func (b *Builder) buildTransitions(tableIdx int, closure []closureEntry) error {
 
 	// Build DFA transitions from byte transitions
 	for class, info := range byteTransitions {
-		// Recursively build target DFA state
 		nextDFA, err := b.buildState(info.targetNFA)
 		if err != nil {
 			return err
 		}
 
-		// Create transition with SOURCE slots (applied at current position BEFORE consuming byte)
 		trans := NewTransition(nextDFA, false, info.slots)
 
-		// Store in table
 		idx := tableIdx + int(class)
 		if idx >= len(b.table) {
 			return fmt.Errorf("transition table index out of bounds")
 		}
 		b.table[idx] = trans
+	}
+
+	// FFFD fallback: for LookInvalidUTF8 targets, fill dead byte classes ≥ 0x80
+	// with conditional transitions. These are checked at runtime via
+	// isInvalidUTF8Position — the assertion is deterministic so one-pass
+	// property is preserved.
+	for _, entry := range b.fffdTargets {
+		fffdState := b.nfa.State(entry.nfaID)
+		if fffdState == nil {
+			continue
+		}
+		// The FFFD target is a ByteRange(0x80, 0xFF) or Sparse state
+		var fffdNext nfa.StateID
+		switch fffdState.Kind() {
+		case nfa.StateByteRange:
+			_, _, fffdNext = fffdState.ByteRange()
+		case nfa.StateSparse:
+			trans := fffdState.Transitions()
+			if len(trans) > 0 {
+				fffdNext = trans[0].Next
+			}
+		default:
+			continue
+		}
+
+		nextDFA, err := b.buildState(fffdNext)
+		if err != nil {
+			return err
+		}
+
+		// Fill dead byte classes in 0x80-0xFF with conditional FFFD transition
+		for by := 0x80; by <= 0xFF; by++ {
+			class := b.nfa.ByteClasses().Get(byte(by))
+			if _, exists := byteTransitions[class]; exists {
+				continue
+			}
+			idx := tableIdx + int(class)
+			if idx >= len(b.table) {
+				continue
+			}
+			if b.table[idx].IsDead() {
+				trans := NewTransition(nextDFA, false, entry.slots)
+				trans = trans.WithLookAround(lookInvalidUTF8Bit)
+				b.table[idx] = trans
+			}
+		}
 	}
 
 	return nil

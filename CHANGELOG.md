@@ -8,12 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Invalid UTF-8 bytes now match as U+FFFD width 1** ([#179](https://github.com/coregx/coregex/issues/179)):
+  `.`, `\S`, `\D`, `\W`, `[^x]`, `\P{Han}`, and literal `\x{FFFD}` now match
+  invalid UTF-8 bytes (orphan continuations, overlong leads, out-of-range bytes)
+  as U+FFFD replacement character with width 1, matching stdlib semantics.
+  New `LookInvalidUTF8` assertion ensures matches fire only at rune boundaries,
+  not inside valid multi-byte sequences. All four engines (PikeVM, BoundedBacktracker,
+  OnePass DFA, lazy DFA) handle the assertion correctly. Lazy DFA uses temporary
+  quit-to-PikeVM fallback on bytes ≥ 0x80 (phase 3 will add UTF-8 validator product).
+  Harness divergence: 14 → 1 (only `FindReaderIndex` remains)
 - **Negated classes matched bytes, not runes** ([#174](https://github.com/coregx/coregex/issues/174)):
   `\S{2}` matched single Cyrillic `К` (2 UTF-8 bytes, 1 rune) by treating each
   byte as a separate character. Same for `\D`, `\W`, `[^x]` on any multi-byte
   rune. Root cause: `0x80–0xFF` single-byte range in NFA compiler's
-  `coversAllNonASCII` path. Invalid UTF-8 byte handling deferred to
-  [#179](https://github.com/coregx/coregex/issues/179).
+  `coversAllNonASCII` path.
   Random-fuzz divergence vs stdlib: 0.75% → 0.21%
 
 ### Planned

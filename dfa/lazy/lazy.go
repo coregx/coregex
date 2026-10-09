@@ -87,6 +87,11 @@ type DFA struct {
 	// When true, we only need to try matching from position 0.
 	isAlwaysAnchored bool
 
+	// hasInvalidUTF8Look is true if the NFA contains LookInvalidUTF8 assertions.
+	// When true, determinize sets QuitState for all bytes >= 0x80 (temporary 3c).
+	// Phase 3 replaces this with a UTF-8 validator product.
+	hasInvalidUTF8Look bool
+
 	// startByteMap is the immutable byte-to-StartKind mapping used to initialize
 	// DFACache.startTable. Computed once during compilation.
 	startByteMap [256]StartKind
@@ -298,6 +303,9 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 		case DeadState:
 			return lastMatch
 
+		case QuitState:
+			return d.nfaFallbackAnchored(haystack, at)
+
 		default:
 			sid = nextID
 		}
@@ -493,6 +501,8 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 			ftLen = len(ft)
 		case DeadState:
 			return lastMatch
+		case QuitState:
+			return d.nfaFallback(haystack, startPos)
 		default:
 			sid = nextID
 		}
@@ -705,7 +715,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			offset := sid.Offset() + classIdx
 			if offset < ftLen {
 				nextID := ft[offset]
-				if nextID != InvalidState && nextID != DeadState {
+				if !nextID.IsTagged() {
 					sid = nextID
 					pos++
 					if cache.IsMatchState(sid) {
@@ -714,7 +724,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 					continue
 				}
 			}
-			// InvalidState/DeadState: fall through to full slow path
+			// Tagged (Invalid/Dead/Quit): fall through to full slow path
 		}
 
 		// Try lazy acceleration detection if not yet checked
@@ -773,6 +783,10 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 
 		case DeadState:
 			goto earliestPreSkip
+
+		case QuitState:
+			start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+			return matched && start >= 0 && end >= start
 
 		default:
 			sid = nextID
@@ -900,6 +914,10 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 
 		case DeadState:
 			return false
+
+		case QuitState:
+			start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+			return matched && start == startPos && end >= start
 
 		default:
 			sid = nextID
@@ -1044,6 +1062,9 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 			ftLen = len(ft)
 			lastMatch = -1
 			continue
+
+		case QuitState:
+			return d.nfaFallback(haystack, 0)
 
 		default:
 			sid = nextID
@@ -1231,7 +1252,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			offset := sid.Offset() + classIdx
 			if offset < ftLen {
 				nextID := ft[offset]
-				if nextID != InvalidState && nextID != DeadState {
+				if !nextID.IsTagged() {
 					sid = nextID
 					if cache.IsMatchState(sid) {
 						lastMatch = pos
@@ -1240,7 +1261,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 					continue
 				}
 			}
-			// InvalidState/DeadState: fall through to full slow path
+			// Tagged (Invalid/Dead/Quit): fall through to full slow path
 		}
 
 		// Resolve State for slow path (acceleration, word boundary, determinize).
@@ -1289,6 +1310,8 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			ftLen = len(ft)
 		case DeadState:
 			return lastMatch
+		case QuitState:
+			return d.nfaFallback(haystack, startPos)
 		default:
 			sid = nextID
 		}
@@ -1334,6 +1357,16 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 //
 //	or if determinization limit exceeded.
 func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, error) {
+	// Temporary 3c: when the NFA has LookInvalidUTF8 assertions, the DFA
+	// cannot evaluate them (requires look-ahead/look-behind). Quit on any
+	// byte >= 0x80 and let PikeVM handle it. Phase 3 replaces this with a
+	// UTF-8 validator product that quits only on structurally invalid bytes.
+	if d.hasInvalidUTF8Look && b >= 0x80 {
+		classIdx := d.byteToClass(b)
+		cache.SetFlatTransition(current.id, int(classIdx), QuitState)
+		return nil, &DFAError{Kind: NFAFallback, Message: "quit: byte >= 0x80 with LookInvalidUTF8"}
+	}
+
 	// Need builder for move operations.
 	// Use NewBuilderWithWordBoundary to pass pre-computed flag and avoid O(states) scan.
 	builder := NewBuilderWithWordBoundary(d.nfa, d.config, d.hasWordBoundary)
@@ -1632,6 +1665,17 @@ func (d *DFA) nfaFallback(haystack []byte, startPos int) int {
 	return end
 }
 
+// nfaFallbackAnchored is like nfaFallback but requires the match to start
+// exactly at startPos. Used by SearchAtAnchored where unanchored fallback
+// would produce false positives from matches after the expected position.
+func (d *DFA) nfaFallbackAnchored(haystack []byte, startPos int) int {
+	start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+	if !matched || start != startPos {
+		return -1
+	}
+	return end
+}
+
 // matchesEmpty checks if the pattern matches an empty string
 func (d *DFA) matchesEmpty(cache *DFACache) bool {
 	// With 1-byte match delay, the start state is never tagged as match.
@@ -1894,6 +1938,9 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		case DeadState:
 			return lastMatch
 
+		case QuitState:
+			return d.nfaFallbackReverse(haystack, start, end)
+
 		default:
 			sid = nextID
 		}
@@ -2011,6 +2058,9 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 		case DeadState:
 			return lastMatch
 
+		case QuitState:
+			return d.nfaFallbackReverse(haystack, start, end)
+
 		default:
 			sid = nextID
 		}
@@ -2103,6 +2153,10 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 		case DeadState:
 			return false
 
+		case QuitState:
+			_, _, matched := d.pikevm.SearchBetween(haystack, start, end)
+			return matched
+
 		default:
 			sid = nextID
 		}
@@ -2158,11 +2212,12 @@ func (d *DFA) getStartStateForReverse(cache *DFACache, haystack []byte, end int)
 }
 
 // nfaFallbackReverse handles NFA fallback for reverse search.
+// Uses SearchBetween to preserve full haystack context (word boundaries,
+// LookInvalidUTF8 rune-boundary check need bytes before start).
 func (d *DFA) nfaFallbackReverse(haystack []byte, start, end int) int {
-	// For reverse fallback, we need to search the region and find match start
-	matchStart, _, matched := d.pikevm.Search(haystack[start:end])
+	matchStart, _, matched := d.pikevm.SearchBetween(haystack, start, end)
 	if !matched {
 		return -1
 	}
-	return start + matchStart
+	return matchStart
 }

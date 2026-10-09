@@ -133,23 +133,24 @@ func (d *DFA) NumCaptures() int {
 func (d *DFA) IsMatch(input []byte) bool {
 	state := d.startState
 
-	for _, b := range input {
+	for pos, b := range input {
 		class := d.classes.Get(b)
 		trans := d.getTransition(state, class)
 
+		if trans.NeedsInvalidUTF8Check() && !nfa.IsInvalidUTF8Position(input, pos) {
+			return false
+		}
 		if trans.IsDead() {
 			return false
 		}
 
 		state = trans.NextState()
 
-		// Check for match (early termination)
 		if d.isMatchState(state) {
 			return true
 		}
 	}
 
-	// Check final state
 	return d.isMatchState(state)
 }
 

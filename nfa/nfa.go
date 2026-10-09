@@ -113,6 +113,14 @@ const (
 	// LookNoWordBoundary matches a non-word boundary (\B)
 	// Matches where is_word_char(prev) == is_word_char(curr)
 	LookNoWordBoundary
+
+	// LookInvalidUTF8 matches a position where an invalid UTF-8 byte starts.
+	// Two conditions must hold:
+	//   1. Position is at a rune boundary (not inside a valid multi-byte sequence)
+	//   2. utf8.DecodeRune(haystack[pos:]) returns (RuneError, 1)
+	// Gates a single-byte 0x80-0xFF transition to match invalid bytes as U+FFFD.
+	// See design doc: docs/dev/research/design-179-invalid-utf8.md
+	LookInvalidUTF8
 )
 
 // State represents a single NFA state with its transitions.
@@ -267,7 +275,10 @@ func (s *State) String() string {
 	case StateFail:
 		return fmt.Sprintf("State(%d, Fail)", s.id)
 	case StateLook:
-		lookNames := []string{"StartText", "EndText", "StartLine", "EndLine"}
+		lookNames := []string{
+			"StartText", "EndText", "StartLine", "EndLine",
+			"WordBoundary", "NoWordBoundary", "InvalidUTF8",
+		}
 		lookName := "Unknown"
 		if int(s.look) < len(lookNames) {
 			lookName = lookNames[s.look]

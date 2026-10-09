@@ -15,8 +15,8 @@ import (
 //
 // Layout (Rust LazyStateID approach, hybrid/id.rs:169):
 //
-//	[invalid|dead|reserved|start|match| 27 bits: offset into flatTrans ]
-//	 bit 31  30    29       28    27    bits 0-26
+//	[invalid|dead|quit|start|match| 27 bits: offset into flatTrans ]
+//	 bit 31  30   29   28    27    bits 0-26
 //
 // Hot loop: nextSID = flatTrans[sid & TagMask + classIdx]
 //
@@ -27,11 +27,11 @@ type StateID uint32
 
 // Tag bit masks for StateID high bits.
 const (
-	tagInvalid  StateID = 1 << 31 // Unknown/not yet computed transition
-	tagDead     StateID = 1 << 30 // Dead state — no match possible
-	tagReserved StateID = 1 << 29 // Reserved for quit
-	tagStart    StateID = 1 << 28 // Start state
-	tagMatch    StateID = 1 << 27 // Match/accepting state
+	tagInvalid StateID = 1 << 31 // Unknown/not yet computed transition
+	tagDead    StateID = 1 << 30 // Dead state — no match possible
+	tagQuit    StateID = 1 << 29 // DFA cannot handle this byte — fall back to NFA
+	tagStart   StateID = 1 << 28 // Start state
+	tagMatch   StateID = 1 << 27 // Match/accepting state
 
 	// TagMask extracts the offset (lower 27 bits).
 	// Any bit above this = special state requiring slow path.
@@ -49,6 +49,11 @@ const (
 
 	// DeadState represents a dead/failure state — no match possible.
 	DeadState StateID = tagDead // 0x40000000
+
+	// QuitState signals that the DFA cannot handle the current byte and
+	// the search must fall back to NFA (PikeVM). Used for invalid UTF-8
+	// sequences that require look-ahead the DFA cannot express.
+	QuitState StateID = tagQuit // 0x20000000
 
 	// StartState is the initial state. Offset 0, untagged.
 	StartState StateID = 0
@@ -89,6 +94,14 @@ func (sid StateID) IsDeadTag() bool {
 //go:nosplit
 func (sid StateID) IsInvalidTag() bool {
 	return sid&tagInvalid != 0
+}
+
+// IsQuitTag returns true if this state has the quit tag.
+// Quit means the DFA cannot handle this byte and must fall back to NFA.
+//
+//go:nosplit
+func (sid StateID) IsQuitTag() bool {
+	return sid&tagQuit != 0
 }
 
 // IsStartTag returns true if this state has the start tag.

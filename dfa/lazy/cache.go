@@ -126,10 +126,10 @@ func (c *DFACache) Insert(key StateKey, state *State) (StateID, error) {
 }
 
 // safeOffset computes flat table offset from premultiplied StateID.
-// For tagged states (dead/invalid), returns MaxInt so bounds check always
-// fails safely. For normal and match-tagged states, returns sid.Offset() + classIdx.
+// For special tagged states (dead/invalid/quit), returns MaxInt so bounds
+// check always fails safely. Match and start tags pass through.
 func safeOffset(sid StateID, classIdx int) int {
-	if sid.IsDeadTag() || sid.IsInvalidTag() {
+	if sid.IsDeadTag() || sid.IsInvalidTag() || sid.IsQuitTag() {
 		return int(^uint(0) >> 1) // MaxInt
 	}
 	return sid.Offset() + classIdx
@@ -307,8 +307,8 @@ func (c *DFACache) ResetClearCount() {
 // getState retrieves a state from the stateList by premultiplied ID.
 // Converts premultiplied offset to state index for stateList lookup.
 func (c *DFACache) getState(id StateID) *State {
-	// Guard against tagged special states
-	if id.IsTagged() && (id.IsDeadTag() || id.IsInvalidTag()) {
+	// Guard against tagged special states (dead/invalid/quit)
+	if id.IsTagged() && (id.IsDeadTag() || id.IsInvalidTag() || id.IsQuitTag()) {
 		return nil
 	}
 	if c.stride == 0 {
