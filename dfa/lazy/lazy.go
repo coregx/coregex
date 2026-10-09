@@ -1372,12 +1372,12 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 //
 //	or if determinization limit exceeded.
 func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, error) {
-	// UTF-8 validator product: when the NFA has LookInvalidUTF8, track
-	// the validator state to distinguish valid continuations from invalid
-	// bytes. Quit only on structurally invalid UTF-8 — valid non-ASCII
-	// bytes stay in DFA (no more blanket 3c quit).
+	// UTF-8 validator product: track validator state for every byte when
+	// the NFA has LookInvalidUTF8. The validator must see ALL bytes —
+	// including ASCII — because an ASCII byte after a lead byte (VS1-VS8)
+	// means the multi-byte sequence is truncated → quit to PikeVM.
 	var nextValidatorState uint8
-	if d.hasInvalidUTF8Look && b >= 0x80 {
+	if d.hasInvalidUTF8Look {
 		vs := current.ValidatorState()
 		nextVS, quit := ValidatorTransition(vs, b)
 		if quit {
@@ -1386,9 +1386,6 @@ func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, erro
 			return nil, &DFAError{Kind: NFAFallback, Message: "quit: invalid UTF-8 byte"}
 		}
 		nextValidatorState = nextVS
-	} else if d.hasInvalidUTF8Look {
-		// ASCII byte resets validator to VS0 (codepoint boundary)
-		nextValidatorState = VS0
 	}
 
 	// Need builder for move operations.
