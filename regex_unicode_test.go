@@ -237,6 +237,129 @@ func TestEmptyCharacterClass(t *testing.T) {
 	}
 }
 
+// TestNegatedClassCountsRunes tests that negated character classes (\S, \D, \W, [^x])
+// count codepoints, not bytes. A 2-byte Cyrillic rune is ONE character, so \S{2}
+// must NOT match it. Issue #174.
+func TestNegatedClassCountsRunes(t *testing.T) {
+	// Part 1: single-rune inputs that must NOT match multi-repetition patterns.
+	// Each input is one rune encoded as 2+ UTF-8 bytes.
+	noMatch := []struct {
+		name    string
+		pattern string
+		input   string
+	}{
+		{"S2_cyrillic_2byte", `\S{2}`, "К"},
+		{"D2_cyrillic_2byte", `\D{2}`, "К"},
+		{"W2_cyrillic_2byte", `\W{2}`, "К"},
+		{"not_nl_2_cyrillic", `[^\n]{2}`, "К"},
+		{"not_a_3_cjk", `[^a]{3}`, "日"},
+		{"not_comma_3_cjk", `[^,]{3}`, "日"},
+		{"not_x_4_emoji", `[^x]{4}`, "😀"},
+	}
+	for _, tt := range noMatch {
+		t.Run(tt.name, func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+			got := re.MatchString(tt.input)
+			std := regexp.MustCompile(tt.pattern)
+			want := std.MatchString(tt.input)
+			if got != want {
+				t.Errorf("MatchString(%q, %q) = %v, want %v (stdlib)",
+					tt.pattern, tt.input, got, want)
+			}
+		})
+	}
+
+	// Part 2: FindAllString must return rune-counted matches, not byte-split fragments.
+	findAll := []struct {
+		name    string
+		pattern string
+		input   string
+	}{
+		{"S_plus_cyrillic", `\S+`, "Кот"},
+		{"D_plus_cyrillic", `\D+`, "Кот"},
+		{"not_space_cjk", `[^ ]+`, "日本語"},
+		{"not_digit_emoji", `\D+`, "😀😁"},
+		{"W_plus_digits_around", `\W+`, "1Кот2"},
+		{"S_plus_mixed", `\S+`, "aК日"},
+	}
+	for _, tt := range findAll {
+		t.Run(tt.name, func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+			got := re.FindAllString(tt.input, -1)
+			std := regexp.MustCompile(tt.pattern)
+			want := std.FindAllString(tt.input, -1)
+			if len(got) != len(want) {
+				t.Errorf("FindAllString(%q, %q): got %d matches %v, want %d %v",
+					tt.pattern, tt.input, len(got), got, len(want), want)
+				return
+			}
+			for i := range got {
+				if got[i] != want[i] {
+					t.Errorf("FindAllString(%q, %q)[%d] = %q, want %q",
+						tt.pattern, tt.input, i, got[i], want[i])
+				}
+			}
+		})
+	}
+
+	// Part 3: FindAllStringIndex must return byte-correct boundaries.
+	findIdx := []struct {
+		name    string
+		pattern string
+		input   string
+	}{
+		{"S_plus_idx_cyrillic", `\S+`, "Кот мир"},
+		{"D_plus_idx_mixed", `\D+`, "1Кот2"},
+		{"not_comma_idx_cjk", `[^,]+`, "日,本"},
+	}
+	for _, tt := range findIdx {
+		t.Run(tt.name, func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+			got := re.FindAllStringIndex(tt.input, -1)
+			std := regexp.MustCompile(tt.pattern)
+			want := std.FindAllStringIndex(tt.input, -1)
+			if len(got) != len(want) {
+				t.Errorf("FindAllStringIndex(%q, %q): got %d, want %d",
+					tt.pattern, tt.input, len(got), len(want))
+				return
+			}
+			for i := range got {
+				if got[i][0] != want[i][0] || got[i][1] != want[i][1] {
+					t.Errorf("FindAllStringIndex(%q, %q)[%d] = %v, want %v",
+						tt.pattern, tt.input, i, got[i], want[i])
+				}
+			}
+		})
+	}
+
+	// Part 4: invalid UTF-8 — D territory (#179). Documents desired behavior.
+	t.Run("invalid_utf8", func(t *testing.T) {
+		t.Skip("#179: invalid UTF-8 handling requires look-ahead design")
+		invalid := []struct {
+			name    string
+			pattern string
+			input   string
+		}{
+			{"not_a_0xff", `[^a]`, "\xff"},
+			{"D_embedded_0xff", `\D+`, "a\xffb"},
+			{"S_continuation", `\S`, "\x80"},
+			{"not_x_overlong", `[^x]`, "\xc0"},
+		}
+		for _, tt := range invalid {
+			t.Run(tt.name, func(t *testing.T) {
+				re := MustCompile(tt.pattern)
+				got := re.MatchString(tt.input)
+				std := regexp.MustCompile(tt.pattern)
+				want := std.MatchString(tt.input)
+				if got != want {
+					t.Errorf("MatchString(%q, %q) = %v, want %v (stdlib)",
+						tt.pattern, tt.input, got, want)
+				}
+			})
+		}
+	})
+}
+
 // TestNegatedUnicodePropertyClass tests that negated Unicode property classes like \P{Han}
 // match complete UTF-8 codepoints, not individual bytes.
 // This is a regression test for issue #91.
