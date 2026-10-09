@@ -28,6 +28,11 @@ func ExtractCharClassRanges(re *syntax.Regexp) [][2]byte {
 		return nil
 	}
 
+	// The lookup-table scan is greedy, so a lazy [a-z]+? must take another path.
+	if re.Flags&syntax.NonGreedy != 0 {
+		return nil
+	}
+
 	if len(re.Sub) != 1 {
 		return nil
 	}

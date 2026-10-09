@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Lazy quantifiers matched greedily** ([#175](https://github.com/coregx/coregex/issues/175)):
+  `\d+?` on `"11"` returned `[0 2]` instead of `[0 1]`. The char class searcher
+  and the composite searcher scan greedily, so lazy patterns now use another
+  strategy there
 - **FindAll/Count O(n²) for `$`-anchored patterns** ([#183](https://github.com/coregx/coregex/issues/183)):
   `UseReverseAnchored` strategy was missing from the `findIndicesAtWithState`
   dispatch, causing `FindAll`/`Count` to fall through to PikeVM loop — O(n)
