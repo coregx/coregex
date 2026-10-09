@@ -124,6 +124,100 @@ func (sid StateID) WithStartTag() StateID {
 	return sid | tagStart
 }
 
+// UTF-8 validator states for LookInvalidUTF8 handling (Björn Höhrmann's DFA, adapted).
+// The validator tracks whether the current byte position is inside a valid
+// multi-byte sequence or at a structural boundary. FFFD transitions are
+// allowed ONLY at VS0 (codepoint boundary). At VS1-VS8, only continuation
+// byte transitions or quit are valid.
+const (
+	VS0 uint8 = iota // At codepoint boundary (initial state)
+	VS1              // After C2-DF: expecting 1 continuation (80-BF) → VS0
+	VS2              // After E1-EC/EE-EF: expecting first of 2 continuations (80-BF) → VS5
+	VS3              // After E0: expecting first continuation (A0-BF) → VS5
+	VS4              // After ED: expecting first continuation (80-9F) → VS5
+	VS5              // Expecting final continuation (80-BF) → VS0
+	VS6              // Expecting 2 more continuations (80-BF) → VS5
+	VS7              // After F0: expecting first continuation (90-BF) → VS6
+	VS8              // After F4: expecting first continuation (80-8F) → VS6
+)
+
+// ValidatorTransition computes the next UTF-8 validator state for byte b.
+// Returns (nextState, quit). If quit is true, the byte is structurally
+// invalid at this position — DFA should fall back to PikeVM.
+func ValidatorTransition(vs uint8, b byte) (next uint8, quit bool) {
+	switch vs {
+	case VS0: // at codepoint boundary
+		switch {
+		case b < 0x80:
+			return VS0, false
+		case b <= 0xBF:
+			return VS0, true // orphan continuation
+		case b <= 0xC1:
+			return VS0, true // overlong 2-byte
+		case b <= 0xDF:
+			return VS1, false // valid 2-byte lead
+		case b == 0xE0:
+			return VS3, false // 3-byte lead (special: next must be A0-BF)
+		case b <= 0xEC:
+			return VS2, false // 3-byte lead (normal: next must be 80-BF)
+		case b == 0xED:
+			return VS4, false // 3-byte lead (surrogate: next must be 80-9F)
+		case b <= 0xEF:
+			return VS2, false // 3-byte lead (normal)
+		case b == 0xF0:
+			return VS7, false // 4-byte lead (special: next must be 90-BF)
+		case b <= 0xF3:
+			return VS6, false // 4-byte lead (normal: next must be 80-BF)
+		case b == 0xF4:
+			return VS8, false // 4-byte lead (restricted: next must be 80-8F)
+		default:
+			return VS0, true // F5-FF: invalid
+		}
+	case VS1: // expecting 1 continuation (80-BF)
+		if b >= 0x80 && b <= 0xBF {
+			return VS0, false
+		}
+		return VS0, true
+	case VS2: // expecting 1 continuation (80-BF), then final continuation
+		if b >= 0x80 && b <= 0xBF {
+			return VS5, false
+		}
+		return VS0, true
+	case VS3: // after E0: expecting A0-BF
+		if b >= 0xA0 && b <= 0xBF {
+			return VS5, false
+		}
+		return VS0, true
+	case VS4: // after ED: expecting 80-9F
+		if b >= 0x80 && b <= 0x9F {
+			return VS5, false
+		}
+		return VS0, true
+	case VS5: // expecting final continuation (80-BF)
+		if b >= 0x80 && b <= 0xBF {
+			return VS0, false
+		}
+		return VS0, true
+	case VS6: // expecting 2 more continuations (80-BF)
+		if b >= 0x80 && b <= 0xBF {
+			return VS5, false
+		}
+		return VS0, true
+	case VS7: // after F0: expecting 90-BF
+		if b >= 0x90 && b <= 0xBF {
+			return VS6, false
+		}
+		return VS0, true
+	case VS8: // after F4: expecting 80-8F
+		if b >= 0x80 && b <= 0x8F {
+			return VS6, false
+		}
+		return VS0, true
+	default:
+		return VS0, true
+	}
+}
+
 // defaultStride is the default alphabet size when ByteClasses compression is not used.
 const defaultStride = 256
 
@@ -170,6 +264,11 @@ type State struct {
 
 	// matchAtNonWordBoundary is the same but for when word boundary is NOT satisfied.
 	matchAtNonWordBoundary bool
+
+	// validatorState tracks the UTF-8 validator position for LookInvalidUTF8.
+	// 0 = at codepoint boundary (initial/S0), 1-8 = inside multi-byte sequence.
+	// Only used when DFA has hasInvalidUTF8Look. Phase 3 of #179.
+	validatorState uint8
 
 	// nfaStates is the set of NFA states this DFA state represents.
 	// This is used during determinization to compute transitions.
@@ -264,6 +363,16 @@ func (s *State) NFAStates() []nfa.StateID {
 	return s.nfaStates
 }
 
+// ValidatorState returns the UTF-8 validator state for this DFA state.
+func (s *State) ValidatorState() uint8 {
+	return s.validatorState
+}
+
+// SetValidatorState sets the UTF-8 validator state.
+func (s *State) SetValidatorState(vs uint8) {
+	s.validatorState = vs
+}
+
 // String returns a human-readable representation of the state
 func (s *State) String() string {
 	return fmt.Sprintf("DFAState(id=%d, isMatch=%v, nfaStates=%v)",
@@ -336,12 +445,17 @@ func ComputeStateKeyWithWord(nfaStates []nfa.StateID, isFromWord bool) StateKey 
 }
 
 // ComputeStateKeyWithWordAndMatch computes a hash-based key including word context
-// and match delay flag. With 1-byte match delay, the same set of NFA states can
-// produce both a match and non-match DFA state depending on whether the SOURCE
-// state contained an NFA match state. This function distinguishes them in the cache.
+// and match delay flag. Delegates to ComputeStateKeyFull with validatorState=0.
 func ComputeStateKeyWithWordAndMatch(nfaStates []nfa.StateID, isFromWord bool, isMatch bool) StateKey {
+	return ComputeStateKeyFull(nfaStates, isFromWord, isMatch, 0)
+}
+
+// ComputeStateKeyFull computes a hash-based key including word context, match
+// delay flag, and UTF-8 validator state. States with same NFA states but
+// different validator state are DIFFERENT DFA states — the validator determines
+// which byte transitions are valid (multi-byte continuation vs U+FFFD fallback).
+func ComputeStateKeyFull(nfaStates []nfa.StateID, isFromWord bool, isMatch bool, validatorState uint8) StateKey {
 	if len(nfaStates) == 0 {
-		// Encode (isFromWord, isMatch) into 2 bits for empty states
 		var key StateKey
 		if isFromWord {
 			key |= 1
@@ -349,19 +463,17 @@ func ComputeStateKeyWithWordAndMatch(nfaStates []nfa.StateID, isFromWord bool, i
 		if isMatch {
 			key |= 2
 		}
+		key |= StateKey(validatorState) << 2
 		return key
 	}
 
-	// Sort NFA states for canonical ordering
-	// This ensures {1,2,3} and {3,2,1} produce the same key
 	sorted := make([]nfa.StateID, len(nfaStates))
 	copy(sorted, nfaStates)
 	sortStateIDs(sorted)
 
-	// Hash the sorted states using FNV-1a
 	h := fnv.New64a()
 
-	// Include isFromWord and isMatch in the hash FIRST to distinguish states
+	// Include flags + validator state FIRST to distinguish states
 	var flags byte
 	if isFromWord {
 		flags |= 1
@@ -369,11 +481,9 @@ func ComputeStateKeyWithWordAndMatch(nfaStates []nfa.StateID, isFromWord bool, i
 	if isMatch {
 		flags |= 2
 	}
-	_, _ = h.Write([]byte{flags})
+	_, _ = h.Write([]byte{flags, validatorState})
 
 	for _, sid := range sorted {
-		// Write each StateID as 4 bytes (uint32)
-		// hash.Hash.Write never returns an error per documentation
 		_, _ = h.Write([]byte{
 			byte(sid),
 			byte(sid >> 8),

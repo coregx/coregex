@@ -1,6 +1,7 @@
 package coregex
 
 import (
+	"fmt"
 	"regexp"
 	"testing"
 )
@@ -347,6 +348,13 @@ func TestNegatedClassCountsRunes(t *testing.T) {
 		{"criterion5_fffd_literal", "\uFFFD", "\xff"},
 		// Criterion 6: literal \x{FFFD} matches valid encoding
 		{"criterion6_fffd_valid", "\uFFFD", "\xef\xbf\xbd"},
+		// Truncated multi-byte sequences: lead byte + wrong continuation
+		{"truncated_2byte_dot", `.x`, "\xc3x"},
+		{"truncated_3byte_dot", `.x`, "\xe3x"},
+		{"truncated_3byte_partial_dot", `.x`, "\xe3\x81x"},
+		{"truncated_4byte_dot", `.x`, "\xf0\x90x"},
+		{"truncated_2byte_neg", `[^a]x`, "\xc3x"},
+		{"truncated_2byte_mid", `a.b`, "a\xc3b"},
 	}
 	for _, tt := range invalidMatch {
 		t.Run(tt.name, func(t *testing.T) {
@@ -383,6 +391,29 @@ func TestNegatedClassCountsRunes(t *testing.T) {
 				len(got), len(want))
 		}
 	})
+
+	// Truncated sequences: Find and FindAll must match via FFFD fallback
+	truncFindAll := []struct {
+		name    string
+		pattern string
+		input   string
+	}{
+		{"findall_a_dot_b_truncated", `a.b`, "a\xc3b"},
+		{"findall_dot_x_2byte", `.x`, "\xc3x"},
+		{"findall_dot_x_3byte", `.x`, "\xe3x"},
+	}
+	for _, tt := range truncFindAll {
+		t.Run(tt.name, func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+			got := re.FindAllStringIndex(tt.input, -1)
+			std := regexp.MustCompile(tt.pattern)
+			want := std.FindAllStringIndex(tt.input, -1)
+			if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
+				t.Errorf("FindAllStringIndex(%q, %q) = %v, want %v",
+					tt.pattern, tt.input, got, want)
+			}
+		})
+	}
 
 	// Criterion 10: rune-boundary invariant — no match inside valid rune
 	t.Run("criterion10_rune_boundary", func(t *testing.T) {

@@ -10,12 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Invalid UTF-8 bytes now match as U+FFFD width 1** ([#179](https://github.com/coregx/coregex/issues/179)):
   `.`, `\S`, `\D`, `\W`, `[^x]`, `\P{Han}`, and literal `\x{FFFD}` now match
-  invalid UTF-8 bytes (orphan continuations, overlong leads, out-of-range bytes)
-  as U+FFFD replacement character with width 1, matching stdlib semantics.
-  New `LookInvalidUTF8` assertion ensures matches fire only at rune boundaries,
-  not inside valid multi-byte sequences. All four engines (PikeVM, BoundedBacktracker,
-  OnePass DFA, lazy DFA) handle the assertion correctly. Lazy DFA uses temporary
-  quit-to-PikeVM fallback on bytes ≥ 0x80 (phase 3 will add UTF-8 validator product).
+  invalid UTF-8 bytes (orphan continuations, overlong leads, out-of-range bytes,
+  truncated multi-byte sequences) as U+FFFD replacement character with width 1,
+  matching stdlib semantics. New `LookInvalidUTF8` assertion ensures matches fire
+  only at rune boundaries, not inside valid multi-byte sequences. All four engines
+  handle the assertion: PikeVM/BoundedBacktracker evaluate at runtime, OnePass DFA
+  uses conditional transitions with runtime check, lazy DFA uses UTF-8 validator
+  product (9-state automaton tracking structural validity per byte).
+  On valid text: zero overhead on ASCII, ≤ 17% on `.`-heavy patterns
+  (`.+` 3.0 → 3.5 ms on a 58 KB Cyrillic log), others within noise.
+  On invalid input: DFA falls back to PikeVM per `find` call containing an
+  invalid byte — same architecture as Rust regex. On adversarial input
+  (1% invalid bytes), DFA-routed patterns pay 3–40× vs clean input and may
+  be slower than stdlib on such input; BT-routed patterns unaffected.
   Harness divergence: 14 → 1 (only `FindReaderIndex` remains)
 - **Negated classes matched bytes, not runes** ([#174](https://github.com/coregx/coregex/issues/174)):
   `\S{2}` matched single Cyrillic `К` (2 UTF-8 bytes, 1 rune) by treating each
