@@ -63,6 +63,8 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 	}
 
 	switch e.strategy {
+	case UseReverseAnchored:
+		return e.findIndicesNFAAt(haystack, at)
 	case UseNFA:
 		return e.findIndicesNFAAt(haystack, at)
 	case UseDFA:
@@ -1112,6 +1114,11 @@ func (e *Engine) findIndicesAtWithState(haystack []byte, at int, state *SearchSt
 	}
 
 	switch e.strategy {
+	case UseReverseAnchored:
+		// Use NFA for iteration paths. The reverse searcher handles Match/Find
+		// (single-result) correctly; iteration needs NFA for empty-match and
+		// position-tracking semantics. Issue #183.
+		return e.findIndicesNFAAtWithState(haystack, at, state)
 	case UseNFA:
 		return e.findIndicesNFAAtWithState(haystack, at, state)
 	case UseDFA:
