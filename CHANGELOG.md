@@ -17,10 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handle the assertion: PikeVM/BoundedBacktracker evaluate at runtime, OnePass DFA
   uses conditional transitions with runtime check, lazy DFA uses UTF-8 validator
   product (9-state automaton tracking structural validity per byte).
-  On valid text: zero overhead on ASCII, ~0% on Cyrillic/CJK.
-  On invalid input: DFA falls back to PikeVM per `find` call containing an invalid
-  byte — same architecture as Rust regex. On adversarial input (1% invalid bytes),
-  DFA-routed patterns pay ~3-8× vs clean input; BT-routed patterns unaffected.
+  On valid text: zero overhead on ASCII, ≤ 17% on `.`-heavy patterns
+  (`.+` 3.0 → 3.5 ms on a 58 KB Cyrillic log), others within noise.
+  On invalid input: DFA falls back to PikeVM per `find` call containing an
+  invalid byte — same architecture as Rust regex. On adversarial input
+  (1% invalid bytes), DFA-routed patterns pay 3–40× vs clean input and may
+  be slower than stdlib on such input; BT-routed patterns unaffected.
   Harness divergence: 14 → 1 (only `FindReaderIndex` remains)
 - **Negated classes matched bytes, not runes** ([#174](https://github.com/coregx/coregex/issues/174)):
   `\S{2}` matched single Cyrillic `К` (2 UTF-8 bytes, 1 rune) by treating each
