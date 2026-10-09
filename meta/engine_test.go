@@ -96,7 +96,6 @@ func TestStrategyString(t *testing.T) {
 		{UseReverseSuffixSet, "UseReverseSuffixSet"},
 		{UseCharClassSearcher, "UseCharClassSearcher"},
 		{UseCompositeSearcher, "UseCompositeSearcher"},
-		{UseBranchDispatch, "UseBranchDispatch"},
 		{UseDigitPrefilter, "UseDigitPrefilter"},
 		{UseAhoCorasick, "UseAhoCorasick"},
 		{UseAnchoredLiteral, "UseAnchoredLiteral"},

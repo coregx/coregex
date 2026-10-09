@@ -33,11 +33,6 @@ func TestFindAt_PerStrategy(t *testing.T) {
 		{"BT anchored at=0", `^hello`, "hello world", 0, "hello"},
 		{"BT anchored at>0", `^hello`, "hello world", 1, ""},
 
-		// UseBranchDispatch: anchored alternation
-		{"BranchDispatch at=0 match", `^(foo|bar|baz)`, "foo123", 0, "foo"},
-		{"BranchDispatch at=0 no match", `^(foo|bar|baz)`, "qux123", 0, ""},
-		{"BranchDispatch at>0", `^(foo|bar|baz)`, "foo123", 1, ""},
-
 		// UseTeddy: exact literal alternation (3-8 patterns)
 		{"Teddy at=0", `alpha|beta|gamma`, "before alpha after", 0, "alpha"},
 		{"Teddy at>0", `alpha|beta|gamma`, "alpha and beta", 6, "beta"},
@@ -127,10 +122,6 @@ func TestFindIndicesAt_PerStrategy(t *testing.T) {
 		// UseBoundedBacktracker (anchored)
 		{"BT anchored at=0", `^hello`, "hello world", 0, 0, 5, true},
 		{"BT anchored at>0 no match", `^hello`, "hello world", 1, -1, -1, false},
-
-		// UseBranchDispatch (anchored alternation)
-		{"BranchDispatch at=0", `^(foo|bar)`, "foo123", 0, 0, 3, true},
-		{"BranchDispatch at>0", `^(foo|bar)`, "foo123", 1, -1, -1, false},
 
 		// UseTeddy
 		{"Teddy at=0", `alpha|beta|gamma`, "alpha then beta", 0, 0, 5, true},
@@ -230,8 +221,6 @@ func TestCount_MultipleMatches_PerStrategy(t *testing.T) {
 		{"Composite", `[a-z]+[0-9]+`, "abc123 def456 ghi789", 3},
 		// UseBoundedBacktracker (anchored -- can only match once)
 		{"BT anchored", `^hello`, "hello world", 1},
-		// UseBranchDispatch
-		{"BranchDispatch", `^(foo|bar)`, "foo bar", 1},
 		// UseTeddy
 		{"Teddy", `alpha|beta|gamma`, "alpha beta gamma delta alpha", 4},
 		// UseDigitPrefilter

@@ -87,8 +87,6 @@ func (e *Engine) findAtZero(haystack []byte) *Match {
 		return e.findCharClassSearcher(haystack)
 	case UseCompositeSearcher:
 		return e.findCompositeSearcher(haystack)
-	case UseBranchDispatch:
-		return e.findBranchDispatch(haystack)
 	case UseTeddy:
 		return e.findTeddy(haystack)
 	case UseDigitPrefilter:
@@ -137,8 +135,6 @@ func (e *Engine) findAtNonZero(haystack []byte, at int) *Match {
 		return e.findCharClassSearcherAt(haystack, at)
 	case UseCompositeSearcher:
 		return e.findCompositeSearcherAt(haystack, at)
-	case UseBranchDispatch:
-		return e.findBranchDispatchAt(haystack, at)
 	case UseTeddy:
 		return e.findTeddyAt(haystack, at)
 	case UseDigitPrefilter:
@@ -546,30 +542,6 @@ func (e *Engine) findCompositeSearcherAt(haystack []byte, at int) *Match {
 		return nil
 	}
 	return NewMatch(start, end, haystack)
-}
-
-// findBranchDispatch searches using O(1) branch dispatch for anchored alternations.
-// 2-3x faster than BoundedBacktracker on match, 10x+ on no-match.
-func (e *Engine) findBranchDispatch(haystack []byte) *Match {
-	if e.branchDispatcher == nil {
-		return e.findBoundedBacktracker(haystack)
-	}
-	atomic.AddUint64(&e.stats.NFASearches, 1)
-	start, end, found := e.branchDispatcher.Search(haystack)
-	if !found {
-		return nil
-	}
-	return NewMatch(start, end, haystack)
-}
-
-// findBranchDispatchAt searches using branch dispatch at position.
-// For anchored patterns, only position 0 is meaningful.
-func (e *Engine) findBranchDispatchAt(haystack []byte, at int) *Match {
-	if at != 0 {
-		// Anchored pattern can only match at position 0
-		return nil
-	}
-	return e.findBranchDispatch(haystack)
 }
 
 // fatTeddySmallHaystackThreshold is the minimum haystack size for Fat Teddy efficiency.

@@ -2,6 +2,8 @@ package nfa
 
 import (
 	"regexp/syntax"
+	"unicode"
+	"unicode/utf8"
 )
 
 // FirstByteSet represents the set of bytes that can start a match.
@@ -61,10 +63,77 @@ func ExtractFirstBytes(re *syntax.Regexp) *FirstByteSet {
 
 const maxFirstBytesDepth = 20
 
-// extractFirstBytesRecursive recursively extracts first bytes from a pattern.
-// Returns false if extraction fails (pattern too complex or can match empty).
-//
-//nolint:gocognit,gocyclo,cyclop // Pattern matching naturally has high branching factor
+func addRuneFirstByte(r rune, result *FirstByteSet) {
+	if r < 0x80 {
+		if !result.bytes[byte(r)] {
+			result.bytes[byte(r)] = true
+			result.count++
+		}
+	} else {
+		var buf [utf8.UTFMax]byte
+		utf8.EncodeRune(buf[:], r)
+		if !result.bytes[buf[0]] {
+			result.bytes[buf[0]] = true
+			result.count++
+		}
+		result.complete = false
+	}
+}
+
+func extractFirstBytesLiteral(re *syntax.Regexp, result *FirstByteSet) bool {
+	if len(re.Rune) == 0 {
+		return false
+	}
+	r := re.Rune[0]
+	addRuneFirstByte(r, result)
+	if re.Flags&syntax.FoldCase != 0 {
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			addRuneFirstByte(f, result)
+		}
+	}
+	return true
+}
+
+func extractFirstBytesCharClass(re *syntax.Regexp, result *FirstByteSet) bool {
+	for i := 0; i < len(re.Rune); i += 2 {
+		lo, hi := re.Rune[i], re.Rune[i+1]
+		if lo >= 0x80 {
+			var buf [utf8.UTFMax]byte
+			utf8.EncodeRune(buf[:], lo)
+			leadLo := buf[0]
+			utf8.EncodeRune(buf[:], hi)
+			leadHi := buf[0]
+			for b := leadLo; b <= leadHi; b++ {
+				if !result.bytes[b] {
+					result.bytes[b] = true
+					result.count++
+				}
+			}
+			result.complete = false
+			continue
+		}
+		asciiHi := hi
+		if asciiHi >= 0x80 {
+			asciiHi = 0x7F
+			result.complete = false
+			for b := byte(0xC2); b <= 0xF4; b++ {
+				if !result.bytes[b] {
+					result.bytes[b] = true
+					result.count++
+				}
+			}
+		}
+		for r := lo; r <= asciiHi; r++ {
+			if !result.bytes[byte(r)] {
+				result.bytes[byte(r)] = true
+				result.count++
+			}
+		}
+	}
+	return result.count > 0
+}
+
+//nolint:gocyclo,cyclop
 func extractFirstBytesRecursive(re *syntax.Regexp, result *FirstByteSet, depth int) bool {
 	if depth > maxFirstBytesDepth {
 		return false
@@ -72,36 +141,10 @@ func extractFirstBytesRecursive(re *syntax.Regexp, result *FirstByteSet, depth i
 
 	switch re.Op {
 	case syntax.OpLiteral:
-		// Literal string: first byte is fixed
-		if len(re.Rune) == 0 {
-			return false // Empty literal matches empty string
-		}
-		r := re.Rune[0]
-		if r > 255 {
-			return false // Non-ASCII, too complex
-		}
-		result.bytes[byte(r)] = true
-		result.count++
-		return true
+		return extractFirstBytesLiteral(re, result)
 
 	case syntax.OpCharClass:
-		// Character class: add all bytes in the class
-		for i := 0; i < len(re.Rune); i += 2 {
-			lo, hi := re.Rune[i], re.Rune[i+1]
-			if hi > 255 {
-				hi = 255 // Truncate to ASCII
-			}
-			if lo > 255 {
-				continue // Skip non-ASCII ranges
-			}
-			for r := lo; r <= hi; r++ {
-				if !result.bytes[byte(r)] {
-					result.bytes[byte(r)] = true
-					result.count++
-				}
-			}
-		}
-		return result.count > 0
+		return extractFirstBytesCharClass(re, result)
 
 	case syntax.OpAnyCharNotNL:
 		// . matches any byte except newline

@@ -39,8 +39,6 @@ func (e *Engine) FindIndices(haystack []byte) (start, end int, found bool) {
 		return e.findIndicesCharClassSearcher(haystack)
 	case UseCompositeSearcher:
 		return e.findIndicesCompositeSearcher(haystack)
-	case UseBranchDispatch:
-		return e.findIndicesBranchDispatch(haystack)
 	case UseTeddy:
 		return e.findIndicesTeddy(haystack)
 	case UseDigitPrefilter:
@@ -83,8 +81,6 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 		return e.findIndicesCharClassSearcherAt(haystack, at)
 	case UseCompositeSearcher:
 		return e.findIndicesCompositeSearcherAt(haystack, at)
-	case UseBranchDispatch:
-		return e.findIndicesBranchDispatchAt(haystack, at)
 	case UseTeddy:
 		return e.findIndicesTeddyAt(haystack, at)
 	case UseDigitPrefilter:
@@ -877,24 +873,6 @@ func (e *Engine) findIndicesCompositeSearcherAt(haystack []byte, at int) (int, i
 	return e.compositeSearcher.SearchAt(haystack, at)
 }
 
-// findIndicesBranchDispatch searches using branch dispatch - zero alloc.
-func (e *Engine) findIndicesBranchDispatch(haystack []byte) (int, int, bool) {
-	if e.branchDispatcher == nil {
-		return e.findIndicesBoundedBacktracker(haystack)
-	}
-	atomic.AddUint64(&e.stats.NFASearches, 1)
-	return e.branchDispatcher.Search(haystack)
-}
-
-// findIndicesBranchDispatchAt searches using branch dispatch at position - zero alloc.
-func (e *Engine) findIndicesBranchDispatchAt(haystack []byte, at int) (int, int, bool) {
-	if at != 0 {
-		// Anchored pattern can only match at position 0
-		return -1, -1, false
-	}
-	return e.findIndicesBranchDispatch(haystack)
-}
-
 // findIndicesTeddy returns indices using Teddy prefilter - zero alloc.
 func (e *Engine) findIndicesTeddy(haystack []byte) (int, int, bool) {
 	if e.prefilter == nil {
@@ -1152,8 +1130,6 @@ func (e *Engine) findIndicesAtWithState(haystack []byte, at int, state *SearchSt
 		return e.findIndicesCharClassSearcherAt(haystack, at)
 	case UseCompositeSearcher:
 		return e.findIndicesCompositeSearcherAt(haystack, at)
-	case UseBranchDispatch:
-		return e.findIndicesBranchDispatchAt(haystack, at)
 	case UseTeddy:
 		return e.findIndicesTeddyAt(haystack, at)
 	case UseDigitPrefilter:

@@ -182,45 +182,6 @@ func TestUseDFA_LargeNFA_NoLiterals(t *testing.T) {
 	}
 }
 
-// TestBranchDispatch_FindAt_NonZero exercises findBranchDispatchAt with at > 0.
-// For anchored patterns, FindAt(at>0) should always return nil.
-func TestBranchDispatch_FindAt_NonZero(t *testing.T) {
-	engine, err := Compile(`^(foo|bar|baz|qux)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if engine.Strategy() != UseBranchDispatch {
-		t.Skipf("Strategy is %s, not UseBranchDispatch", engine.Strategy())
-	}
-
-	// At position 0
-	match := engine.FindAt([]byte("foo123"), 0)
-	if match == nil || match.String() != "foo" {
-		t.Errorf("FindAt(0): got %v, want foo", match)
-	}
-
-	// At position > 0 should always return nil (anchored)
-	for _, at := range []int{1, 2, 3, 4, 5} {
-		match := engine.FindAt([]byte("foo123"), at)
-		if match != nil {
-			t.Errorf("FindAt(%d): got %q, want nil (anchored pattern)", at, match.String())
-		}
-	}
-
-	// FindIndicesAt at > 0
-	s, e, found := engine.FindIndicesAt([]byte("foo123"), 1)
-	if found {
-		t.Errorf("FindIndicesAt(1): got (%d,%d,true), want not found (anchored)", s, e)
-	}
-
-	// Count should be exactly 1 for anchored patterns
-	count := engine.Count([]byte("foo123"), -1)
-	if count != 1 {
-		t.Errorf("Count = %d, want 1 (anchored pattern)", count)
-	}
-}
-
 // TestAnchoredLiteral_FindAt_NonZero exercises findAnchoredLiteral at > 0.
 func TestAnchoredLiteral_FindAt_NonZero(t *testing.T) {
 	engine, err := Compile(`^hello.*world$`)

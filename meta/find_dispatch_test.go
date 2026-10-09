@@ -221,93 +221,6 @@ func TestFindAdaptive_DFAPath(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// 3. findBranchDispatchAt (find.go:556) — branch dispatch at non-zero position
-//    For anchored patterns, FindAt(at>0) always returns nil.
-//    Also covers findIndicesBranchDispatchAt (find_indices.go:649).
-// -----------------------------------------------------------------------------
-
-func TestFindBranchDispatchAt(t *testing.T) {
-	patterns := []struct {
-		name    string
-		pattern string
-		match0  string
-	}{
-		{"simple_alternation", `^(foo|bar|baz|qux)`, "foo"},
-		{"digit_alternatives", `^(\d+|UUID|hex)`, "123"},
-	}
-
-	for _, pp := range patterns {
-		t.Run(pp.name, func(t *testing.T) {
-			engine, err := Compile(pp.pattern)
-			if err != nil {
-				t.Fatal(err)
-			}
-			requireStrategy(t, engine, UseBranchDispatch)
-
-			haystack := []byte(pp.match0 + " trailing")
-
-			// FindAt at 0 should match
-			m0 := engine.FindAt(haystack, 0)
-			if m0 == nil || m0.String() != pp.match0 {
-				t.Errorf("FindAt(0) = %v, want %q", m0, pp.match0)
-			}
-
-			// FindAt at non-zero: anchored pattern cannot match
-			// This exercises findBranchDispatchAt which returns nil for at != 0
-			for _, at := range []int{1, 2, 3, 5, 10} {
-				m := engine.FindAt(haystack, at)
-				if m != nil {
-					t.Errorf("FindAt(%d) = %q, want nil (anchored)", at, m.String())
-				}
-			}
-
-			// FindIndicesAt at non-zero: also returns not found
-			s, e, found := engine.FindIndicesAt(haystack, 1)
-			if found {
-				t.Errorf("FindIndicesAt(1) = (%d,%d,true), want false", s, e)
-			}
-
-			// FindIndicesAt at 0: should work
-			s0, e0, found0 := engine.FindIndicesAt(haystack, 0)
-			if !found0 {
-				t.Error("FindIndicesAt(0) should find match")
-			} else if string(haystack[s0:e0]) != pp.match0 {
-				t.Errorf("FindIndicesAt(0) = %q, want %q", string(haystack[s0:e0]), pp.match0)
-			}
-		})
-	}
-}
-
-// TestWave4_FindBranchDispatchAt_Count ensures Count works for anchored patterns.
-
-func TestFindBranchDispatchAt_Count(t *testing.T) {
-	engine, err := Compile(`^(alpha|beta|gamma|delta)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	requireStrategy(t, engine, UseBranchDispatch)
-
-	tests := []struct {
-		input string
-		want  int
-	}{
-		{"alpha rest", 1},
-		{"beta rest", 1},
-		{"gamma rest", 1},
-		{"delta rest", 1},
-		{"epsilon rest", 0},
-		{"", 0},
-	}
-
-	for _, tt := range tests {
-		count := engine.Count([]byte(tt.input), -1)
-		if count != tt.want {
-			t.Errorf("Count(%q) = %d, want %d", tt.input, count, tt.want)
-		}
-	}
-}
-
-// -----------------------------------------------------------------------------
 // 4. findIndicesBidirectionalDFA (find_indices.go:489) — BT overflow + DFA fallback
 //    Triggered when BoundedBacktracker can't handle input size AND both forward
 //    and reverse DFA are available.
@@ -1137,32 +1050,6 @@ func TestAnchoredLiteral_HelperBranches(t *testing.T) {
 // --- Test 80: buildCharClassTable edge cases ---
 // Covers: anchored_literal.go buildCharClassTable lines 261-285
 // Targets: non-charclass input, range > 255
-
-func TestFindIndicesBranchDispatchAt_Positions(t *testing.T) {
-	pattern := `^(foo|bar|baz|qux)`
-	engine, err := Compile(pattern)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if engine.Strategy() != UseBranchDispatch {
-		t.Skipf("Strategy is %s, not UseBranchDispatch", engine.Strategy())
-	}
-
-	// At position 0 should find match
-	s, e, found := engine.FindIndicesAt([]byte("foo123"), 0)
-	if !found {
-		t.Error("expected match at position 0")
-	} else {
-		t.Logf("FindIndicesAt(0): [%d,%d]", s, e)
-	}
-
-	// At position > 0 should NOT match (anchored)
-	_, _, found2 := engine.FindIndicesAt([]byte("foo123"), 1)
-	if found2 {
-		t.Error("expected no match at position > 0 for anchored pattern")
-	}
-}
 
 // --- Test 102: ReverseSuffix IsMatch with various inputs ---
 // Covers: reverse_suffix.go IsMatch lines 319-375

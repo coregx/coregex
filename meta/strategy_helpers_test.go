@@ -146,16 +146,6 @@ func TestStrategyReasonComplex_MorePaths(t *testing.T) {
 		t.Logf("UseMultilineReverseSuffix reason: %s", reason)
 	})
 
-	// UseBranchDispatch reason
-	t.Run("branch_dispatch", func(t *testing.T) {
-		compiledNFA, literals := compileForReason(t, `^(foo|bar|baz|qux)`)
-		reason := StrategyReason(UseBranchDispatch, compiledNFA, literals, config)
-		if reason == "" {
-			t.Error("StrategyReason returned empty")
-		}
-		t.Logf("UseBranchDispatch reason: %s", reason)
-	})
-
 	// UseReverseSuffixSet reason
 	t.Run("reverse_suffix_set", func(t *testing.T) {
 		compiledNFA, literals := compileForReason(t, `.*\.(txt|log|md)`)

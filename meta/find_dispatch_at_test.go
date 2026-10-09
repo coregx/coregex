@@ -9,7 +9,7 @@ import (
 // TestFindAtNonZeroDispatch exercises findAtNonZero dispatch for various strategies.
 // Covers: find.go findAtNonZero (53%), findDFAAt (0%), findAdaptiveAt (0%),
 //
-//	findBranchDispatchAt (0%), findMultilineReverseSuffixAt (0%)
+//	findMultilineReverseSuffixAt (0%)
 func TestFindAtNonZeroDispatch(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -104,7 +104,7 @@ func TestFindAtNonZeroDispatch(t *testing.T) {
 // TestFindIndicesAtNonZeroDispatch exercises FindIndicesAt dispatch for various strategies.
 // Covers: find_indices.go FindIndicesAt (47%), findIndicesDFAAt (0%),
 //
-//	findIndicesAdaptiveAt (0%), findIndicesBranchDispatchAt (0%),
+//	findIndicesAdaptiveAt (0%),
 //	findIndicesReverseSuffixSetAt (0%), findIndicesReverseInnerAt (0%),
 //	findIndicesMultilineReverseSuffixAt (0%), findIndicesAnchoredLiteralAt (0%)
 func TestFindIndicesAtNonZeroDispatch(t *testing.T) {

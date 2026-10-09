@@ -86,7 +86,6 @@ type Engine struct {
 	charClassSearcher              *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
 	compositeSearcher              *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
 	compositeSequenceDFA           *nfa.CompositeSequenceDFA // DFA for composite patterns (faster than backtracking)
-	branchDispatcher               *nfa.BranchDispatcher     // O(1) branch dispatch for anchored alternations
 	anchoredFirstBytes             *nfa.FirstByteSet         // O(1) first-byte rejection for anchored patterns
 	anchoredSuffix                 []byte                    // O(1) suffix rejection for anchored patterns
 	reverseSearcher                *ReverseAnchoredSearcher
