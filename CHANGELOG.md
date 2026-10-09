@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Negated classes matched bytes, not runes** ([#174](https://github.com/coregx/coregex/issues/174)):
+  `\S{2}` matched single Cyrillic `К` (2 UTF-8 bytes, 1 rune) by treating each
+  byte as a separate character. Same for `\D`, `\W`, `[^x]` on any multi-byte
+  rune. Root cause: `0x80–0xFF` single-byte range in NFA compiler's
+  `coversAllNonASCII` path. Invalid UTF-8 byte handling deferred to
+  [#179](https://github.com/coregx/coregex/issues/179).
+  Random-fuzz divergence vs stdlib: 0.75% → 0.21%
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))
