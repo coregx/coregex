@@ -298,6 +298,9 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 		case DeadState:
 			return lastMatch
 
+		case QuitState:
+			return d.nfaFallback(haystack, at)
+
 		default:
 			sid = nextID
 		}
@@ -493,6 +496,8 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 			ftLen = len(ft)
 		case DeadState:
 			return lastMatch
+		case QuitState:
+			return d.nfaFallback(haystack, startPos)
 		default:
 			sid = nextID
 		}
@@ -774,6 +779,10 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 		case DeadState:
 			goto earliestPreSkip
 
+		case QuitState:
+			start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+			return matched && start >= 0 && end >= start
+
 		default:
 			sid = nextID
 		}
@@ -900,6 +909,10 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 
 		case DeadState:
 			return false
+
+		case QuitState:
+			start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+			return matched && start == startPos && end >= start
 
 		default:
 			sid = nextID
@@ -1044,6 +1057,9 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 			ftLen = len(ft)
 			lastMatch = -1
 			continue
+
+		case QuitState:
+			return d.nfaFallback(haystack, 0)
 
 		default:
 			sid = nextID
@@ -1289,6 +1305,8 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			ftLen = len(ft)
 		case DeadState:
 			return lastMatch
+		case QuitState:
+			return d.nfaFallback(haystack, startPos)
 		default:
 			sid = nextID
 		}
@@ -1894,6 +1912,9 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		case DeadState:
 			return lastMatch
 
+		case QuitState:
+			return d.nfaFallbackReverse(haystack, start, end)
+
 		default:
 			sid = nextID
 		}
@@ -2011,6 +2032,9 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 		case DeadState:
 			return lastMatch
 
+		case QuitState:
+			return d.nfaFallbackReverse(haystack, start, end)
+
 		default:
 			sid = nextID
 		}
@@ -2102,6 +2126,10 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 
 		case DeadState:
 			return false
+
+		case QuitState:
+			_, _, matched := d.pikevm.Search(haystack[start:end])
+			return matched
 
 		default:
 			sid = nextID
