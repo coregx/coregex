@@ -715,7 +715,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			offset := sid.Offset() + classIdx
 			if offset < ftLen {
 				nextID := ft[offset]
-				if nextID != InvalidState && nextID != DeadState {
+				if !nextID.IsTagged() {
 					sid = nextID
 					pos++
 					if cache.IsMatchState(sid) {
@@ -724,7 +724,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 					continue
 				}
 			}
-			// InvalidState/DeadState: fall through to full slow path
+			// Tagged (Invalid/Dead/Quit): fall through to full slow path
 		}
 
 		// Try lazy acceleration detection if not yet checked
@@ -1252,7 +1252,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 			offset := sid.Offset() + classIdx
 			if offset < ftLen {
 				nextID := ft[offset]
-				if nextID != InvalidState && nextID != DeadState {
+				if !nextID.IsTagged() {
 					sid = nextID
 					if cache.IsMatchState(sid) {
 						lastMatch = pos
@@ -1261,7 +1261,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 					continue
 				}
 			}
-			// InvalidState/DeadState: fall through to full slow path
+			// Tagged (Invalid/Dead/Quit): fall through to full slow path
 		}
 
 		// Resolve State for slow path (acceleration, word boundary, determinize).

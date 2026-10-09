@@ -658,7 +658,7 @@ func detectAccelFromTransitions(selfID StateID, stride int, transitionFn func(in
 			continue
 		}
 
-		if nextID == selfID || nextID == DeadState {
+		if nextID == selfID || nextID == DeadState || nextID == QuitState {
 			continue
 		}
 
