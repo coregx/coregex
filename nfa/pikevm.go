@@ -1670,16 +1670,16 @@ func checkLookAssertion(look Look, haystack []byte, pos int) bool {
 		wordAfter := pos < len(haystack) && isWordByte(haystack[pos])
 		return wordBefore == wordAfter
 	case LookInvalidUTF8:
-		return isInvalidUTF8Position(haystack, pos)
+		return IsInvalidUTF8Position(haystack, pos)
 	}
 	return false
 }
 
-// isInvalidUTF8Position checks if position pos in haystack is an invalid UTF-8
+// IsInvalidUTF8Position checks if position pos in haystack is an invalid UTF-8
 // byte that should be treated as U+FFFD width 1. Two conditions must hold:
 //  1. The position is at a rune boundary (not inside a valid multi-byte sequence)
 //  2. utf8.DecodeRune(haystack[pos:]) returns (RuneError, 1)
-func isInvalidUTF8Position(haystack []byte, pos int) bool {
+func IsInvalidUTF8Position(haystack []byte, pos int) bool {
 	if pos >= len(haystack) {
 		return false
 	}

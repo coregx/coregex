@@ -170,14 +170,14 @@ func hasUTF8CodepointDifference(pattern, input string) bool {
 
 	// Only empty-match stepping patterns remain (class B/C)
 	emptyMatchPatterns := map[string]bool{
-		``:    true, // empty pattern
-		`a*`:  true, // can match empty
-		`a?`:  true, // can match empty
-		`a*?`: true, // can match empty
-		`a??`: true, // can match empty
-		`.*`:  true, // can match empty
-		`.*?`: true, // can match empty
-		`.?`:  true, // can match empty
+		``:     true, // empty pattern
+		`a*`:   true, // can match empty
+		`a?`:   true, // can match empty
+		`a*?`:  true, // can match empty
+		`a??`:  true, // can match empty
+		`.*`:   true, // can match empty
+		`.*?`:  true, // can match empty
+		`.?`:   true, // can match empty
 		`(.)*`: true, // can match empty
 		`(.)?`: true, // can match empty
 	}

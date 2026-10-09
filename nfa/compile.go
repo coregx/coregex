@@ -634,6 +634,7 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 //
 // UTF-8 encoding:
 //   - 1-byte: U+0000-U+007F → 0x00-0x7F
+//
 // containsRuneFFFD checks if U+FFFD is within any of the given rune ranges.
 func containsRuneFFFD(ranges [][2]rune) bool {
 	for _, rng := range ranges {
@@ -653,9 +654,9 @@ func (c *Compiler) buildInvalidUTF8Fallback(endState StateID) StateID {
 	return c.builder.AddLook(LookInvalidUTF8, invalidByte)
 }
 
-//   - 2-byte: U+0080-U+07FF → 0xC2-0xDF, 0x80-0xBF
-//   - 3-byte: U+0800-U+FFFF → 0xE0-0xEF, 0x80-0xBF, 0x80-0xBF
-//   - 4-byte: U+10000-U+10FFFF → 0xF0-0xF4, 0x80-0xBF, 0x80-0xBF, 0x80-0xBF
+// - 2-byte: U+0080-U+07FF → 0xC2-0xDF, 0x80-0xBF
+// - 3-byte: U+0800-U+FFFF → 0xE0-0xEF, 0x80-0xBF, 0x80-0xBF
+// - 4-byte: U+10000-U+10FFFF → 0xF0-0xF4, 0x80-0xBF, 0x80-0xBF, 0x80-0xBF
 func (c *Compiler) compileUTF8Range(lo, hi rune, endState StateID) []StateID {
 	var starts []StateID
 

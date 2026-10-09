@@ -26,6 +26,10 @@ const (
 
 	slotMask = 0xFFFFFFFF // bits 0-31
 
+	// lookInvalidUTF8Bit flags a transition as conditional on LookInvalidUTF8.
+	// The search loop checks isInvalidUTF8Position before taking such transitions.
+	lookInvalidUTF8Bit = uint16(1 << 0)
+
 	// DeadState represents a dead/fail state (no valid transition)
 	DeadState StateID = 0
 
@@ -103,4 +107,10 @@ func (t Transition) WithSlotMask(slots uint32) Transition {
 func (t Transition) WithLookAround(look uint16) Transition {
 	// Clear existing look-around bits, set new ones
 	return (t &^ Transition(lookAroundMask)) | (Transition(look) << lookAroundShift)
+}
+
+// NeedsInvalidUTF8Check returns true if this transition is conditional on
+// LookInvalidUTF8 and must be verified at runtime via isInvalidUTF8Position.
+func (t Transition) NeedsInvalidUTF8Check() bool {
+	return t.LookAround()&lookInvalidUTF8Bit != 0
 }
