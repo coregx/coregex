@@ -839,11 +839,9 @@ func TestZeroWidthMatchCharClass(t *testing.T) {
 }
 
 // TestInvalidUTF8NegatedCharClass verifies that negated character classes
-// like \D, \S, \W correctly match invalid UTF-8 bytes.
-// Skipped: invalid UTF-8 byte matching removed in #174 to fix false positives
-// on valid multi-byte runes. Proper handling requires #179 (look-ahead design).
+// like \D, \S, \W correctly match invalid UTF-8 bytes as U+FFFD width 1.
+// Re-enabled after #179 LookInvalidUTF8 implementation.
 func TestInvalidUTF8NegatedCharClass(t *testing.T) {
-	t.Skip("#179: invalid UTF-8 single-byte matching requires look-ahead design")
 	tests := []struct {
 		pattern string
 		input   []byte

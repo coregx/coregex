@@ -247,13 +247,20 @@ func (c *Compiler) compileLiteral(re *syntax.Regexp) (start, end StateID, err er
 	var first = InvalidState
 
 	for _, r := range runes {
-		if foldCase && hasFoldEquivalent(r) {
+		switch {
+		case r == '\uFFFD' && !foldCase:
+			nextState, err := c.compileRuneFFFD(prev, &first)
+			if err != nil {
+				return InvalidState, InvalidState, err
+			}
+			prev = nextState
+		case foldCase && hasFoldEquivalent(r):
 			nextState, err := c.compileFoldCaseRune(r, prev, &first)
 			if err != nil {
 				return InvalidState, InvalidState, err
 			}
 			prev = nextState
-		} else {
+		default:
 			prev, err = c.compileCaseSensitiveRune(r, prev, &first)
 			if err != nil {
 				return InvalidState, InvalidState, err
@@ -329,6 +336,33 @@ func foldOrbit(r rune) []rune {
 		orbit = append(orbit, f)
 	}
 	return orbit
+}
+
+// compileRuneFFFD compiles literal U+FFFD as an alternation:
+// (1) valid 3-byte encoding EF BF BD, OR
+// (2) LookInvalidUTF8 → any byte 0x80-0xFF (invalid byte = U+FFFD).
+func (c *Compiler) compileRuneFFFD(prev StateID, first *StateID) (StateID, error) {
+	end := c.builder.AddEpsilon(InvalidState)
+
+	// Branch 1: valid encoding EF BF BD
+	bd := c.builder.AddByteRange(0xBD, 0xBD, end)
+	bf := c.builder.AddByteRange(0xBF, 0xBF, bd)
+	ef := c.builder.AddByteRange(0xEF, 0xEF, bf)
+
+	// Branch 2: Look-gated invalid byte
+	invalid := c.buildInvalidUTF8Fallback(end)
+
+	split := c.buildSplitChain([]StateID{ef, invalid})
+
+	if *first == InvalidState {
+		*first = split
+	}
+	if prev != InvalidState {
+		if err := c.builder.Patch(prev, split); err != nil {
+			return InvalidState, err
+		}
+	}
+	return end, nil
 }
 
 // compileCaseSensitiveRune compiles a single rune in case-sensitive mode
