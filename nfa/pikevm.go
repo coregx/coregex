@@ -1669,8 +1669,79 @@ func checkLookAssertion(look Look, haystack []byte, pos int) bool {
 		wordBefore := pos > 0 && isWordByte(haystack[pos-1])
 		wordAfter := pos < len(haystack) && isWordByte(haystack[pos])
 		return wordBefore == wordAfter
+	case LookInvalidUTF8:
+		return isInvalidUTF8Position(haystack, pos)
 	}
 	return false
+}
+
+// isInvalidUTF8Position checks if position pos in haystack is an invalid UTF-8
+// byte that should be treated as U+FFFD width 1. Two conditions must hold:
+//  1. The position is at a rune boundary (not inside a valid multi-byte sequence)
+//  2. utf8.DecodeRune(haystack[pos:]) returns (RuneError, 1)
+func isInvalidUTF8Position(haystack []byte, pos int) bool {
+	if pos >= len(haystack) {
+		return false
+	}
+	b := haystack[pos]
+	if b < 0x80 {
+		return false
+	}
+	// Check rune boundary: if this is a continuation byte (0x80-0xBF),
+	// verify it's not inside a valid multi-byte sequence by looking back
+	// for a lead byte whose sequence covers this position.
+	if b >= 0x80 && b <= 0xBF {
+		if isInsideValidSequence(haystack, pos) {
+			return false
+		}
+	}
+	_, size := utf8.DecodeRune(haystack[pos:])
+	return size == 1
+}
+
+// isInsideValidSequence checks whether position pos is a continuation byte
+// inside a valid UTF-8 multi-byte sequence. Looks back up to 3 bytes for
+// a lead byte whose valid sequence length covers pos.
+func isInsideValidSequence(haystack []byte, pos int) bool {
+	for back := 1; back <= 3 && pos-back >= 0; back++ {
+		lead := haystack[pos-back]
+		seqLen := utf8LeadByteLen(lead)
+		if seqLen >= 2 && back < seqLen {
+			// lead byte at pos-back starts a sequence of seqLen bytes.
+			// Verify the full sequence is valid UTF-8.
+			end := pos - back + seqLen
+			if end <= len(haystack) {
+				_, n := utf8.DecodeRune(haystack[pos-back : end])
+				if n == seqLen {
+					return true
+				}
+			}
+			return false
+		}
+		if seqLen >= 2 {
+			return false
+		}
+	}
+	return false
+}
+
+// utf8LeadByteLen returns the expected sequence length for a UTF-8 lead byte.
+// Returns 0 for continuation bytes and invalid bytes.
+func utf8LeadByteLen(b byte) int {
+	switch {
+	case b < 0x80:
+		return 1
+	case b < 0xC0:
+		return 0 // continuation byte
+	case b < 0xE0:
+		return 2
+	case b < 0xF0:
+		return 3
+	case b < 0xF8:
+		return 4
+	default:
+		return 0
+	}
 }
 
 // =============================================================================
