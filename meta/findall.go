@@ -219,6 +219,15 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 		return results
 	}
 
+	// Fast path: $-anchored without (?m) matches at most once. Issue #183.
+	if e.strategy == UseReverseAnchored {
+		start, end, found := e.findIndicesReverseAnchored(haystack)
+		if found {
+			results = append(results, [2]int{start, end})
+		}
+		return results
+	}
+
 	// Get state ONCE for entire iteration - eliminates 1.29M sync.Pool ops for FindAll
 	state := e.getSearchState()
 	defer e.putSearchState(state)
@@ -308,6 +317,15 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 //	// count == 5
 func (e *Engine) Count(haystack []byte, n int) int {
 	if n == 0 {
+		return 0
+	}
+
+	// Fast path: $-anchored without (?m) matches at most once. Issue #183.
+	if e.strategy == UseReverseAnchored {
+		_, _, found := e.findIndicesReverseAnchored(haystack)
+		if found {
+			return 1
+		}
 		return 0
 	}
 
