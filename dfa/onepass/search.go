@@ -1,5 +1,7 @@
 package onepass
 
+import "github.com/coregx/coregex/nfa"
+
 // Search performs an anchored search starting at input[0].
 // Returns the capture group slots or nil if no match.
 //
@@ -33,7 +35,10 @@ func (d *DFA) Search(input []byte, cache *Cache) []int {
 		class := d.classes.Get(b)
 		trans := d.getTransition(state, class)
 
-		// Check for dead state (no match)
+		// Conditional FFFD transition: check assertion at runtime
+		if trans.NeedsInvalidUTF8Check() && !nfa.IsInvalidUTF8Position(input, pos) {
+			return nil
+		}
 		if trans.IsDead() {
 			return nil
 		}

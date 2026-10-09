@@ -332,30 +332,66 @@ func TestNegatedClassCountsRunes(t *testing.T) {
 		})
 	}
 
-	// Part 4: invalid UTF-8 — D territory (#179). Documents desired behavior.
-	t.Run("invalid_utf8", func(t *testing.T) {
-		t.Skip("#179: invalid UTF-8 handling requires look-ahead design")
-		invalid := []struct {
-			name    string
-			pattern string
-			input   string
-		}{
-			{"not_a_0xff", `[^a]`, "\xff"},
-			{"D_embedded_0xff", `\D+`, "a\xffb"},
-			{"S_continuation", `\S`, "\x80"},
-			{"not_x_overlong", `[^x]`, "\xc0"},
+	// Part 4: invalid UTF-8 as U+FFFD width 1 (#179 acceptance criteria).
+	invalidMatch := []struct {
+		name    string
+		pattern string
+		input   string
+	}{
+		// Criteria 1-4: negated classes match invalid bytes
+		{"criterion1_not_a_0xff", `[^a]`, "\xff"},
+		{"criterion2_D_embedded", `\D+`, "a\xffb"},
+		{"criterion3_S_continuation", `\S`, "\x80"},
+		{"criterion4_not_x_overlong", `[^x]`, "\xc0"},
+		// Criterion 5: literal \x{FFFD} matches invalid byte
+		{"criterion5_fffd_literal", "\uFFFD", "\xff"},
+		// Criterion 6: literal \x{FFFD} matches valid encoding
+		{"criterion6_fffd_valid", "\uFFFD", "\xef\xbf\xbd"},
+	}
+	for _, tt := range invalidMatch {
+		t.Run(tt.name, func(t *testing.T) {
+			re := MustCompile(tt.pattern)
+			got := re.MatchString(tt.input)
+			std := regexp.MustCompile(tt.pattern)
+			want := std.MatchString(tt.input)
+			if got != want {
+				t.Errorf("MatchString(%q, %q) = %v, want %v (stdlib)",
+					tt.pattern, tt.input, got, want)
+			}
+		})
+	}
+
+	// Criterion 7: \pL does NOT match invalid byte (U+FFFD is not a letter)
+	t.Run("criterion7_pL_no_match", func(t *testing.T) {
+		re := MustCompile(`\pL`)
+		got := re.MatchString("\xff")
+		std := regexp.MustCompile(`\pL`)
+		want := std.MatchString("\xff")
+		if got != want {
+			t.Errorf("MatchString(\\pL, \"\\xff\") = %v, want %v", got, want)
 		}
-		for _, tt := range invalid {
-			t.Run(tt.name, func(t *testing.T) {
-				re := MustCompile(tt.pattern)
-				got := re.MatchString(tt.input)
-				std := regexp.MustCompile(tt.pattern)
-				want := std.MatchString(tt.input)
-				if got != want {
-					t.Errorf("MatchString(%q, %q) = %v, want %v (stdlib)",
-						tt.pattern, tt.input, got, want)
-				}
-			})
+	})
+
+	// Criterion 9: dot matches each invalid byte as width 1
+	t.Run("criterion9_dot_two_invalid", func(t *testing.T) {
+		re := MustCompile(`.`)
+		got := re.FindAllString("\xff\xfe", -1)
+		std := regexp.MustCompile(`.`)
+		want := std.FindAllString("\xff\xfe", -1)
+		if len(got) != len(want) {
+			t.Errorf("FindAllString(., \"\\xff\\xfe\"): got %d matches, want %d",
+				len(got), len(want))
+		}
+	})
+
+	// Criterion 10: rune-boundary invariant — no match inside valid rune
+	t.Run("criterion10_rune_boundary", func(t *testing.T) {
+		re := MustCompile(`[^К]b`)
+		got := re.MatchString("Кb")
+		std := regexp.MustCompile(`[^К]b`)
+		want := std.MatchString("Кb")
+		if got != want {
+			t.Errorf("MatchString([^К]b, \"Кb\") = %v, want %v", got, want)
 		}
 	})
 }

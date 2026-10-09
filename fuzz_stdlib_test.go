@@ -138,6 +138,14 @@ var seedInputs = []string{
 	"\n\n\n",
 	"555-1234",
 	"test@test.com",
+	// Invalid UTF-8 bytes (#179)
+	"\xff",
+	"\x80",
+	"\xc0",
+	"a\xffb",
+	"\xef\xbf\xbd", // valid U+FFFD encoding
+	"hello\xff\xfeworld",
+	"К\x80b", // valid rune + orphan continuation
 }
 
 // ===========================================================================
@@ -145,11 +153,10 @@ var seedInputs = []string{
 // ===========================================================================
 
 // hasUTF8CodepointDifference returns true if this pattern+input combination
-// has known differences due to coregex matching bytes vs stdlib matching codepoints.
-// This affects `.`, `\D`, `\W`, `\S`, negated character classes, and
-// patterns that can match empty strings on multibyte input.
+// has known differences due to empty-match stepping (class B/C: #175, #176).
+// Empty-match patterns step by byte, not by codepoint on multibyte input.
+// D-class patterns (dot, negated classes) were fixed by #174/#179.
 func hasUTF8CodepointDifference(pattern, input string) bool {
-	// Check if input contains multibyte UTF-8 characters
 	hasMultibyte := false
 	for _, r := range input {
 		if r >= 0x80 {
@@ -161,32 +168,20 @@ func hasUTF8CodepointDifference(pattern, input string) bool {
 		return false
 	}
 
-	// Patterns that match at byte level vs codepoint level
-	codepointPatterns := map[string]bool{
-		`.`:         true, // dot matches any codepoint in stdlib, any byte in coregex
-		`\D`:        true, // non-digit
-		`\W`:        true, // non-word
-		`\S`:        true, // non-space
-		`[^a-z]`:    true, // negated class
-		`[^0-9]`:    true, // negated class
-		`[^a-zA-Z]`: true,
-		// Empty-match patterns step by codepoint in stdlib, by byte in coregex
-		``:    true, // empty pattern
-		`a*`:  true, // can match empty
-		`a?`:  true, // can match empty
-		`a*?`: true, // can match empty
-		`a??`: true, // can match empty
-		`.*`:  true, // can match empty
-		`.*?`: true, // can match empty
-		`.?`:  true, // can match empty
-		// Dot with captures also has codepoint differences
-		`(.)`:  true,
-		`(.)+`: true,
-		`(.)*`: true,
-		`(.)?`: true,
-		`.+`:   true,
+	// Only empty-match stepping patterns remain (class B/C)
+	emptyMatchPatterns := map[string]bool{
+		``:     true, // empty pattern
+		`a*`:   true, // can match empty
+		`a?`:   true, // can match empty
+		`a*?`:  true, // can match empty
+		`a??`:  true, // can match empty
+		`.*`:   true, // can match empty
+		`.*?`:  true, // can match empty
+		`.?`:   true, // can match empty
+		`(.)*`: true, // can match empty
+		`(.)?`: true, // can match empty
 	}
-	return codepointPatterns[pattern]
+	return emptyMatchPatterns[pattern]
 }
 
 // isEmptyPatternCase returns true if this is an empty pattern case
@@ -839,11 +834,9 @@ func TestZeroWidthMatchCharClass(t *testing.T) {
 }
 
 // TestInvalidUTF8NegatedCharClass verifies that negated character classes
-// like \D, \S, \W correctly match invalid UTF-8 bytes.
-// Skipped: invalid UTF-8 byte matching removed in #174 to fix false positives
-// on valid multi-byte runes. Proper handling requires #179 (look-ahead design).
+// like \D, \S, \W correctly match invalid UTF-8 bytes as U+FFFD width 1.
+// Re-enabled after #179 LookInvalidUTF8 implementation.
 func TestInvalidUTF8NegatedCharClass(t *testing.T) {
-	t.Skip("#179: invalid UTF-8 single-byte matching requires look-ahead design")
 	tests := []struct {
 		pattern string
 		input   []byte

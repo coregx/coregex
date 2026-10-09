@@ -86,8 +86,8 @@ func TestCompileUTF8Any_StateCount(t *testing.T) {
 		maxStates   int // Upper bound after optimization
 		description string
 	}{
-		{".", 30, "dot should have suffix sharing"},
-		{".*", 32, "dot-star should have suffix sharing"},
+		{".", 33, "dot should have suffix sharing (+3 for LookInvalidUTF8 + split)"},
+		{".*", 35, "dot-star should have suffix sharing (+3 for LookInvalidUTF8 + split)"},
 	}
 
 	for _, tt := range tests {
