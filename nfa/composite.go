@@ -277,6 +277,12 @@ func isValidCompositePart(re *syntax.Regexp) bool {
 		return false
 	}
 
+	// Parts are matched greedily, so lazy quantifiers are not supported.
+	// A bare class can carry the flag from (?U) without being a quantifier.
+	if re.Op != syntax.OpCharClass && re.Flags&syntax.NonGreedy != 0 {
+		return false
+	}
+
 	switch re.Op {
 	case syntax.OpPlus, syntax.OpStar, syntax.OpQuest:
 		// Must have exactly one sub which is a char class
