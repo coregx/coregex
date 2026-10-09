@@ -87,6 +87,11 @@ type DFA struct {
 	// When true, we only need to try matching from position 0.
 	isAlwaysAnchored bool
 
+	// hasInvalidUTF8Look is true if the NFA contains LookInvalidUTF8 assertions.
+	// When true, determinize sets QuitState for all bytes >= 0x80 (temporary 3c).
+	// Phase 3 replaces this with a UTF-8 validator product.
+	hasInvalidUTF8Look bool
+
 	// startByteMap is the immutable byte-to-StartKind mapping used to initialize
 	// DFACache.startTable. Computed once during compilation.
 	startByteMap [256]StartKind
@@ -1352,6 +1357,16 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 //
 //	or if determinization limit exceeded.
 func (d *DFA) determinize(cache *DFACache, current *State, b byte) (*State, error) {
+	// Temporary 3c: when the NFA has LookInvalidUTF8 assertions, the DFA
+	// cannot evaluate them (requires look-ahead/look-behind). Quit on any
+	// byte >= 0x80 and let PikeVM handle it. Phase 3 replaces this with a
+	// UTF-8 validator product that quits only on structurally invalid bytes.
+	if d.hasInvalidUTF8Look && b >= 0x80 {
+		classIdx := d.byteToClass(b)
+		cache.SetFlatTransition(current.id, int(classIdx), QuitState)
+		return nil, &DFAError{Kind: NFAFallback, Message: "quit: byte >= 0x80 with LookInvalidUTF8"}
+	}
+
 	// Need builder for move operations.
 	// Use NewBuilderWithWordBoundary to pass pre-computed flag and avoid O(states) scan.
 	builder := NewBuilderWithWordBoundary(d.nfa, d.config, d.hasWordBoundary)

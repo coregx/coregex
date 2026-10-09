@@ -70,22 +70,26 @@ func (b *Builder) Build() (*DFA, error) {
 	// Check if the pattern is always anchored (has ^ prefix)
 	isAlwaysAnchored := b.nfa.IsAlwaysAnchored()
 
+	// Check if the NFA contains LookInvalidUTF8 assertions
+	hasInvalidUTF8Look := b.checkHasInvalidUTF8Look()
+
 	// Build the immutable start byte map
 	var startByteMap [256]StartKind
 	initByteMap(&startByteMap)
 
 	// Create DFA — fully immutable after this point
 	dfa := &DFA{
-		nfa:              b.nfa,
-		config:           b.config,
-		prefilter:        pf,
-		pikevm:           nfa.NewPikeVM(b.nfa),
-		byteClasses:      b.nfa.ByteClasses(),
-		unanchoredStart:  b.nfa.StartUnanchored(),
-		hasWordBoundary:  hasWordBoundary,
-		hasEndLine:       hasEndLine,
-		isAlwaysAnchored: isAlwaysAnchored,
-		startByteMap:     startByteMap,
+		nfa:                b.nfa,
+		config:             b.config,
+		prefilter:          pf,
+		pikevm:             nfa.NewPikeVM(b.nfa),
+		byteClasses:        b.nfa.ByteClasses(),
+		unanchoredStart:    b.nfa.StartUnanchored(),
+		hasWordBoundary:    hasWordBoundary,
+		hasEndLine:         hasEndLine,
+		isAlwaysAnchored:   isAlwaysAnchored,
+		hasInvalidUTF8Look: hasInvalidUTF8Look,
+		startByteMap:       startByteMap,
 	}
 
 	return dfa, nil
@@ -742,6 +746,25 @@ func (b *Builder) checkHasEndLine() bool {
 		if state.Kind() == nfa.StateLook {
 			look, _ := state.Look()
 			if look == nfa.LookEndLine {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkHasInvalidUTF8Look checks if the NFA contains LookInvalidUTF8 assertions.
+// When true, determinize quits on bytes >= 0x80 (temporary 3c fallback).
+func (b *Builder) checkHasInvalidUTF8Look() bool {
+	numStates := b.nfa.States()
+	for i := nfa.StateID(0); int(i) < numStates; i++ {
+		state := b.nfa.State(i)
+		if state == nil {
+			continue
+		}
+		if state.Kind() == nfa.StateLook {
+			look, _ := state.Look()
+			if look == nfa.LookInvalidUTF8 {
 				return true
 			}
 		}
