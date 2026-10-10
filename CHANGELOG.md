@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+- Look-around assertions
+- ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))
+
+## [0.12.29] - 2026-10-10
+
 ### Fixed
 - **Concurrent use of one compiled `Regex` returned wrong results or panicked**
   (regression of [#78](https://github.com/coregx/coregex/issues/78)):
@@ -35,10 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 - `lazy.(*DFA).SetPikeVM` is a no-op: the DFA no longer holds a PikeVM, its NFA
   fallback uses a PikeVM owned by the per-search `DFACache`
-
-### Planned
-- Look-around assertions
-- ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))
 
 ## [0.12.28] - 2026-10-10
 

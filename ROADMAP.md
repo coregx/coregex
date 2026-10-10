@@ -2,7 +2,7 @@
 
 > **Strategic Focus**: Production-grade regex engine with RE2/rust-regex level optimizations
 
-**Last Updated**: 2026-09-06 | **Current Version**: v0.12.25 | **Target**: v1.0.0 stable
+**Last Updated**: 2026-10-10 | **Current Version**: v0.12.29 | **Target**: v1.0.0 stable
 
 ---
 
@@ -12,7 +12,7 @@ Build a **production-ready, high-performance regex engine** for Go that matches 
 
 ### Current State vs Target
 
-| Metric | Current (v0.12.19) | Target (v1.0.0) |
+| Metric | Current (v0.12.29) | Target (v1.0.0) |
 |--------|-------------------|-----------------|
 | Inner literal speedup | **280-3154x** | ✅ Achieved |
 | Case-insensitive speedup | **263x** | ✅ Achieved |
