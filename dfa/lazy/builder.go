@@ -82,7 +82,6 @@ func (b *Builder) Build() (*DFA, error) {
 		nfa:                b.nfa,
 		config:             b.config,
 		prefilter:          pf,
-		pikevm:             nfa.NewPikeVM(b.nfa),
 		byteClasses:        b.nfa.ByteClasses(),
 		unanchoredStart:    b.nfa.StartUnanchored(),
 		hasWordBoundary:    hasWordBoundary,
@@ -498,23 +497,14 @@ func CompileWithPrefilter(n *nfa.NFA, config Config, pf prefilter.Prefilter) (*D
 	return dfa, nil
 }
 
-// SetPikeVM replaces the DFA's internal PikeVM with an externally-provided one.
-// This enables sharing a single PikeVM between the Engine and its DFA(s),
-// eliminating duplicate PikeVM allocations (~15-20 KB each for 100-state NFA).
+// SetPikeVM is a no-op kept for API compatibility.
 //
-// Issue #158: Each DFA (forward, reverse, strategy-specific) previously created
-// its own PikeVM. With ~900 OWASP CRS patterns, many of which compile multiple
-// DFAs, this was a major contributor to the 16x memory overhead vs stdlib.
-//
-// The provided PikeVM must be built from the same NFA (or a compatible variant)
-// used to compile this DFA. Thread safety: PikeVM's Search methods use internal
-// state, so the DFA's NFA fallback path is not thread-safe. However, in practice
-// the meta layer always uses per-goroutine SearchState with its own PikeVM for
-// actual searches, and the DFA's embedded PikeVM is only used during DFA-internal
-// fallback within a single goroutine's search path.
-func (d *DFA) SetPikeVM(pvm *nfa.PikeVM) {
-	d.pikevm = pvm
-}
+// Deprecated: The DFA no longer owns a PikeVM. A DFA is shared by every
+// goroutine that searches with it, while a PikeVM keeps mutable search state,
+// so a DFA-owned fallback PikeVM raced whenever two goroutines fell back to
+// the NFA at the same time. The fallback PikeVM now lives in the per-goroutine
+// DFACache and is created lazily on the first fallback.
+func (d *DFA) SetPikeVM(_ *nfa.PikeVM) {}
 
 // CompilePattern is a convenience function to compile a regex pattern directly to DFA.
 // This combines NFA compilation and DFA construction.

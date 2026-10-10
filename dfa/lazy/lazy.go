@@ -64,7 +64,6 @@ type DFA struct {
 	nfa       *nfa.NFA
 	config    Config
 	prefilter prefilter.Prefilter
-	pikevm    *nfa.PikeVM // NFA fallback — may be shared with Engine (Issue #158)
 
 	// byteClasses maps bytes to equivalence classes for alphabet reduction.
 	// Bytes in the same class have identical transitions in all DFA states.
@@ -243,7 +242,7 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 	// Get ANCHORED start state (requires match to start exactly at 'at')
 	currentState := d.getStartState(cache, haystack, at, true)
 	if currentState == nil {
-		return d.nfaFallback(haystack, at)
+		return d.nfaFallback(cache, haystack, at)
 	}
 
 	lastMatch := -1
@@ -276,14 +275,14 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 		case InvalidState:
 			currentState = cache.getState(sid)
 			if currentState == nil {
-				return d.nfaFallback(haystack, at)
+				return d.nfaFallback(cache, haystack, at)
 			}
 			nextState, err := d.determinize(cache, currentState, b)
 			if err != nil {
 				if isCacheCleared(err) {
 					currentState = d.getStartState(cache, haystack, pos, true)
 					if currentState == nil {
-						return d.nfaFallback(haystack, at)
+						return d.nfaFallback(cache, haystack, at)
 					}
 					sid = currentState.id
 					ft = cache.flatTrans
@@ -291,7 +290,7 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 					pos--
 					continue
 				}
-				return d.nfaFallback(haystack, at)
+				return d.nfaFallback(cache, haystack, at)
 			}
 			if nextState == nil {
 				return lastMatch
@@ -304,7 +303,7 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 			return lastMatch
 
 		case QuitState:
-			return d.nfaFallbackAnchored(haystack, at)
+			return d.nfaFallbackAnchored(cache, haystack, at)
 
 		default:
 			sid = nextID
@@ -322,7 +321,7 @@ func (d *DFA) SearchAtAnchored(cache *DFACache, haystack []byte, at int) int {
 
 	// EOI: truncated UTF-8 at end → PikeVM fallback
 	if d.needsEOIFallback(cache, sid) {
-		return d.nfaFallbackAnchored(haystack, at)
+		return d.nfaFallbackAnchored(cache, haystack, at)
 	}
 	// EOI: check for delayed match at end of input.
 	eoi := cache.getState(sid)
@@ -373,7 +372,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 
 	startState := d.getStartStateForUnanchored(cache, haystack, startPos)
 	if startState == nil {
-		return d.nfaFallback(haystack, startPos)
+		return d.nfaFallback(cache, haystack, startPos)
 	}
 
 	// With 1-byte match delay, start states are never match states.
@@ -459,7 +458,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 				pos = candidate
 				newStart := d.getStartStateForUnanchored(cache, haystack, pos)
 				if newStart == nil {
-					return d.nfaFallback(haystack, startPos)
+					return d.nfaFallback(cache, haystack, startPos)
 				}
 				sid = newStart.id
 				ft = cache.flatTrans
@@ -489,11 +488,11 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 		case InvalidState:
 			currentState := cache.getState(sid)
 			if currentState == nil {
-				return d.nfaFallback(haystack, startPos)
+				return d.nfaFallback(cache, haystack, startPos)
 			}
 			nextState, err := d.determinize(cache, currentState, haystack[pos])
 			if err != nil {
-				return d.nfaFallback(haystack, startPos)
+				return d.nfaFallback(cache, haystack, startPos)
 			}
 			if nextState == nil {
 				return lastMatch
@@ -504,7 +503,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 		case DeadState:
 			return lastMatch
 		case QuitState:
-			return d.nfaFallback(haystack, startPos)
+			return d.nfaFallback(cache, haystack, startPos)
 		default:
 			sid = nextID
 		}
@@ -521,7 +520,7 @@ func (d *DFA) searchFirstAt(cache *DFACache, haystack []byte, startPos int) int 
 
 	// EOI: truncated UTF-8 at end → PikeVM fallback
 	if d.needsEOIFallback(cache, sid) {
-		return d.nfaFallback(haystack, startPos)
+		return d.nfaFallback(cache, haystack, startPos)
 	}
 	eoi := cache.getState(sid)
 	if eoi != nil && d.checkEOIMatch(eoi) {
@@ -588,7 +587,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 	currentState := d.getStartStateForUnanchored(cache, haystack, startPos)
 	if currentState == nil {
 		// Fallback to NFA using SearchAt to preserve absolute positions
-		start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+		start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 		return matched && start >= 0 && end >= start
 	}
 
@@ -706,7 +705,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 					pos = candidate
 					newStart := d.getStartStateForUnanchored(cache, haystack, pos)
 					if newStart == nil {
-						start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+						start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 						return matched && start >= 0 && end >= start
 					}
 					sid = newStart.id
@@ -735,7 +734,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 		// Try lazy acceleration detection if not yet checked
 		currentState = cache.getState(sid)
 		if currentState == nil {
-			start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+			start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 			return matched && start >= 0 && end >= start
 		}
 		d.tryDetectAccelerationWithCache(currentState, cache)
@@ -776,7 +775,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			// Determinize on demand
 			nextState, err := d.determinize(cache, currentState, b)
 			if err != nil {
-				start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+				start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 				return matched && start >= 0 && end >= start
 			}
 			if nextState == nil {
@@ -790,7 +789,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 			goto earliestPreSkip
 
 		case QuitState:
-			start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+			start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 			return matched && start >= 0 && end >= start
 
 		default:
@@ -822,7 +821,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 		pos = candidate
 		newStart := d.getStartStateForUnanchored(cache, haystack, pos)
 		if newStart == nil {
-			start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+			start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 			return matched && start >= 0 && end >= start
 		}
 		sid = newStart.id
@@ -832,7 +831,7 @@ func (d *DFA) searchEarliestMatch(cache *DFACache, haystack []byte, startPos int
 
 	// Reached end of input without finding a match in the loop.
 	if d.needsEOIFallback(cache, sid) {
-		start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+		start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 		return matched && start >= 0 && end >= start
 	}
 	eoi := cache.getState(sid)
@@ -855,7 +854,7 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 	currentState := d.getStartState(cache, haystack, startPos, true)
 	if currentState == nil {
 		// Fallback to NFA with anchored search
-		start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+		start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 		// For anchored: match must start exactly at startPos
 		return matched && start == startPos && end >= start
 	}
@@ -890,7 +889,7 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 		case InvalidState:
 			currentState = cache.getState(sid)
 			if currentState == nil {
-				start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+				start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 				return matched && start == startPos && end >= start
 			}
 			nextState, err := d.determinize(cache, currentState, b)
@@ -898,7 +897,7 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 				if isCacheCleared(err) {
 					currentState = d.getStartState(cache, haystack, pos, true)
 					if currentState == nil {
-						start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+						start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 						return matched && start == startPos && end >= start
 					}
 					sid = currentState.id
@@ -907,7 +906,7 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 					pos--
 					continue
 				}
-				start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+				start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 				return matched && start == startPos && end >= start
 			}
 			if nextState == nil {
@@ -921,7 +920,7 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 			return false
 
 		case QuitState:
-			start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+			start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 			return matched && start == startPos && end >= start
 
 		default:
@@ -935,7 +934,7 @@ func (d *DFA) searchEarliestMatchAnchored(cache *DFACache, haystack []byte, star
 	}
 
 	if d.needsEOIFallback(cache, sid) {
-		start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+		start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 		return matched && start == startPos && end >= start
 	}
 	eoi := cache.getState(sid)
@@ -960,7 +959,7 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 	// Get start state based on look-behind context at candidate position
 	currentState := d.getStartStateForUnanchored(cache, haystack, pos)
 	if currentState == nil {
-		return d.nfaFallback(haystack, 0)
+		return d.nfaFallback(cache, haystack, 0)
 	}
 
 	// Track last match position for leftmost-longest semantics
@@ -982,7 +981,7 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 				pos = candidate
 				newStart := d.getStartStateForUnanchored(cache, haystack, pos)
 				if newStart == nil {
-					return d.nfaFallback(haystack, 0)
+					return d.nfaFallback(cache, haystack, 0)
 				}
 				sid = newStart.id
 				ft = cache.flatTrans
@@ -1011,21 +1010,21 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 		case InvalidState:
 			currentState = cache.getState(sid)
 			if currentState == nil {
-				return d.nfaFallback(haystack, 0)
+				return d.nfaFallback(cache, haystack, 0)
 			}
 			nextState, err := d.determinize(cache, currentState, haystack[pos])
 			if err != nil {
 				if isCacheCleared(err) {
 					newStart := d.getStartStateForUnanchored(cache, haystack, pos)
 					if newStart == nil {
-						return d.nfaFallback(haystack, 0)
+						return d.nfaFallback(cache, haystack, 0)
 					}
 					sid = newStart.id
 					ft = cache.flatTrans
 					ftLen = len(ft)
 					continue
 				}
-				return d.nfaFallback(haystack, 0)
+				return d.nfaFallback(cache, haystack, 0)
 			}
 			if nextState == nil {
 				// Dead state — prefilter skip
@@ -1040,7 +1039,7 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 				pos = candidate
 				newStart := d.getStartStateForUnanchored(cache, haystack, pos)
 				if newStart == nil {
-					return d.nfaFallback(haystack, 0)
+					return d.nfaFallback(cache, haystack, 0)
 				}
 				sid = newStart.id
 				ft = cache.flatTrans
@@ -1064,7 +1063,7 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 			pos = candidate
 			newStart := d.getStartStateForUnanchored(cache, haystack, pos)
 			if newStart == nil {
-				return d.nfaFallback(haystack, 0)
+				return d.nfaFallback(cache, haystack, 0)
 			}
 			sid = newStart.id
 			ft = cache.flatTrans
@@ -1073,7 +1072,7 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 			continue
 
 		case QuitState:
-			return d.nfaFallback(haystack, 0)
+			return d.nfaFallback(cache, haystack, 0)
 
 		default:
 			sid = nextID
@@ -1089,7 +1088,7 @@ func (d *DFA) findWithPrefilterAt(cache *DFACache, haystack []byte, startAt int)
 
 	// EOI: truncated UTF-8 at end → PikeVM fallback
 	if d.needsEOIFallback(cache, sid) {
-		return d.nfaFallback(haystack, 0)
+		return d.nfaFallback(cache, haystack, 0)
 	}
 	eoi := cache.getState(sid)
 	if eoi != nil && d.checkEOIMatch(eoi) {
@@ -1145,7 +1144,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 	// Get appropriate start state based on look-behind context
 	currentState := d.getStartStateForUnanchored(cache, haystack, startPos)
 	if currentState == nil {
-		return d.nfaFallback(haystack, startPos)
+		return d.nfaFallback(cache, haystack, startPos)
 	}
 
 	// Track last match position for leftmost-longest semantics.
@@ -1250,7 +1249,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 					pos = candidate
 					newStart := d.getStartStateForUnanchored(cache, haystack, pos)
 					if newStart == nil {
-						return d.nfaFallback(haystack, startPos)
+						return d.nfaFallback(cache, haystack, startPos)
 					}
 					sid = newStart.id
 					ft = cache.flatTrans
@@ -1279,7 +1278,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 		// Resolve State for slow path (acceleration, word boundary, determinize).
 		currentState = cache.getState(sid)
 		if currentState == nil {
-			return d.nfaFallback(haystack, startPos)
+			return d.nfaFallback(cache, haystack, startPos)
 		}
 		d.tryDetectAccelerationWithCache(currentState, cache)
 
@@ -1312,7 +1311,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 		case InvalidState:
 			nextState, err := d.determinize(cache, currentState, b)
 			if err != nil {
-				return d.nfaFallback(haystack, startPos)
+				return d.nfaFallback(cache, haystack, startPos)
 			}
 			if nextState == nil {
 				return lastMatch
@@ -1323,7 +1322,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 		case DeadState:
 			return lastMatch
 		case QuitState:
-			return d.nfaFallback(haystack, startPos)
+			return d.nfaFallback(cache, haystack, startPos)
 		default:
 			sid = nextID
 		}
@@ -1342,7 +1341,7 @@ func (d *DFA) searchAt(cache *DFACache, haystack []byte, startPos int) int { //n
 
 	// EOI: truncated UTF-8 at end → PikeVM fallback
 	if d.needsEOIFallback(cache, sid) {
-		return d.nfaFallback(haystack, startPos)
+		return d.nfaFallback(cache, haystack, startPos)
 	}
 	eoi := cache.getState(sid)
 	if eoi != nil && d.checkEOIMatch(eoi) {
@@ -1682,12 +1681,22 @@ func (d *DFA) needsEOIFallback(cache *DFACache, sid StateID) bool {
 	return st != nil && st.ValidatorState() != VS0
 }
 
+// fallbackPikeVM returns the NFA fallback engine owned by cache, creating it
+// on first use. Each goroutine has its own cache, so the PikeVM's mutable
+// search state is never shared between concurrent searches.
+func (d *DFA) fallbackPikeVM(cache *DFACache) *nfa.PikeVM {
+	if cache.pikevm == nil {
+		cache.pikevm = nfa.NewPikeVMLazy(d.nfa)
+	}
+	return cache.pikevm
+}
+
 // nfaFallback executes the NFA (PikeVM) when DFA gives up.
 // This ensures correctness even when cache is full or pattern is too complex.
-func (d *DFA) nfaFallback(haystack []byte, startPos int) int {
+func (d *DFA) nfaFallback(cache *DFACache, haystack []byte, startPos int) int {
 	// Search from startPos to end using SearchAt to preserve absolute positions
 	// This is critical for anchor handling (^ should only match at position 0)
-	_, end, matched := d.pikevm.SearchAt(haystack, startPos)
+	_, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 	if !matched {
 		return -1
 	}
@@ -1699,8 +1708,8 @@ func (d *DFA) nfaFallback(haystack []byte, startPos int) int {
 // nfaFallbackAnchored is like nfaFallback but requires the match to start
 // exactly at startPos. Used by SearchAtAnchored where unanchored fallback
 // would produce false positives from matches after the expected position.
-func (d *DFA) nfaFallbackAnchored(haystack []byte, startPos int) int {
-	start, end, matched := d.pikevm.SearchAt(haystack, startPos)
+func (d *DFA) nfaFallbackAnchored(cache *DFACache, haystack []byte, startPos int) int {
+	start, end, matched := d.fallbackPikeVM(cache).SearchAt(haystack, startPos)
 	if !matched || start != startPos {
 		return -1
 	}
@@ -1717,7 +1726,7 @@ func (d *DFA) matchesEmpty(cache *DFACache) bool {
 	}
 
 	// Fall back to NFA for empty match check (handles word boundaries, etc.)
-	start, end, matched := d.pikevm.Search([]byte{})
+	start, end, matched := d.fallbackPikeVM(cache).Search([]byte{})
 	return matched && start == 0 && end == 0
 }
 
@@ -1849,7 +1858,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 	// Get start state for reverse search
 	currentState := d.getStartStateForReverse(cache, haystack, end)
 	if currentState == nil {
-		return d.nfaFallbackReverse(haystack, start, end)
+		return d.nfaFallbackReverse(cache, haystack, start, end)
 	}
 
 	lastMatch := -1
@@ -1943,21 +1952,21 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 		case InvalidState:
 			currentState = cache.getState(sid)
 			if currentState == nil {
-				return d.nfaFallbackReverse(haystack, start, end)
+				return d.nfaFallbackReverse(cache, haystack, start, end)
 			}
 			nextState, err := d.determinize(cache, currentState, b)
 			if err != nil {
 				if isCacheCleared(err) {
 					currentState = d.getStartStateForReverse(cache, haystack, at+1)
 					if currentState == nil {
-						return d.nfaFallbackReverse(haystack, start, end)
+						return d.nfaFallbackReverse(cache, haystack, start, end)
 					}
 					sid = currentState.id
 					ft = cache.flatTrans
 					ftLen = len(ft)
 					continue
 				}
-				return d.nfaFallbackReverse(haystack, start, end)
+				return d.nfaFallbackReverse(cache, haystack, start, end)
 			}
 			if nextState == nil {
 				return lastMatch
@@ -1970,7 +1979,7 @@ func (d *DFA) SearchReverse(cache *DFACache, haystack []byte, start, end int) in
 			return lastMatch
 
 		case QuitState:
-			return d.nfaFallbackReverse(haystack, start, end)
+			return d.nfaFallbackReverse(cache, haystack, start, end)
 
 		default:
 			sid = nextID
@@ -2029,7 +2038,7 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 
 	currentState := d.getStartStateForReverse(cache, haystack, end)
 	if currentState == nil {
-		return d.nfaFallbackReverse(haystack, start, end)
+		return d.nfaFallbackReverse(cache, haystack, start, end)
 	}
 
 	lastMatch := -1
@@ -2062,14 +2071,14 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 		case InvalidState:
 			currentState = cache.getState(sid)
 			if currentState == nil {
-				return d.nfaFallbackReverse(haystack, start, end)
+				return d.nfaFallbackReverse(cache, haystack, start, end)
 			}
 			nextState, err := d.determinize(cache, currentState, b)
 			if err != nil {
 				if isCacheCleared(err) {
 					currentState = d.getStartStateForReverse(cache, haystack, at+1)
 					if currentState == nil {
-						return d.nfaFallbackReverse(haystack, start, end)
+						return d.nfaFallbackReverse(cache, haystack, start, end)
 					}
 					sid = currentState.id
 					ft = cache.flatTrans
@@ -2077,7 +2086,7 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 					at++ // Will be decremented by for-loop
 					continue
 				}
-				return d.nfaFallbackReverse(haystack, start, end)
+				return d.nfaFallbackReverse(cache, haystack, start, end)
 			}
 			if nextState == nil {
 				return lastMatch
@@ -2090,7 +2099,7 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 			return lastMatch
 
 		case QuitState:
-			return d.nfaFallbackReverse(haystack, start, end)
+			return d.nfaFallbackReverse(cache, haystack, start, end)
 
 		default:
 			sid = nextID
@@ -2126,7 +2135,7 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 
 	currentState := d.getStartStateForReverse(cache, haystack, end)
 	if currentState == nil {
-		_, _, matched := d.pikevm.Search(haystack[start:end])
+		_, _, matched := d.fallbackPikeVM(cache).Search(haystack[start:end])
 		return matched
 	}
 
@@ -2154,7 +2163,7 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 		case InvalidState:
 			currentState = cache.getState(sid)
 			if currentState == nil {
-				_, _, matched := d.pikevm.Search(haystack[start:end])
+				_, _, matched := d.fallbackPikeVM(cache).Search(haystack[start:end])
 				return matched
 			}
 			nextState, err := d.determinize(cache, currentState, b)
@@ -2162,7 +2171,7 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 				if isCacheCleared(err) {
 					currentState = d.getStartStateForReverse(cache, haystack, at+1)
 					if currentState == nil {
-						_, _, matched := d.pikevm.Search(haystack[start:end])
+						_, _, matched := d.fallbackPikeVM(cache).Search(haystack[start:end])
 						return matched
 					}
 					sid = currentState.id
@@ -2171,7 +2180,7 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 					at++ // Will be decremented by for-loop
 					continue
 				}
-				_, _, matched := d.pikevm.Search(haystack[start:end])
+				_, _, matched := d.fallbackPikeVM(cache).Search(haystack[start:end])
 				return matched
 			}
 			if nextState == nil {
@@ -2185,7 +2194,7 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 			return false
 
 		case QuitState:
-			_, _, matched := d.pikevm.SearchBetween(haystack, start, end)
+			_, _, matched := d.fallbackPikeVM(cache).SearchBetween(haystack, start, end)
 			return matched
 
 		default:
@@ -2245,8 +2254,8 @@ func (d *DFA) getStartStateForReverse(cache *DFACache, haystack []byte, end int)
 // nfaFallbackReverse handles NFA fallback for reverse search.
 // Uses SearchBetween to preserve full haystack context (word boundaries,
 // LookInvalidUTF8 rune-boundary check need bytes before start).
-func (d *DFA) nfaFallbackReverse(haystack []byte, start, end int) int {
-	matchStart, _, matched := d.pikevm.SearchBetween(haystack, start, end)
+func (d *DFA) nfaFallbackReverse(cache *DFACache, haystack []byte, start, end int) int {
+	matchStart, _, matched := d.fallbackPikeVM(cache).SearchBetween(haystack, start, end)
 	if !matched {
 		return -1
 	}

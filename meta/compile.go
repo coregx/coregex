@@ -468,20 +468,16 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 
 	pf, strategy = adjustForAnchors(pf, strategy, re)
 
-	// Build PikeVM (always needed for fallback).
+	// PikeVMs run on the rune NFA when available: sparse dispatch replaces
+	// ~9 split states with a single sparse state, giving O(1) byte dispatch
+	// per '.'. Search-time PikeVMs are owned by the per-goroutine SearchState
+	// (see Engine.skipPikeVM); this one is only used below, at compile time.
 	// NOTE: hasMultilineLineAnchor and hasAnchorAssertions are defined in strategy.go
-	// Use runeNFA when available — sparse dispatch replaces ~9 split states
-	// with a single sparse state, giving PikeVM O(1) byte dispatch per '.'.
 	pikevmNFA := nfaEngine
 	if runeNFAEngine != nil {
 		pikevmNFA = runeNFAEngine
 	}
 	pikevm := nfa.NewPikeVM(pikevmNFA)
-
-	// Set prefilter as skip-ahead inside PikeVM (Rust approach: pikevm.rs:1293).
-	// When NFA has no active threads, PikeVM skips to next candidate position.
-	// Safe for partial-coverage prefilters — NFA processes all branches.
-	configurePikeVMSkipAhead(pikevm, pf, isStartAnchored)
 
 	// Build OnePass DFA for anchored patterns with captures (optional optimization)
 	onePassRes := buildOnePassDFA(re, nfaEngine, config)
@@ -585,7 +581,6 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	numCaptures := nfaEngine.CaptureCount()
 
 	ssCfg := buildSearchStateConfig(pikevmNFA, numCaptures, engines, strategy, onePassRes != nil)
-	sharePikeVMWithDFAs(nfaEngine, engines)
 
 	eng := &Engine{
 		nfa:                            nfaEngine,
@@ -595,7 +590,6 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 		dfa:                            engines.dfa,
 		reverseDFA:                     engines.reverseDFA,
 		nfaStateCount:                  nfaEngine.States(),
-		pikevm:                         pikevm,
 		boundedBacktracker:             charClassResult.boundedBT,
 		charClassSearcher:              charClassResult.charClassSrch,
 		compositeSearcher:              charClassResult.compositeSrch,
@@ -624,7 +618,7 @@ func CompileRegexp(re *syntax.Regexp, config Config) (*Engine, error) {
 	}
 
 	// Issue #158: Defer SearchState allocation to first search.
-	// The localState cache is NOT populated at compile time. Instead, it will be
+	// The home state is NOT populated at compile time. Instead, it will be
 	// lazily created on the first search call via getSearchState(). This saves
 	// ~15-50 KB per compiled pattern for WAF workloads where patterns may be
 	// compiled but never searched (e.g., pattern sets loaded at startup).
@@ -684,20 +678,12 @@ func hasNonLineAnchors(re *syntax.Regexp) bool {
 	return false
 }
 
-// configurePikeVMSkipAhead sets prefilter as skip-ahead inside PikeVM.
+// configurePikeVMSkipAhead sets prefilter as skip-ahead inside PikeVM
+// (Rust approach: pikevm.rs:1293). When the NFA has no active threads,
+// the PikeVM skips to the next candidate position.
 func configurePikeVMSkipAhead(pikevm *nfa.PikeVM, pf prefilter.Prefilter, isStartAnchored bool) {
 	if pf != nil && !isStartAnchored {
 		pikevm.SetSkipAhead(pf)
-	}
-}
-
-// sharePikeVMWithDFAs creates a single shared PikeVM and injects it into forward
-// DFAs to eliminate duplicate allocations (~15-20 KB per DFA for 100-state NFA).
-// Reverse DFAs use different (reversed) NFAs so they keep their own PikeVMs.
-func sharePikeVMWithDFAs(nfaEngine *nfa.NFA, engines strategyEngines) {
-	shared := nfa.NewPikeVM(nfaEngine)
-	if engines.dfa != nil {
-		engines.dfa.SetPikeVM(shared)
 	}
 }
 

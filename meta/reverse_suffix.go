@@ -64,10 +64,10 @@ type ReverseSuffixSearcher struct {
 	reverseDFA     *lazy.DFA
 	forwardDFA     *lazy.DFA
 	prefilter      prefilter.Prefilter
-	pikevm         *nfa.PikeVM
-	suffixLen      int    // Length of the suffix literal for calculating revEnd
-	suffixBytes    []byte // Suffix literal bytes for FindLast optimization
-	matchStartZero bool   // True if pattern starts with .* (match always starts at 0)
+	pikevms        *pikeVMPool // NFA fallback; a search takes its own PikeVM from the pool
+	suffixLen      int         // Length of the suffix literal for calculating revEnd
+	suffixBytes    []byte      // Suffix literal bytes for FindLast optimization
+	matchStartZero bool        // True if pattern starts with .* (match always starts at 0)
 	fwdCachePool   sync.Pool
 	revCachePool   sync.Pool
 }
@@ -129,9 +129,6 @@ func NewReverseSuffixSearcher(
 		return nil, err
 	}
 
-	// Create PikeVM for fallback
-	pikevm := nfa.NewPikeVM(forwardNFA)
-
 	// matchStartZero is true only when pattern has .* prefix (e.g., `.*\.txt`).
 	// Only OpStar(AnyChar) guarantees match starts at 0/at — skip reverse DFA.
 	// Other wildcards like .+, [^\s]+, \w{2,8} do NOT guarantee this.
@@ -141,7 +138,7 @@ func NewReverseSuffixSearcher(
 		reverseDFA:     reverseDFA,
 		forwardDFA:     forwardDFA,
 		prefilter:      pre,
-		pikevm:         pikevm,
+		pikevms:        newPikeVMPool(forwardNFA),
 		suffixLen:      suffixLen,
 		suffixBytes:    suffixBytes,
 		matchStartZero: matchStartZero,
@@ -230,7 +227,7 @@ func (s *ReverseSuffixSearcher) Find(haystack []byte) *Match {
 				return NewMatch(matchStart, matchEnd, haystack)
 			}
 			// DFA failed — fallback to PikeVM
-			start, end, found := s.pikevm.SearchAt(haystack, matchStart)
+			start, end, found := s.pikevms.searchAt(haystack, matchStart)
 			if found {
 				return NewMatch(start, end, haystack)
 			}
@@ -325,7 +322,7 @@ func (s *ReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match {
 				return NewMatch(matchStart, matchEnd, haystack)
 			}
 			// DFA failed — fallback to PikeVM
-			fwdStart, fwdEnd, found := s.pikevm.SearchAt(haystack, matchStart)
+			fwdStart, fwdEnd, found := s.pikevms.searchAt(haystack, matchStart)
 			if found {
 				return NewMatch(fwdStart, fwdEnd, haystack)
 			}
@@ -333,7 +330,7 @@ func (s *ReverseSuffixSearcher) FindAt(haystack []byte, at int) *Match {
 		}
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
 			// Quadratic behavior detected - fall back to PikeVM
-			start, end, found := s.pikevm.SearchAt(haystack, at)
+			start, end, found := s.pikevms.searchAt(haystack, at)
 			if found {
 				return NewMatch(start, end, haystack)
 			}
@@ -420,10 +417,10 @@ func (s *ReverseSuffixSearcher) findIndicesAtImpl(haystack []byte, at int, fwdCa
 			if matchEnd >= 0 {
 				return matchStart, matchEnd, true
 			}
-			return s.pikevm.SearchAt(haystack, matchStart)
+			return s.pikevms.searchAt(haystack, matchStart)
 		}
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
-			return s.pikevm.SearchAt(haystack, at)
+			return s.pikevms.searchAt(haystack, at)
 		}
 
 		minStart = suffixEnd
@@ -488,7 +485,7 @@ func (s *ReverseSuffixSearcher) IsMatch(haystack []byte) bool {
 		}
 		if revResult == lazy.SearchReverseLimitedQuadratic {
 			// Quadratic behavior detected - fall back to PikeVM
-			_, _, matched := s.pikevm.Search(haystack)
+			_, _, matched := s.pikevms.searchAt(haystack, 0)
 			return matched
 		}
 

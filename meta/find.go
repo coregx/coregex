@@ -189,7 +189,7 @@ func (e *Engine) findDFA(haystack []byte) *Match {
 
 		// Use anchored search from prefilter position - O(m) not O(n)!
 		// This is much faster than searching the entire haystack
-		start, end, matched := e.pikevm.SearchAt(haystack, pos)
+		start, end, matched := e.pikeVMSearchAt(haystack, pos)
 		if !matched {
 			return nil
 		}
@@ -198,8 +198,8 @@ func (e *Engine) findDFA(haystack []byte) *Match {
 
 	// Use DFA search with pooled cache
 	state := e.getSearchState()
+	defer e.putSearchState(state)
 	endPos := e.dfa.Find(state.dfaCache, haystack)
-	e.putSearchState(state)
 	if endPos == -1 {
 		return nil
 	}
@@ -213,7 +213,7 @@ func (e *Engine) findDFA(haystack []byte) *Match {
 		// For long haystacks, start search closer to the match end
 		estimatedStart = endPos - 100
 	}
-	start, end, matched := e.pikevm.SearchAt(haystack, estimatedStart)
+	start, end, matched := e.skipPikeVM(state).SearchAt(haystack, estimatedStart)
 	if !matched {
 		return nil
 	}
@@ -254,7 +254,7 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 		}
 
 		// Use anchored search from prefilter position - O(m) not O(n)!
-		start, end, matched := e.pikevm.SearchAt(haystack, pos)
+		start, end, matched := e.pikeVMSearchAt(haystack, pos)
 		if !matched {
 			return nil
 		}
@@ -267,14 +267,14 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 		state := e.getSearchState()
 		endPos := e.dfa.Find(state.dfaCache, haystack)
 		if endPos != -1 {
-			e.putSearchState(state)
 			// DFA succeeded - get exact match bounds from NFA
 			// Use estimated start position for O(m) search instead of O(n)
 			estimatedStart := 0
 			if endPos > 100 {
 				estimatedStart = endPos - 100
 			}
-			start, end, matched := e.pikevm.SearchAt(haystack, estimatedStart)
+			start, end, matched := e.skipPikeVM(state).SearchAt(haystack, estimatedStart)
+			e.putSearchState(state)
 			if !matched {
 				return nil
 			}
@@ -296,7 +296,7 @@ func (e *Engine) findAdaptive(haystack []byte) *Match {
 // This preserves absolute positions for correct anchor handling.
 func (e *Engine) findNFAAt(haystack []byte, at int) *Match {
 	atomic.AddUint64(&e.stats.NFASearches, 1)
-	start, end, matched := e.pikevm.SearchAt(haystack, at)
+	start, end, matched := e.pikeVMSearchAt(haystack, at)
 	if !matched {
 		return nil
 	}
@@ -323,7 +323,7 @@ func (e *Engine) findDFAAt(haystack []byte, at int) *Match {
 			return NewMatch(pos, pos+literalLen, haystack)
 		}
 		// Fallback to NFA if LiteralLen not available (e.g., Teddy multi-pattern)
-		start, end, matched := e.pikevm.SearchAt(haystack, at)
+		start, end, matched := e.pikeVMSearchAt(haystack, at)
 		if !matched {
 			return nil
 		}
@@ -332,15 +332,15 @@ func (e *Engine) findDFAAt(haystack []byte, at int) *Match {
 
 	// Use DFA search with FindAt and pooled cache
 	state := e.getSearchState()
+	defer e.putSearchState(state)
 	pos := e.dfa.FindAt(state.dfaCache, haystack, at)
-	e.putSearchState(state)
 	if pos == -1 {
 		return nil
 	}
 
 	// DFA returns end position, but doesn't track start position
 	// Fall back to NFA to get exact match bounds
-	start, end, matched := e.pikevm.SearchAt(haystack, at)
+	start, end, matched := e.skipPikeVM(state).SearchAt(haystack, at)
 	if !matched {
 		return nil
 	}
@@ -355,9 +355,9 @@ func (e *Engine) findAdaptiveAt(haystack []byte, at int) *Match {
 		state := e.getSearchState()
 		pos := e.dfa.FindAt(state.dfaCache, haystack, at)
 		if pos != -1 {
-			e.putSearchState(state)
 			// DFA succeeded - need to find start position from NFA
-			start, end, matched := e.pikevm.SearchAt(haystack, at)
+			start, end, matched := e.skipPikeVM(state).SearchAt(haystack, at)
+			e.putSearchState(state)
 			if matched {
 				return NewMatch(start, end, haystack)
 			}
@@ -465,7 +465,9 @@ func (e *Engine) findBoundedBacktracker(haystack []byte) *Match {
 		if !e.asciiBoundedBacktracker.CanHandle(len(haystack)) {
 			return e.findNFA(haystack)
 		}
-		start, end, found := e.asciiBoundedBacktracker.Search(haystack)
+		state := e.getSearchState()
+		start, end, found := e.asciiBoundedBacktracker.SearchWithState(haystack, state.backtracker)
+		e.putSearchState(state)
 		if !found {
 			return nil
 		}

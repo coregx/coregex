@@ -216,11 +216,7 @@ func TestConcurrentFindSubmatch(t *testing.T) {
 }
 
 // TestConcurrentCount tests that Engine.Count is thread-safe.
-// Note: This test is currently skipped because full thread-safety
-// requires updates to additional code paths beyond the core refactoring.
 func TestConcurrentCount(t *testing.T) {
-	t.Skip("Count requires additional thread-safety fixes - see issue #78 for progress")
-
 	engine, err := Compile(`\bfoo\b`)
 	if err != nil {
 		t.Fatalf("failed to compile pattern: %v", err)
@@ -256,13 +252,9 @@ func TestConcurrentCount(t *testing.T) {
 }
 
 // TestConcurrentMixedOperations tests concurrent usage with mixed operations.
-// This is a stress test to verify no races when different operations run concurrently.
-// Note: This test is currently skipped because full thread-safety for all code paths
-// requires additional work. The core BoundedBacktracker and PikeVM thread-safety
-// fixes have been implemented.
+// This is a stress test to verify no races when different operations run
+// concurrently (run with -race).
 func TestConcurrentMixedOperations(t *testing.T) {
-	t.Skip("Mixed operations require additional thread-safety fixes - see issue #78 for progress")
-
 	engine, err := Compile(`(\d+)-(\d+)-(\d+)`)
 	if err != nil {
 		t.Fatalf("failed to compile pattern: %v", err)
@@ -335,24 +327,21 @@ func TestConcurrentMixedOperations(t *testing.T) {
 	wg.Wait()
 }
 
-// TestConcurrentDifferentPatterns tests concurrent usage with multiple engines.
-// This verifies that different engines can be used concurrently without interference.
-//
-// Note: Only patterns using NFA-based strategies are tested here.
-// DFA-based strategies require additional thread-safety work - see issue #78.
+// TestConcurrentDifferentPatterns tests concurrent usage with multiple engines
+// covering NFA, DFA, adaptive, literal and reverse-search strategies. Each
+// result is compared with the single-goroutine result for the same engine.
 func TestConcurrentDifferentPatterns(t *testing.T) {
-	// Only NFA-based patterns (thread-safe):
-	// Verified with Strategy() - all use UseNFA or UseCharClassSearcher
 	patterns := []string{
-		`\d+`,     // UseCharClassSearcher (NFA-based)
-		`[a-z]+`,  // UseCharClassSearcher (NFA-based)
-		`^\w+`,    // UseNFA - anchored pattern
-		`\b\w+\b`, // UseNFA - word boundary pattern
+		`\d+`,                // UseCharClassSearcher
+		`[a-z]+`,             // UseCharClassSearcher
+		`^\w+`,               // anchored pattern
+		`\b\w+\b`,            // word boundary pattern
+		`\w+@\w+\.\w+`,       // inner literal (reverse search)
+		`foo|bar|baz`,        // UseTeddy
+		`\w+$`,               // end-anchored (reverse search)
+		`(\w+)@(\w+)\.(\w+)`, // UseBoth
+		`a+?b`,               // UseDFA with a lazy quantifier
 	}
-	// Excluded (DFA-based, not yet thread-safe):
-	// - `\w+@\w+\.\w+` - UseReverseInner (uses DFA)
-	// - `foo|bar|baz` - UseTeddy (uses DFA)
-	// - `\w+$` - may use reverse DFA
 
 	engines := make([]*Engine, len(patterns))
 	for i, pattern := range patterns {
@@ -363,26 +352,45 @@ func TestConcurrentDifferentPatterns(t *testing.T) {
 		}
 	}
 
-	input := []byte("test123 hello@world.com foo bar end")
+	input := []byte("test123 hello@world.com foo bar aab end")
+
+	type result struct {
+		isMatch    bool
+		start, end int
+		found      bool
+	}
+	want := make([]result, len(engines))
+	for i, engine := range engines {
+		start, end, found := engine.FindIndices(input)
+		want[i] = result{engine.IsMatch(input), start, end, found}
+	}
 
 	const numGoroutines = 50
 	const numIterations = 100
 
 	var wg sync.WaitGroup
+	var mismatches atomic.Int64
 
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(engineIdx int) {
 			defer wg.Done()
-			engine := engines[engineIdx%len(engines)]
+			idx := engineIdx % len(engines)
+			engine := engines[idx]
 			for j := 0; j < numIterations; j++ {
-				_ = engine.IsMatch(input)
-				_ = engine.Find(input)
+				start, end, found := engine.FindIndices(input)
+				if (result{engine.IsMatch(input), start, end, found}) != want[idx] {
+					mismatches.Add(1)
+				}
 			}
 		}(i)
 	}
 
 	wg.Wait()
+
+	if n := mismatches.Load(); n > 0 {
+		t.Errorf("%d concurrent results differ from single-goroutine results", n)
+	}
 }
 
 // TestConcurrentCaseInsensitivePrefilter verifies that case-insensitive patterns

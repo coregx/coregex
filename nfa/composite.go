@@ -18,15 +18,13 @@ import (
 //   - \d+\s+\w+        → digits, whitespace, word chars
 //   - [a-z]+[A-Z]+     → lowercase then uppercase
 //
-// Thread safety: NOT thread-safe. For concurrent usage, each goroutine needs its own instance.
+// Thread safety: immutable after construction and safe for concurrent use.
+// Searches keep no state in the searcher (it is shared by all goroutines
+// using the compiled pattern).
 //
 // Reference: https://github.com/coregx/coregex/issues/72
 type CompositeSearcher struct {
 	parts []*charClassPart
-
-	// matchLengths is pre-allocated scratch space for backtracking.
-	// Reused across calls to avoid per-match allocations.
-	matchLengths []int
 }
 
 // charClassPart represents one segment of a composite pattern.
@@ -53,8 +51,7 @@ func NewCompositeSearcher(re *syntax.Regexp) *CompositeSearcher {
 	}
 
 	return &CompositeSearcher{
-		parts:        parts,
-		matchLengths: make([]int, len(parts)), // Pre-allocate to avoid per-match allocation
+		parts: parts,
 	}
 }
 
@@ -205,15 +202,11 @@ func (c *CompositeSearcher) SearchAt(haystack []byte, at int) (int, int, bool) {
 // consumes all 6 characters. Backtracking gives back digits until
 // [0-9]+ can match its minimum (1 character).
 func (c *CompositeSearcher) matchAt(haystack []byte, pos int) (int, bool) {
-	// Reset pre-allocated matchLengths (faster than allocating new slice)
-	for i := range c.matchLengths {
-		c.matchLengths[i] = 0
-	}
-	return c.matchAtWithBacktrack(haystack, pos, 0, c.matchLengths)
+	return c.matchAtWithBacktrack(haystack, pos, 0)
 }
 
 // matchAtWithBacktrack recursively matches parts with backtracking support.
-func (c *CompositeSearcher) matchAtWithBacktrack(haystack []byte, pos int, partIdx int, matchLengths []int) (int, bool) {
+func (c *CompositeSearcher) matchAtWithBacktrack(haystack []byte, pos int, partIdx int) (int, bool) {
 	if partIdx >= len(c.parts) {
 		// All parts matched successfully
 		return pos, true
@@ -236,8 +229,7 @@ func (c *CompositeSearcher) matchAtWithBacktrack(haystack []byte, pos int, partI
 
 	// Try from greedy (max) down to minimum, backtracking if next parts fail
 	for tryLen := canConsume; tryLen >= part.minMatch; tryLen-- {
-		matchLengths[partIdx] = tryLen
-		if end, ok := c.matchAtWithBacktrack(haystack, pos+tryLen, partIdx+1, matchLengths); ok {
+		if end, ok := c.matchAtWithBacktrack(haystack, pos+tryLen, partIdx+1); ok {
 			return end, true
 		}
 	}

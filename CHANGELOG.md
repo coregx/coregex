@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Concurrent use of one compiled `Regex` returned wrong results or panicked**
+  (regression of [#78](https://github.com/coregx/coregex/issues/78)):
+  several search paths kept mutable search state in objects shared by every
+  goroutine using the pattern: the engine-level PikeVM, the lazy DFA's NFA
+  fallback PikeVM, the ASCII BoundedBacktracker fast path (added in v0.11.0,
+  after the v0.10.4 fix for #78), the NFA fallback of the reverse searchers
+  (suffix, suffix set, inner, anchored) and a scratch buffer in
+  `CompositeSearcher`. With 8 goroutines sharing one pattern, searches with
+  patterns such as `a+?b`, `foo\d+?bar`, `(\w+)@(\w+)\.(\w+)`, `k=[^;]+;` and
+  `^(\w+): (.+)$` returned wrong matches or panicked with `index out of range`.
+  Single-goroutine use was not affected. Fix: compiled objects are immutable;
+  every search takes its mutable state from the pattern's state pool (the
+  model Rust regex uses with its per-search `Cache`). A new test runs 12 APIs
+  on 20 patterns (one or more per strategy) from 8 goroutines and compares
+  every result with stdlib; the two concurrency tests skipped since #78 run
+  again. Cost: paths that used the shared objects now take per-search state.
+  To offset it, the engine's GC-proof state is now claimed with an integer
+  flag instead of an `atomic.Pointer` swap (pointer atomics are runtime calls
+  with a write-barrier check), which makes state acquisition cheaper on every
+  path, most of all under contention. Measured across 4 randomized link
+  layouts: `MatchString` on a short input with a BoundedBacktracker pattern
+  +5% (+3% to +12% depending on layout), `ReplaceAllStringFunc` +2%, other
+  measured paths within noise
+
+### Deprecated
+- `lazy.(*DFA).SetPikeVM` is a no-op: the DFA no longer holds a PikeVM, its NFA
+  fallback uses a PikeVM owned by the per-search `DFACache`
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))

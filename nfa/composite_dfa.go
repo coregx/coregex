@@ -12,7 +12,8 @@ import (
 //   - Each DFA state represents a set of NFA positions (which parts could be active)
 //   - Handles overlap by tracking multiple possible parse positions simultaneously
 //
-// Thread safety: NOT thread-safe. For concurrent usage, each goroutine needs its own instance.
+// Thread safety: immutable after construction and safe for concurrent use
+// (search methods only read the transition tables).
 type CompositeSequenceDFA struct {
 	// byteToClass maps each byte to its equivalence class
 	byteToClass [256]byte
