@@ -219,18 +219,6 @@ func (e *Engine) findAllIndicesLoop(haystack []byte, n int, results [][2]int) []
 		return results
 	}
 
-	// Fast path: end-anchored patterns ($) without (?m) match at most once.
-	// UseReverseAnchored's reverse searcher finds the single match in one
-	// scan from the end. Without this, FindAll falls through to PikeVM per
-	// position → O(n²). Issue #183.
-	if e.strategy == UseReverseAnchored {
-		start, end, found := e.findIndicesReverseAnchored(haystack)
-		if found {
-			results = append(results, [2]int{start, end})
-		}
-		return results
-	}
-
 	// Get state ONCE for entire iteration - eliminates 1.29M sync.Pool ops for FindAll
 	state := e.getSearchState()
 	defer e.putSearchState(state)
@@ -323,14 +311,6 @@ func (e *Engine) Count(haystack []byte, n int) int {
 		return 0
 	}
 
-	// Fast path: end-anchored without (?m) matches at most once. Issue #183.
-	if e.strategy == UseReverseAnchored {
-		_, _, found := e.findIndicesReverseAnchored(haystack)
-		if found {
-			return 1
-		}
-		return 0
-	}
 
 	count := 0
 	pos := 0

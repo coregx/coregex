@@ -63,6 +63,12 @@ func (e *Engine) FindIndicesAt(haystack []byte, at int) (start, end int, found b
 	}
 
 	switch e.strategy {
+	case UseReverseAnchored:
+		// OpEndText: at most one match at end of text. Issue #183.
+		if at == 0 {
+			return e.findIndicesReverseAnchored(haystack)
+		}
+		return -1, -1, false
 	case UseNFA:
 		return e.findIndicesNFAAt(haystack, at)
 	case UseDFA:
@@ -1112,6 +1118,11 @@ func (e *Engine) findIndicesAtWithState(haystack []byte, at int, state *SearchSt
 	}
 
 	switch e.strategy {
+	case UseReverseAnchored:
+		if at == 0 {
+			return e.findIndicesReverseAnchored(haystack)
+		}
+		return -1, -1, false
 	case UseNFA:
 		return e.findIndicesNFAAtWithState(haystack, at, state)
 	case UseDFA:

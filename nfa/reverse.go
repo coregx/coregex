@@ -259,7 +259,7 @@ func fillAllTransitions(forward *NFA, builder *Builder, reverseEdges map[StateID
 		edges := reverseEdges[fwdID]
 
 		if isStart && hasIncoming {
-			fillStartStateWithIncoming(builder, revID, edges, revStateMap, matchID)
+			fillStartStateWithIncoming(builder, revID, edges, revStateMap, matchID, forAnchored)
 		} else {
 			fillReverseState(builder, revID, edges, revStateMap)
 		}
@@ -400,48 +400,41 @@ func fillReverseState(builder *Builder, revID StateID, edges []reverseEdge, revS
 	fillSparseState(builder, revID, byteRangeEdges, revStateMap)
 }
 
-// fillStartStateWithIncoming handles forward start states that have incoming edges (loops)
-// The proxy state is already an epsilon -> match, but we need to add the loop transitions
-func fillStartStateWithIncoming(builder *Builder, proxyID StateID, edges []reverseEdge, revStateMap map[StateID]StateID, matchID StateID) {
-	// The proxy is currently epsilon -> match
-	// If we have incoming edges (from loops), we need to create a split:
-	// proxyID: split -> (transitions from incoming edges), match
-
-	// Collect targets from incoming edges
-	var loopTargets []StateID
+// fillStartStateWithIncoming handles forward start states that have incoming edges (loops).
+// When forAnchored=true (ReverseAnchored), ByteRange edges create actual byte transitions
+// so that *-loops at the start of the pattern are preserved in the reverse NFA. Issue #183.
+// When forAnchored=false (Reverse for ReverseSuffix/ReverseInner), all edges use epsilon
+// treatment to avoid extending match boundaries past the unanchored prefix.
+func fillStartStateWithIncoming(builder *Builder, proxyID StateID, edges []reverseEdge, revStateMap map[StateID]StateID, matchID StateID, forAnchored bool) {
+	var transStarts []StateID
 	for _, edge := range edges {
-		if revTarget, ok := revStateMap[edge.from]; ok {
-			loopTargets = append(loopTargets, revTarget)
+		revTarget, ok := revStateMap[edge.from]
+		if !ok {
+			continue
+		}
+		if forAnchored && (edge.kind == edgeByteRange || edge.kind == edgeSparse) {
+			br := builder.AddByteRange(edge.lo, edge.hi, revTarget)
+			transStarts = append(transStarts, br)
+		} else {
+			transStarts = append(transStarts, revTarget)
 		}
 	}
 
-	if len(loopTargets) == 0 {
-		// No actual targets, keep the epsilon -> match
+	if len(transStarts) == 0 {
 		return
 	}
 
-	// We need to convert the proxy into a split that goes to both:
-	// 1. The loop targets (to continue matching)
-	// 2. The match state (to accept)
-
-	// For a single loop target: split -> loopTarget, match
-	// For multiple loop targets: split -> split(targets...), match
-	if len(loopTargets) == 1 {
-		// Change proxy from epsilon to split
-		s := &builder.states[proxyID]
-		s.kind = StateSplit
-		s.left = loopTargets[0]
-		s.right = matchID
-		s.next = InvalidState // Clear epsilon target
+	var transChain StateID
+	if len(transStarts) == 1 {
+		transChain = transStarts[0]
 	} else {
-		// Multiple loop targets - build a chain
-		loopChain := buildSplitChain(builder, loopTargets)
-		s := &builder.states[proxyID]
-		s.kind = StateSplit
-		s.left = loopChain
-		s.right = matchID
-		s.next = InvalidState
+		transChain = buildSplitChain(builder, transStarts)
 	}
+	s := &builder.states[proxyID]
+	s.kind = StateSplit
+	s.left = transChain
+	s.right = matchID
+	s.next = InvalidState
 }
 
 // fillEpsilonState fills a state for pure epsilon transitions
