@@ -209,25 +209,26 @@ func (e *Engine) isMatchBoundedBacktracker(haystack []byte) bool {
 
 	atomic.AddUint64(&e.stats.NFASearches, 1) // Count as NFA-family search for stats
 
+	// Use pooled state for thread-safety: backtrackers and PikeVMs keep
+	// mutable search state, which must never be shared between goroutines.
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+
 	// V11-002 ASCII optimization: use ASCII NFA when input is ASCII-only.
 	// SIMD isASCII check runs at ~20-40 GB/s, adding minimal overhead (~3-4ns).
 	// For Issue #79 pattern ^/.*[\w-]+\.php, ASCII NFA has 14 states vs 39 states.
 	if e.asciiBoundedBacktracker != nil && simd.IsASCII(haystack) {
 		if !e.asciiBoundedBacktracker.CanHandle(len(haystack)) {
-			return e.pikevm.IsMatch(haystack)
+			return e.skipPikeVM(state).IsMatch(haystack)
 		}
-		// Use ASCII backtracker directly (no pooled state needed - it's independent)
-		return e.asciiBoundedBacktracker.IsMatch(haystack)
+		return e.asciiBoundedBacktracker.IsMatchWithState(haystack, state.backtracker)
 	}
 
 	if !e.boundedBacktracker.CanHandle(len(haystack)) {
 		// Input too large for bounded backtracker, fall back to PikeVM
-		return e.pikevm.IsMatch(haystack)
+		return e.skipPikeVM(state).IsMatch(haystack)
 	}
 
-	// Use pooled state for thread-safety
-	state := e.getSearchState()
-	defer e.putSearchState(state)
 	return e.boundedBacktracker.IsMatchWithState(haystack, state.backtracker)
 }
 

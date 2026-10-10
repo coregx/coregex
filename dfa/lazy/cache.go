@@ -1,5 +1,7 @@
 package lazy
 
+import "github.com/coregx/coregex/nfa"
+
 // DFACache uses byte-based capacity (like Rust's cache_capacity).
 
 // DFACache holds mutable state for DFA search operations.
@@ -62,6 +64,12 @@ type DFACache struct {
 
 	// clearCount tracks cache clear count for NFA fallback threshold.
 	clearCount int
+
+	// pikevm is the NFA fallback engine used when the DFA gives up.
+	// It is created lazily on the first fallback. A PikeVM keeps mutable search
+	// state, so it must be owned by the per-goroutine cache, never by the DFA,
+	// which is shared by all goroutines searching with it.
+	pikevm *nfa.PikeVM
 
 	// Statistics
 	hits   uint64

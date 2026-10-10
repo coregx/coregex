@@ -30,6 +30,13 @@ type SearchState struct {
 	// so we pool entire PikeVM instances for thread-safety.
 	pikevm *nfa.PikeVM
 
+	// skipPikeVM is a per-search PikeVM on the same NFA that also uses the
+	// engine prefilter as skip-ahead. It replaces the former engine-level
+	// PikeVM, which was shared by all goroutines: its thread queues were
+	// mutated by concurrent searches, producing wrong results and panics.
+	// Created lazily by Engine.skipPikeVM.
+	skipPikeVM *nfa.PikeVM
+
 	// dfaCache holds per-search mutable state for lazy DFA searches.
 	// Each goroutine gets its own cache, eliminating the data race on shared
 	// DFA state construction that previously required PikeVM workarounds.

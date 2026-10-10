@@ -31,11 +31,10 @@ import (
 //	// Forward: 340 seconds (tries match at every position)
 //	// Reverse: ~1 millisecond (one match attempt from end)
 type ReverseAnchoredSearcher struct {
-	reverseNFA    *nfa.NFA
-	reverseDFA    *lazy.DFA
-	pikevm        *nfa.PikeVM
-	forwardPikevm *nfa.PikeVM // For empty string matching (reverse NFA has issues with empty)
-	revCachePool  sync.Pool   // Pool of *lazy.DFACache for thread-safe reverse DFA access
+	reverseNFA     *nfa.NFA
+	reverseDFA     *lazy.DFA
+	forwardPikevms *pikeVMPool // For empty string matching (reverse NFA has issues with empty)
+	revCachePool   sync.Pool   // Pool of *lazy.DFACache for thread-safe reverse DFA access
 }
 
 // NewReverseAnchoredSearcher creates a reverse searcher from forward NFA.
@@ -60,18 +59,12 @@ func NewReverseAnchoredSearcher(forwardNFA *nfa.NFA, config lazy.Config) (*Rever
 		return nil, err
 	}
 
-	// Create PikeVM for fallback (when DFA cache is full)
-	pikevm := nfa.NewPikeVM(reverseNFA)
-
-	// Create forward PikeVM for empty string matching
-	// Reverse NFA has issues with empty strings and certain alternations
-	forwardPikevm := nfa.NewPikeVM(forwardNFA)
-
+	// Forward PikeVMs for empty string matching: the reverse NFA has issues
+	// with empty strings and certain alternations.
 	s := &ReverseAnchoredSearcher{
-		reverseNFA:    reverseNFA,
-		reverseDFA:    reverseDFA,
-		pikevm:        pikevm,
-		forwardPikevm: forwardPikevm,
+		reverseNFA:     reverseNFA,
+		reverseDFA:     reverseDFA,
+		forwardPikevms: newPikeVMPool(forwardNFA),
 	}
 	s.revCachePool = sync.Pool{
 		New: func() any { return s.reverseDFA.NewCache() },
@@ -99,7 +92,7 @@ func (s *ReverseAnchoredSearcher) Find(haystack []byte) *Match {
 	// For empty strings, use forward PikeVM
 	// Reverse NFA has issues with empty strings and certain alternations
 	if len(haystack) == 0 {
-		start, end, matched := s.forwardPikevm.Search(haystack)
+		start, end, matched := s.forwardPikevms.searchAt(haystack, 0)
 		if !matched {
 			return nil
 		}
@@ -130,7 +123,7 @@ func (s *ReverseAnchoredSearcher) IsMatch(haystack []byte) bool {
 	// For empty strings, use forward PikeVM
 	// Reverse NFA has issues with empty strings and certain alternations
 	if len(haystack) == 0 {
-		_, _, matched := s.forwardPikevm.Search(haystack)
+		_, _, matched := s.forwardPikevms.searchAt(haystack, 0)
 		return matched
 	}
 

@@ -149,11 +149,11 @@ type ReverseInnerSearcher struct {
 	reverseDFA      *lazy.DFA
 	forwardDFA      *lazy.DFA
 	prefilter       prefilter.Prefilter
-	pikevm          *nfa.PikeVM
-	innerLen        int  // Length of the inner literal for calculating positions
-	universalPrefix bool // True if prefix is .* (matches everything from start)
-	universalSuffix bool // True if suffix ends with .* (matches everything to end)
-	startAnchored   bool // True if prefix only contains start anchors (^, ^+, etc.)
+	pikevms         *pikeVMPool // NFA fallback; a search takes its own PikeVM from the pool
+	innerLen        int         // Length of the inner literal for calculating positions
+	universalPrefix bool        // True if prefix is .* (matches everything from start)
+	universalSuffix bool        // True if suffix ends with .* (matches everything to end)
+	startAnchored   bool        // True if prefix only contains start anchors (^, ^+, etc.)
 	fwdCachePool    sync.Pool
 	revCachePool    sync.Pool
 }
@@ -255,9 +255,6 @@ func NewReverseInnerSearcher(
 		return nil, err
 	}
 
-	// Create PikeVM for fallback (uses full pattern)
-	pikevm := nfa.NewPikeVM(fullNFA)
-
 	// Detect universal prefix/suffix for Find optimization
 	// For patterns like `.*connection.*`:
 	//   - universalPrefix: .* prefix means match always starts at 0
@@ -273,7 +270,7 @@ func NewReverseInnerSearcher(
 		reverseDFA:      reverseDFA,
 		forwardDFA:      forwardDFA,
 		prefilter:       pre,
-		pikevm:          pikevm,
+		pikevms:         newPikeVMPool(fullNFA), // NFA fallback uses the full pattern
 		innerLen:        innerLen,
 		universalPrefix: universalPrefix,
 		universalSuffix: universalSuffix,
@@ -369,7 +366,7 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 		// Fall back to PikeVM which is O(n) in this case.
 		if pos < minPreStart {
 			// Quadratic behavior detected - use PikeVM fallback
-			start, end, found := s.pikevm.Search(haystack)
+			start, end, found := s.pikevms.searchAt(haystack, 0)
 			if found {
 				return NewMatch(start, end, haystack)
 			}
@@ -382,7 +379,7 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 		matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, 0, pos, minMatchStart)
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
 			// Reverse scan hit the anti-quadratic guard - fall back to PikeVM
-			start, end, found := s.pikevm.Search(haystack)
+			start, end, found := s.pikevms.searchAt(haystack, 0)
 			if found {
 				return NewMatch(start, end, haystack)
 			}
@@ -418,7 +415,7 @@ func (s *ReverseInnerSearcher) Find(haystack []byte) *Match {
 	}
 
 	// Fallback: use PikeVM if no DFA match found
-	start, end, found := s.pikevm.Search(haystack)
+	start, end, found := s.pikevms.searchAt(haystack, 0)
 	if found {
 		return NewMatch(start, end, haystack)
 	}
@@ -477,7 +474,7 @@ func (s *ReverseInnerSearcher) IsMatch(haystack []byte) bool {
 			revResult := s.reverseDFA.SearchReverseLimited(revCache, haystack, 0, pos, minStart)
 			if revResult == lazy.SearchReverseLimitedQuadratic {
 				// Quadratic behavior detected - fall back to PikeVM
-				_, _, matched := s.pikevm.Search(haystack)
+				_, _, matched := s.pikevms.searchAt(haystack, 0)
 				return matched
 			}
 			prefixMatches = revResult >= 0
@@ -559,7 +556,7 @@ func (s *ReverseInnerSearcher) findIndicesAtImpl(haystack []byte, at int, fwdCac
 		matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, at, pos, minMatchStart)
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
 			// Quadratic behavior detected - fall back to PikeVM
-			return s.pikevm.SearchAt(haystack, at)
+			return s.pikevms.searchAt(haystack, at)
 		}
 		if matchStart < 0 || matchStart < at {
 			// Prefix doesn't match or match starts before 'at' - try next candidate
@@ -588,5 +585,5 @@ func (s *ReverseInnerSearcher) findIndicesAtImpl(haystack []byte, at int, fwdCac
 	}
 
 	// Fallback to PikeVM
-	return s.pikevm.SearchAt(haystack, at)
+	return s.pikevms.searchAt(haystack, at)
 }

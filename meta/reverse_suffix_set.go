@@ -46,7 +46,7 @@ type ReverseSuffixSetSearcher struct {
 	reverseDFA     *lazy.DFA
 	forwardDFA     *lazy.DFA
 	prefilter      prefilter.Prefilter
-	pikevm         *nfa.PikeVM
+	pikevms        *pikeVMPool  // NFA fallback; a search takes its own PikeVM from the pool
 	suffixLiterals *literal.Seq // All suffix literals
 	matchStartZero bool         // True if pattern starts with .* (match always starts at 0)
 	revCachePool   sync.Pool
@@ -106,9 +106,6 @@ func NewReverseSuffixSetSearcher(
 		return nil, err
 	}
 
-	// Create PikeVM for fallback
-	pikevm := nfa.NewPikeVM(forwardNFA)
-
 	// matchStartZero is true only when pattern has .* prefix (e.g., `.*\.(txt|log|md)`).
 	// Only OpStar(AnyChar) guarantees match starts at 0/at — skip reverse DFA.
 	s := &ReverseSuffixSetSearcher{
@@ -117,7 +114,7 @@ func NewReverseSuffixSetSearcher(
 		reverseDFA:     reverseDFA,
 		forwardDFA:     forwardDFA,
 		prefilter:      pre,
-		pikevm:         pikevm,
+		pikevms:        newPikeVMPool(forwardNFA),
 		suffixLiterals: suffixLiterals,
 		matchStartZero: matchStartZero,
 	}
@@ -177,7 +174,7 @@ func (s *ReverseSuffixSetSearcher) Find(haystack []byte) *Match {
 			matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, 0, suffixEnd, minStart)
 			if matchStart == lazy.SearchReverseLimitedQuadratic {
 				// Quadratic behavior detected - fall back to PikeVM
-				pStart, pEnd, found := s.pikevm.Search(haystack)
+				pStart, pEnd, found := s.pikevms.searchAt(haystack, 0)
 				if found {
 					return NewMatch(pStart, pEnd, haystack)
 				}
@@ -276,7 +273,7 @@ func (s *ReverseSuffixSetSearcher) FindAt(haystack []byte, at int) *Match {
 		}
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
 			// Quadratic behavior detected - fall back to PikeVM
-			start, end, found := s.pikevm.SearchAt(haystack, at)
+			start, end, found := s.pikevms.searchAt(haystack, at)
 			if found {
 				return NewMatch(start, end, haystack)
 			}
@@ -381,7 +378,7 @@ func (s *ReverseSuffixSetSearcher) findIndicesAtImpl(haystack []byte, at int, re
 		}
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
 			// Quadratic behavior detected - fall back to PikeVM
-			return s.pikevm.SearchAt(haystack, at)
+			return s.pikevms.searchAt(haystack, at)
 		}
 
 		// Update anti-quadratic guard
@@ -436,7 +433,7 @@ func (s *ReverseSuffixSetSearcher) IsMatch(haystack []byte) bool {
 		}
 		if revResult == lazy.SearchReverseLimitedQuadratic {
 			// Quadratic behavior detected - fall back to PikeVM
-			_, _, matched := s.pikevm.Search(haystack)
+			_, _, matched := s.pikevms.searchAt(haystack, 0)
 			return matched
 		}
 

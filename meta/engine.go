@@ -81,7 +81,6 @@ type Engine struct {
 	asciiNFA                       *nfa.NFA
 	asciiBoundedBacktracker        *nfa.BoundedBacktracker // BoundedBacktracker for asciiNFA
 	dfa                            *lazy.DFA
-	pikevm                         *nfa.PikeVM
 	boundedBacktracker             *nfa.BoundedBacktracker
 	charClassSearcher              *nfa.CharClassSearcher    // Specialized searcher for char_class+ patterns
 	compositeSearcher              *nfa.CompositeSearcher    // For concatenated char classes like [a-zA-Z]+[0-9]+
@@ -124,15 +123,21 @@ type Engine struct {
 	// This enables concurrent searches on the same Engine instance.
 	statePool *searchStatePool
 
-	// localState is a single-slot GC-proof cache for the common single-goroutine path.
-	// Unlike sync.Pool entries which are collected every GC cycle, this pointer is a
-	// strong reference that survives GC indefinitely. On LangArena (13 patterns × 10
-	// iterations), this eliminates ~221 MB of DFACache re-allocation caused by GC
-	// clearing the sync.Pool between iterations.
+	// homeState is a GC-proof SearchState for the common single-goroutine path.
+	// Unlike sync.Pool entries, which are dropped after two GC cycles, it is a
+	// strong reference that keeps its warm DFA caches. On LangArena (13 patterns
+	// × 10 iterations) this eliminates ~221 MB of DFACache re-allocation caused
+	// by GC clearing the sync.Pool between iterations. It is created by the
+	// first search, not at compile time (Issue #158), and never replaced.
 	//
-	// Thread safety: atomic swap ensures only one goroutine gets the cached state.
-	// Additional concurrent goroutines fall through to statePool.
-	localState atomic.Pointer[SearchState]
+	// homeBusy is 1 while a search owns homeState; concurrent searches fall
+	// back to statePool. It is an integer flag because integer CAS and store
+	// are inline LOCK instructions, while atomic.Pointer Swap/CompareAndSwap
+	// are runtime calls with a write-barrier check. A search that panics while
+	// owning homeState leaves homeBusy set: later searches then use statePool,
+	// which is slower to warm up but still correct.
+	homeBusy  atomic.Uint32
+	homeState atomic.Pointer[SearchState]
 
 	// longest enables leftmost-longest (POSIX) matching semantics
 	// By default (false), uses leftmost-first (Perl) semantics
@@ -248,20 +253,58 @@ func (e *Engine) SubexpNames() []string {
 //   - longest=true: "ab" wins (longest match)
 func (e *Engine) SetLongest(longest bool) {
 	e.longest = longest
-	e.pikevm.SetLongest(longest)
 	if e.boundedBacktracker != nil {
 		e.boundedBacktracker.SetLongest(longest)
 	}
 }
 
-// getSearchState retrieves a SearchState, trying the local GC-proof cache first.
+// pikevmNFA returns the NFA the PikeVM runs on: the sparse-dispatch rune NFA
+// when the pattern has one, otherwise the byte NFA.
+func (e *Engine) pikevmNFA() *nfa.NFA {
+	if e.runeNFA != nil {
+		return e.runeNFA
+	}
+	return e.nfa
+}
+
+// skipPikeVM returns the PikeVM owned by state that uses the engine prefilter
+// as skip-ahead. A PikeVM keeps mutable search state, so every search must use
+// one owned by its SearchState; an Engine-level PikeVM would be shared by all
+// goroutines using the compiled pattern.
+func (e *Engine) skipPikeVM(state *SearchState) *nfa.PikeVM {
+	if state.skipPikeVM == nil {
+		pv := nfa.NewPikeVMLazy(e.pikevmNFA())
+		configurePikeVMSkipAhead(pv, e.prefilter, e.isStartAnchored)
+		state.skipPikeVM = pv
+	}
+	state.skipPikeVM.SetLongest(e.longest)
+	return state.skipPikeVM
+}
+
+// pikeVMSearchAt runs a skip-ahead PikeVM search from at, using a pooled
+// SearchState. Returns (start, end, found) with absolute positions.
+func (e *Engine) pikeVMSearchAt(haystack []byte, at int) (int, int, bool) {
+	state := e.getSearchState()
+	defer e.putSearchState(state)
+	return e.skipPikeVM(state).SearchAt(haystack, at)
+}
+
+// getSearchState retrieves a SearchState, trying the GC-proof home state first.
 // Caller must call putSearchState when done.
 // The returned state contains its own PikeVM instance for thread-safe concurrent use.
 func (e *Engine) getSearchState() *SearchState {
-	// Fast path: grab from local cache (survives GC, zero-alloc steady state).
-	state := e.localState.Swap(nil)
-	if state == nil {
-		// Slow path: concurrent access or first call before eager init.
+	var state *SearchState
+	// Fast path: claim the home state. The plain load before the CAS keeps
+	// contending goroutines from bouncing the cache line with failing CASes.
+	if e.homeBusy.Load() == 0 && e.homeBusy.CompareAndSwap(0, 1) {
+		state = e.homeState.Load()
+		if state == nil {
+			// First search on this engine: only the owner of homeBusy gets here.
+			state = e.statePool.get()
+			e.homeState.Store(state)
+		}
+	} else {
+		// Slow path: another goroutine owns the home state.
 		state = e.statePool.get()
 	}
 
@@ -278,18 +321,16 @@ func (e *Engine) getSearchState() *SearchState {
 	return state
 }
 
-// putSearchState returns a SearchState, trying the local cache first.
-// The local cache slot holds one state as a strong reference that survives GC.
-// Overflow goes to sync.Pool (may be collected by GC).
+// putSearchState returns a SearchState: the home state is released for the
+// next search, any other state goes back to sync.Pool (may be collected by GC).
 func (e *Engine) putSearchState(state *SearchState) {
 	if state == nil {
 		return
 	}
 	state.reset()
-	// Try to store in local cache (GC-proof single slot).
-	if e.localState.CompareAndSwap(nil, state) {
+	if state == e.homeState.Load() {
+		e.homeBusy.Store(0)
 		return
 	}
-	// Local slot occupied (concurrent goroutine), fall back to pool.
 	e.statePool.put(state)
 }
