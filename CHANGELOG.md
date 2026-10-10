@@ -8,12 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **FindAll/Count O(n²) for `$`-anchored patterns** ([#183](https://github.com/coregx/coregex/issues/183)):
-  `UseReverseAnchored` strategy was missing from the `findIndicesAtWithState`
-  dispatch, causing `FindAll`/`Count` to fall through to PikeVM loop — O(n)
-  calls × O(n) each. `Match`/`Find` were correct (single reverse scan).
-  Fix: short-circuit for `$`-anchored patterns — one reverse searcher call,
-  at most one match. `ERROR.*$` on 2400-line log: 3.3 s → instant
+- **FindAll/Count/ReplaceAll/Split O(n²) for `$`-anchored patterns** ([#183](https://github.com/coregx/coregex/issues/183)):
+  All iteration APIs fell through to PikeVM loop for `UseReverseAnchored`.
+  Fix: single dispatch in `FindIndicesAt`/`findIndicesAtWithState` — one
+  reverse searcher call at `at==0`, no match at `at>0`. All six APIs
+  now linear. `ERROR.*$` on 4800-line log: 18 s → instant
+- **Reverse searcher returned empty/short matches for `*$` patterns** ([#183](https://github.com/coregx/coregex/issues/183)):
+  `Find` on `a*$`/`"aaa"` returned `[3,3]` (empty) instead of `[0,3]`
+  (greedy). Root cause: `fillStartStateWithIncoming` in `nfa/reverse.go`
+  converted ByteRange edges to epsilon when building the reverse NFA for
+  patterns with `*`-loops at the anchored start state. Fix: preserve
+  ByteRange edges for `ReverseAnchored` path. Pre-existing since v0.12.0
 - **Invalid UTF-8 bytes now match as U+FFFD width 1** ([#179](https://github.com/coregx/coregex/issues/179)):
   `.`, `\S`, `\D`, `\W`, `[^x]`, `\P{Han}`, and literal `\x{FFFD}` now match
   invalid UTF-8 bytes (orphan continuations, overlong leads, out-of-range bytes,

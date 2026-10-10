@@ -311,7 +311,6 @@ func (e *Engine) Count(haystack []byte, n int) int {
 		return 0
 	}
 
-
 	count := 0
 	pos := 0
 	lastNonEmptyEnd := -1
