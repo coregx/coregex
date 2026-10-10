@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+- Look-around assertions
+- ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))
+
+## [0.12.28] - 2026-10-10
+
 ### Fixed
 - **FindAll/Count/ReplaceAll/Split O(n²) for `$`-anchored patterns** ([#183](https://github.com/coregx/coregex/issues/183)):
   All iteration APIs fell through to PikeVM loop for `UseReverseAnchored`.
@@ -41,10 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rune. Root cause: `0x80–0xFF` single-byte range in NFA compiler's
   `coversAllNonASCII` path.
   Random-fuzz divergence vs stdlib: 0.75% → 0.21%
-
-### Planned
-- Look-around assertions
-- ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))
 
 ## [0.12.27] - 2026-10-09
 
