@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - deps: `golang.org/x/sys` v0.47.0 → v0.49.0
 
+### Fixed
+- **Lazy quantifiers matched greedily** ([#175](https://github.com/coregx/coregex/issues/175)):
+  `\d+?` on `"11"` returned `[0 2]` instead of `[0 1]`. The char class searcher
+  and the composite searcher scan greedily, so lazy patterns now use another
+  strategy there. These lazy patterns are slower than before but still faster
+  than stdlib (`\d+?` over 100 KB: ~1.6 ms vs ~6.3 ms for stdlib)
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))
