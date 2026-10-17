@@ -184,19 +184,10 @@ func (s *ReverseSuffixSearcher) Find(haystack []byte) *Match {
 		return nil
 	}
 
-	// For matchStartZero (unanchored .* prefix), match starts at the beginning
-	// of the line containing the LAST suffix — .* (AnyCharNotNL) cannot cross \n.
+	// For matchStartZero (a non-dotall .* prefix), the leftmost match is on the
+	// line of the FIRST suffix, not the last one (#191); FindAt implements that.
 	if s.matchStartZero {
-		lastPos := bytes.LastIndex(haystack, s.suffixBytes)
-		if lastPos == -1 {
-			return nil
-		}
-		revEnd := lastPos + s.suffixLen
-		if revEnd > len(haystack) {
-			revEnd = len(haystack)
-		}
-		matchStart := lineStartBefore(haystack, 0, lastPos)
-		return NewMatch(matchStart, revEnd, haystack)
+		return s.FindAt(haystack, 0)
 	}
 
 	// For bounded wildcards (e.g., \d+\.\d+\.35), find the FIRST suffix

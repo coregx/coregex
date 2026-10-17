@@ -50,6 +50,7 @@ type ReverseSuffixSetSearcher struct {
 	suffixLiterals *literal.Seq // All suffix literals
 	matchStartZero bool         // True if pattern starts with .* (match always starts at 0)
 	revCachePool   sync.Pool
+	fwdCachePool   sync.Pool
 }
 
 // NewReverseSuffixSetSearcher creates a reverse suffix set searcher.
@@ -121,81 +122,32 @@ func NewReverseSuffixSetSearcher(
 	s.revCachePool = sync.Pool{
 		New: func() any { return s.reverseDFA.NewCache() },
 	}
+	s.fwdCachePool = sync.Pool{
+		New: func() any { return s.forwardDFA.NewCache() },
+	}
 	return s, nil
 }
 
-// Find searches using Teddy suffix prefilter + reverse DFA.
+// forwardEnd returns the leftmost-first match that starts at start. The reverse
+// DFA only finds where the match starts; the end can extend past the suffix
+// candidate (e.g. `(?s).*\.(txt|log)` ends at the LAST suffix), so it comes
+// from a forward search, as in ReverseSuffixSearcher.
+func (s *ReverseSuffixSetSearcher) forwardEnd(haystack []byte, start int) (int, int, bool) {
+	fwdCache := s.fwdCachePool.Get().(*lazy.DFACache)
+	end := s.forwardDFA.SearchAt(fwdCache, haystack, start)
+	s.fwdCachePool.Put(fwdCache)
+	if end >= 0 {
+		return start, end, true
+	}
+	return s.pikevms.searchAt(haystack, start)
+}
+
+// Find returns the leftmost-first match, the same as FindAt(haystack, 0).
 //
-// For greedy matching (like `.*`), we need to find the LAST matching suffix.
-// However, with multiple suffix lengths, we iterate through all candidates
-// and track the best (rightmost) match.
-// Includes anti-quadratic guard to prevent O(n^2) behavior with many suffix false positives.
+// It must not pick the rightmost suffix candidate: for `\w+\.(txt|log)` on
+// "a.txt b.log" the match is [0 5], not [6 11] (#191).
 func (s *ReverseSuffixSetSearcher) Find(haystack []byte) *Match {
-	if len(haystack) == 0 {
-		return nil
-	}
-
-	// Acquire cache once for the entire candidate loop
-	revCache := s.revCachePool.Get().(*lazy.DFACache)
-	defer s.revCachePool.Put(revCache)
-
-	// For greedy matching, find the LAST suffix candidate
-	// We scan forward and keep track of the last valid match
-	var lastMatch *Match
-	start := 0
-	minStart := 0 // Anti-quadratic guard for reverse scans
-
-	for {
-		// Find next suffix candidate
-		pos := s.prefilter.Find(haystack, start)
-		if pos == -1 {
-			break
-		}
-
-		// Get the length of the matched suffix literal
-		suffixLen := s.getSuffixLen(haystack, pos)
-		if suffixLen == 0 {
-			start = pos + 1
-			continue
-		}
-
-		suffixEnd := pos + suffixLen
-		if suffixEnd > len(haystack) {
-			suffixEnd = len(haystack)
-		}
-
-		// For unanchored patterns, .* cannot cross \n boundaries.
-		// Match starts at the beginning of the line containing the suffix.
-		if s.matchStartZero {
-			matchStart := lineStartBefore(haystack, 0, pos)
-			lastMatch = NewMatch(matchStart, suffixEnd, haystack)
-		} else {
-			// Use reverse DFA with anti-quadratic guard to find match start
-			matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, 0, suffixEnd, minStart)
-			if matchStart == lazy.SearchReverseLimitedQuadratic {
-				// Quadratic behavior detected - fall back to PikeVM
-				pStart, pEnd, found := s.pikevms.searchAt(haystack, 0)
-				if found {
-					return NewMatch(pStart, pEnd, haystack)
-				}
-				return lastMatch
-			}
-			if matchStart >= 0 {
-				lastMatch = NewMatch(matchStart, suffixEnd, haystack)
-			}
-			// Update anti-quadratic guard
-			if suffixEnd > minStart {
-				minStart = suffixEnd
-			}
-		}
-
-		start = pos + 1
-		if start >= len(haystack) {
-			break
-		}
-	}
-
-	return lastMatch
+	return s.FindAt(haystack, 0)
 }
 
 // FindAt searches for a match starting from position 'at'.
@@ -269,7 +221,11 @@ func (s *ReverseSuffixSetSearcher) FindAt(haystack []byte, at int) *Match {
 		// Use reverse DFA with anti-quadratic guard to find match start
 		matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, at, suffixEnd, minStart)
 		if matchStart >= 0 {
-			return NewMatch(matchStart, suffixEnd, haystack)
+			start, end, found := s.forwardEnd(haystack, matchStart)
+			if found {
+				return NewMatch(start, end, haystack)
+			}
+			return nil
 		}
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
 			// Quadratic behavior detected - fall back to PikeVM
@@ -374,7 +330,7 @@ func (s *ReverseSuffixSetSearcher) findIndicesAtImpl(haystack []byte, at int, re
 		// Use reverse DFA with anti-quadratic guard to find match start
 		matchStart := s.reverseDFA.SearchReverseLimited(revCache, haystack, at, suffixEnd, minStart)
 		if matchStart >= 0 {
-			return matchStart, suffixEnd, true
+			return s.forwardEnd(haystack, matchStart)
 		}
 		if matchStart == lazy.SearchReverseLimitedQuadratic {
 			// Quadratic behavior detected - fall back to PikeVM

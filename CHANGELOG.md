@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`(?s).*` prefix clipped to the suffix's line** ([#191](https://github.com/coregx/coregex/issues/191)):
+  with the `s` flag, `(?s).*\.txt` on `"a\nb.txt"` returned `[2 7]` instead of
+  `[0 7]` (regression in v0.12.15). The line-bounded shortcut of `ReverseSuffix`
+  and `ReverseSuffixSet` now applies only to a non-dotall `.*`; `(?s).*` takes the
+  reverse DFA path and gets its greedy end from a forward search, so it ends after
+  the last suffix in the input, as in `regexp`
+- **`Find` returned the rightmost match for `ReverseSuffixSet` patterns**: `\w+\.(txt|log)`
+  on `"a.txt b.log"` returned `[6 11]` instead of `[0 5]`, and `.*\.txt` on
+  `"q.txt\nz\nb.txt"` returned `[8 13]` instead of `[0 5]`. `Find` now uses the
+  same leftmost search as `FindAll`. `ReverseSuffixSet` also takes the match end
+  from a forward search instead of ending at the first suffix candidate
+- Performance on 1 MB of log text (local, noisy laptop): `Find` for
+  `.*\.(txt|log|md)` and `\w+\.(txt|log)` drops from ~4 ms to under 1 µs, since it
+  no longer scans every candidate; `(?s).*\.txt` `Find` now reads up to the last
+  suffix (~9 ms, previously a wrong early result). `FindAll` on non-dotall `.*`
+  patterns takes the same code path as before. `ReverseSuffixSet` patterns
+  without a `.*` prefix (e.g. `\w+\.(txt|log)`) now pay for the forward search in
+  `FindAll`: local median +15%, equal minimums
+
 ### Planned
 - Look-around assertions
 - ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))

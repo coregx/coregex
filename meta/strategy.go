@@ -558,12 +558,16 @@ func isDigitRunSkipSafe(re *syntax.Regexp) bool {
 //   - Internal anchors: `0?^0`, `a$b` - position constraints don't reverse
 //   - Star of CharClass: `[^\s]*suffix` - zero-width match edge cases
 
-// hasDotStarPrefix checks if a pattern has `.*` as its first subexpression.
-// Only `.*` (OpStar of AnyChar/AnyCharNotNL) guarantees matching from position 0
-// to any position without fail. Used to determine if reverse DFA scan can be skipped.
+// hasDotStarPrefix checks if a pattern starts with a non-dotall `.*`
+// (OpStar of AnyCharNotNL). Such a prefix matches anything up to the start of
+// the suffix's line, so the reverse suffix searchers can bound the match by
+// lines instead of running the reverse DFA.
+//
+// A dotall `(?s).*` (OpStar of AnyChar) is excluded: it crosses \n, so the
+// line bound would clip the match (#191). It takes the reverse DFA path.
 //
 // Returns true for: `.*\.txt`, `(.*)\.txt`
-// Returns false for: `.+\.txt`, `[^\s]+\.txt`, `\w{2,8}\.txt`, `foo|bar`
+// Returns false for: `(?s).*\.txt`, `.+\.txt`, `[^\s]+\.txt`, `\w{2,8}\.txt`, `foo|bar`
 func hasDotStarPrefix(re *syntax.Regexp) bool {
 	// Unwrap captures
 	for re.Op == syntax.OpCapture && len(re.Sub) > 0 {
@@ -577,9 +581,8 @@ func hasDotStarPrefix(re *syntax.Regexp) bool {
 	for first.Op == syntax.OpCapture && len(first.Sub) > 0 {
 		first = first.Sub[0]
 	}
-	// .* = OpStar(OpAnyChar or OpAnyCharNotNL)
 	return first.Op == syntax.OpStar && len(first.Sub) > 0 &&
-		(first.Sub[0].Op == syntax.OpAnyChar || first.Sub[0].Op == syntax.OpAnyCharNotNL)
+		first.Sub[0].Op == syntax.OpAnyCharNotNL
 }
 
 // isWildcardSubexpression checks if a subexpression acts as a "wildcard" that can
