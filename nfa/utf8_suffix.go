@@ -44,12 +44,24 @@ type utf8SuffixEntry struct {
 // Using a smaller size reduces memory and improves cache locality.
 const defaultUtf8SuffixCacheCapacity = 64
 
+// utf8ClassSuffixCacheCapacity is the cache size for compiling a Unicode
+// class range by range. Large classes (\pL has hundreds of ranges) have far
+// more distinct suffixes than '.'; Rust's Utf8SuffixMap uses 1000.
+const utf8ClassSuffixCacheCapacity = 1024
+
 // newUtf8SuffixCache creates a new suffix cache.
 func newUtf8SuffixCache() *utf8SuffixCache {
+	return newUtf8SuffixCacheSize(defaultUtf8SuffixCacheCapacity)
+}
+
+// newUtf8SuffixCacheSize creates a suffix cache with the given capacity.
+// A collision only loses sharing, never correctness: entries are checked
+// against the full key.
+func newUtf8SuffixCacheSize(capacity int) *utf8SuffixCache {
 	return &utf8SuffixCache{
 		version:  1,
-		capacity: defaultUtf8SuffixCacheCapacity,
-		entries:  make([]utf8SuffixEntry, defaultUtf8SuffixCacheCapacity),
+		capacity: capacity,
+		entries:  make([]utf8SuffixEntry, capacity),
 	}
 }
 

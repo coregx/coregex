@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the composite searcher scan greedily, so lazy patterns now use another
   strategy there. These lazy patterns are slower than before but still faster
   than stdlib (`\d+?` over 100 KB: ~1.6 ms vs ~6.3 ms for stdlib)
+- **Unicode classes matched any 4-byte character under the same lead byte**:
+  `\p{Han}` matched `"😀"`, `\P{Han}` and `[^\p{Han}]` matched `"𠀀"`, and
+  `[\x{20000}-\x{2A6DF}]` matched `"😀"`. Every class with a range above
+  U+FFFF was affected (`\p{Greek}`, `\p{Cyrillic}`, `\pL`, `\p{Lu}`, …), in
+  all APIs. Supplementary-plane ranges were compiled with only the UTF-8 lead
+  byte bounded. Unicode ranges are now split into exact UTF-8 byte sequences,
+  as in Rust's `regex-syntax` (`Utf8Sequences`). Classes also compile to fewer
+  NFA states (`\p{Han}` 1857 → 193, `\P{Han}` 2188 → 166, `\pL` 5842 → 3289)
 
 ### Planned
 - Look-around assertions

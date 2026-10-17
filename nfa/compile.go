@@ -607,8 +607,11 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 		altStarts = append(altStarts, multiByteStarts...)
 		altStarts = append(altStarts, c.buildInvalidUTF8Fallback(target))
 	} else if len(nonASCIIRanges) > 0 {
+		// One suffix cache for the whole class: the trailing continuation
+		// bytes of different ranges share states.
+		cache := newUtf8SuffixCacheSize(utf8ClassSuffixCacheCapacity)
 		for _, rng := range nonASCIIRanges {
-			rangeStarts := c.compileUTF8Range(rng[0], rng[1], target)
+			rangeStarts := c.compileUTF8Range(rng[0], rng[1], target, cache)
 			altStarts = append(altStarts, rangeStarts...)
 		}
 		if containsRuneFFFD(nonASCIIRanges) {
@@ -629,12 +632,6 @@ func (c *Compiler) compileUnicodeClassLarge(ranges []rune) (start, end StateID, 
 	return split, target, nil
 }
 
-// compileUTF8Range builds NFA states for a Unicode range [lo, hi].
-// Returns a slice of start states that lead to endState when the range matches.
-//
-// UTF-8 encoding:
-//   - 1-byte: U+0000-U+007F → 0x00-0x7F
-//
 // containsRuneFFFD checks if U+FFFD is within any of the given rune ranges.
 func containsRuneFFFD(ranges [][2]rune) bool {
 	for _, rng := range ranges {
@@ -654,248 +651,25 @@ func (c *Compiler) buildInvalidUTF8Fallback(endState StateID) StateID {
 	return c.builder.AddLook(LookInvalidUTF8, invalidByte)
 }
 
-// - 2-byte: U+0080-U+07FF → 0xC2-0xDF, 0x80-0xBF
-// - 3-byte: U+0800-U+FFFF → 0xE0-0xEF, 0x80-0xBF, 0x80-0xBF
-// - 4-byte: U+10000-U+10FFFF → 0xF0-0xF4, 0x80-0xBF, 0x80-0xBF, 0x80-0xBF
-func (c *Compiler) compileUTF8Range(lo, hi rune, endState StateID) []StateID {
-	var starts []StateID
-
-	// Split range by UTF-8 byte length boundaries
-	// 1-byte: U+0000-U+007F
-	if lo <= 0x7F {
-		asciiHi := hi
-		if asciiHi > 0x7F {
-			asciiHi = 0x7F
+// compileUTF8Range builds NFA states for the scalar value range [lo, hi] and
+// returns one start state per UTF-8 byte-range sequence; each leads to
+// endState. The sequences come from utf8Sequences (a port of Rust
+// regex-syntax Utf8Sequences), so they match exactly the UTF-8 encodings of
+// [lo, hi], with every continuation byte bounded, not only the lead byte.
+//
+// Sequences are built from the last byte backwards through cache, so ranges
+// of one class share their trailing continuation-byte states.
+func (c *Compiler) compileUTF8Range(lo, hi rune, endState StateID, cache *utf8SuffixCache) []StateID {
+	seqs := utf8Sequences(lo, hi)
+	starts := make([]StateID, 0, len(seqs))
+	for i := range seqs {
+		ranges := seqs[i].bytes()
+		next := endState
+		for j := len(ranges) - 1; j >= 1; j-- {
+			next = cache.getOrCreate(c.builder, next, ranges[j].lo, ranges[j].hi)
 		}
-		s := c.compileUTF81ByteRange(lo, asciiHi, endState)
-		starts = append(starts, s)
-		lo = 0x80
+		starts = append(starts, c.builder.AddByteRange(ranges[0].lo, ranges[0].hi, next))
 	}
-
-	if lo > hi {
-		return starts
-	}
-
-	// 2-byte: U+0080-U+07FF
-	if lo <= 0x7FF {
-		twoByteHi := hi
-		if twoByteHi > 0x7FF {
-			twoByteHi = 0x7FF
-		}
-		s := c.compileUTF82ByteRange(lo, twoByteHi, endState)
-		starts = append(starts, s...)
-		lo = 0x800
-	}
-
-	if lo > hi {
-		return starts
-	}
-
-	// 3-byte: U+0800-U+FFFF (excluding surrogates U+D800-U+DFFF)
-	if lo <= 0xFFFF {
-		threeByteHi := hi
-		if threeByteHi > 0xFFFF {
-			threeByteHi = 0xFFFF
-		}
-		s := c.compileUTF83ByteRange(lo, threeByteHi, endState)
-		starts = append(starts, s...)
-		lo = 0x10000
-	}
-
-	if lo > hi {
-		return starts
-	}
-
-	// 4-byte: U+10000-U+10FFFF
-	s := c.compileUTF84ByteRange(lo, hi, endState)
-	starts = append(starts, s...)
-
-	return starts
-}
-
-// compileUTF81ByteRange builds NFA for ASCII range [lo, hi] (U+0000-U+007F).
-func (c *Compiler) compileUTF81ByteRange(lo, hi rune, endState StateID) StateID {
-	return c.builder.AddByteRange(byte(lo), byte(hi), endState)
-}
-
-// compileUTF82ByteRange builds NFA for 2-byte UTF-8 range [lo, hi] (U+0080-U+07FF).
-// 2-byte: lead 0xC2-0xDF, cont 0x80-0xBF
-func (c *Compiler) compileUTF82ByteRange(lo, hi rune, endState StateID) []StateID {
-	var starts []StateID
-
-	// UTF-8 2-byte encoding: 110xxxxx 10xxxxxx
-	// Lead byte: 0xC0 | (codepoint >> 6)
-	// Cont byte: 0x80 | (codepoint & 0x3F)
-
-	loLead := byte(0xC0 | (lo >> 6))
-	loCont := byte(0x80 | (lo & 0x3F))
-	hiLead := byte(0xC0 | (hi >> 6))
-	hiCont := byte(0x80 | (hi & 0x3F))
-
-	if loLead == hiLead {
-		// Same lead byte - single sequence with cont range
-		cont := c.builder.AddByteRange(loCont, hiCont, endState)
-		lead := c.builder.AddByteRange(loLead, loLead, cont)
-		starts = append(starts, lead)
-	} else {
-		// Different lead bytes - need multiple sequences
-		// First: loLead with [loCont, 0xBF]
-		cont1 := c.builder.AddByteRange(loCont, 0xBF, endState)
-		lead1 := c.builder.AddByteRange(loLead, loLead, cont1)
-		starts = append(starts, lead1)
-
-		// Middle: [loLead+1, hiLead-1] with [0x80, 0xBF]
-		if hiLead > loLead+1 {
-			contM := c.builder.AddByteRange(0x80, 0xBF, endState)
-			leadM := c.builder.AddByteRange(loLead+1, hiLead-1, contM)
-			starts = append(starts, leadM)
-		}
-
-		// Last: hiLead with [0x80, hiCont]
-		cont2 := c.builder.AddByteRange(0x80, hiCont, endState)
-		lead2 := c.builder.AddByteRange(hiLead, hiLead, cont2)
-		starts = append(starts, lead2)
-	}
-
-	return starts
-}
-
-// compileUTF83ByteRange builds NFA for 3-byte UTF-8 range [lo, hi] (U+0800-U+FFFF).
-// 3-byte: lead 0xE0-0xEF, cont1 0x80-0xBF, cont2 0x80-0xBF
-// Note: surrogates U+D800-U+DFFF are invalid in UTF-8 and should be excluded.
-func (c *Compiler) compileUTF83ByteRange(lo, hi rune, endState StateID) []StateID {
-	var starts []StateID
-
-	// Handle surrogate gap: skip U+D800-U+DFFF
-	if lo <= 0xD7FF && hi >= 0xE000 {
-		// Range spans surrogates - split into two
-		s1 := c.compileUTF83ByteRangeSimple(lo, 0xD7FF, endState)
-		starts = append(starts, s1...)
-		s2 := c.compileUTF83ByteRangeSimple(0xE000, hi, endState)
-		starts = append(starts, s2...)
-		return starts
-	}
-
-	// Skip if entirely in surrogate range
-	if lo >= 0xD800 && hi <= 0xDFFF {
-		return starts
-	}
-
-	// Clamp to avoid surrogates
-	if lo >= 0xD800 && lo <= 0xDFFF {
-		lo = 0xE000
-	}
-	if hi >= 0xD800 && hi <= 0xDFFF {
-		hi = 0xD7FF
-	}
-
-	if lo > hi {
-		return starts
-	}
-
-	return c.compileUTF83ByteRangeSimple(lo, hi, endState)
-}
-
-// compileUTF83ByteRangeSimple builds NFA for 3-byte range without surrogate handling.
-func (c *Compiler) compileUTF83ByteRangeSimple(lo, hi rune, endState StateID) []StateID {
-	var starts []StateID
-
-	// UTF-8 3-byte encoding: 1110xxxx 10xxxxxx 10xxxxxx
-	// Lead byte: 0xE0 | (codepoint >> 12)
-	// Cont1 byte: 0x80 | ((codepoint >> 6) & 0x3F)
-	// Cont2 byte: 0x80 | (codepoint & 0x3F)
-
-	loLead := byte(0xE0 | (lo >> 12))
-	loCont1 := byte(0x80 | ((lo >> 6) & 0x3F))
-	loCont2 := byte(0x80 | (lo & 0x3F))
-	hiLead := byte(0xE0 | (hi >> 12))
-	hiCont1 := byte(0x80 | ((hi >> 6) & 0x3F))
-	hiCont2 := byte(0x80 | (hi & 0x3F))
-
-	switch {
-	case loLead == hiLead && loCont1 == hiCont1:
-		// Same lead and cont1 - single sequence with cont2 range
-		cont2 := c.builder.AddByteRange(loCont2, hiCont2, endState)
-		cont1 := c.builder.AddByteRange(loCont1, loCont1, cont2)
-		lead := c.builder.AddByteRange(loLead, loLead, cont1)
-		starts = append(starts, lead)
-
-	case loLead == hiLead:
-		// Same lead byte - need to handle cont1 range
-		for cont1Val := loCont1; cont1Val <= hiCont1; cont1Val++ {
-			c2Lo := c.utf8Cont2Lo(cont1Val, loCont1, loCont2)
-			c2Hi := c.utf8Cont2Hi(cont1Val, hiCont1, hiCont2)
-			cont2 := c.builder.AddByteRange(c2Lo, c2Hi, endState)
-			cont1 := c.builder.AddByteRange(cont1Val, cont1Val, cont2)
-			lead := c.builder.AddByteRange(loLead, loLead, cont1)
-			starts = append(starts, lead)
-		}
-
-	default:
-		// Different lead bytes - enumerate each lead byte's range
-		for leadVal := loLead; leadVal <= hiLead; leadVal++ {
-			c1Lo := c.utf8Cont1Lo3Byte(leadVal, loLead, loCont1)
-			c1Hi := c.utf8Cont1Hi3Byte(leadVal, hiLead, hiCont1)
-
-			for cont1Val := c1Lo; cont1Val <= c1Hi; cont1Val++ {
-				c2Lo := c.utf8Cont2LoFull(leadVal, cont1Val, loLead, loCont1, loCont2)
-				c2Hi := c.utf8Cont2HiFull(leadVal, cont1Val, hiLead, hiCont1, hiCont2)
-				cont2 := c.builder.AddByteRange(c2Lo, c2Hi, endState)
-				cont1 := c.builder.AddByteRange(cont1Val, cont1Val, cont2)
-				lead := c.builder.AddByteRange(leadVal, leadVal, cont1)
-				starts = append(starts, lead)
-			}
-		}
-	}
-
-	return starts
-}
-
-// compileUTF84ByteRange builds NFA for 4-byte UTF-8 range [lo, hi] (U+10000-U+10FFFF).
-// 4-byte: lead 0xF0-0xF4, cont1-3 0x80-0xBF
-func (c *Compiler) compileUTF84ByteRange(lo, hi rune, endState StateID) []StateID {
-	var starts []StateID
-
-	// Clamp to valid Unicode range
-	if hi > 0x10FFFF {
-		hi = 0x10FFFF
-	}
-	if lo < 0x10000 {
-		lo = 0x10000
-	}
-	if lo > hi {
-		return starts
-	}
-
-	// UTF-8 4-byte encoding: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
-	// For simplicity, use a conservative approach: match any valid 4-byte sequence in range
-	// This creates more states but is correct
-
-	loLead := byte(0xF0 | (lo >> 18))
-	hiLead := byte(0xF0 | (hi >> 18))
-
-	for leadVal := loLead; leadVal <= hiLead; leadVal++ {
-		// Determine cont1 range for this lead byte
-		var c1Lo, c1Hi byte
-		if leadVal == 0xF0 {
-			c1Lo = 0x90 // F0 requires cont1 >= 0x90
-		} else {
-			c1Lo = 0x80
-		}
-		if leadVal == 0xF4 {
-			c1Hi = 0x8F // F4 requires cont1 <= 0x8F
-		} else {
-			c1Hi = 0xBF
-		}
-
-		// Build states for each lead byte value
-		cont3 := c.builder.AddByteRange(0x80, 0xBF, endState)
-		cont2 := c.builder.AddByteRange(0x80, 0xBF, cont3)
-		cont1 := c.builder.AddByteRange(c1Lo, c1Hi, cont2)
-		lead := c.builder.AddByteRange(leadVal, leadVal, cont1)
-		starts = append(starts, lead)
-	}
-
 	return starts
 }
 
@@ -974,61 +748,6 @@ func (c *Compiler) buildUTF8NonASCIIBranches(endState StateID) []StateID {
 	}
 
 	return branches
-}
-
-// UTF-8 continuation byte helper functions for 3-byte range compilation.
-// These are extracted to satisfy gocritic ifElseChain linter.
-
-func (c *Compiler) utf8Cont2Lo(cont1Val, loCont1, loCont2 byte) byte {
-	if cont1Val == loCont1 {
-		return loCont2
-	}
-	return 0x80
-}
-
-func (c *Compiler) utf8Cont2Hi(cont1Val, hiCont1, hiCont2 byte) byte {
-	if cont1Val == hiCont1 {
-		return hiCont2
-	}
-	return 0xBF
-}
-
-//nolint:staticcheck // QF1002: can't use tagged switch - comparing to both constant and variable
-func (c *Compiler) utf8Cont1Lo3Byte(leadVal, loLead, loCont1 byte) byte {
-	switch {
-	case leadVal == loLead:
-		return loCont1
-	case leadVal == 0xE0:
-		return 0xA0 // Special case for E0
-	default:
-		return 0x80
-	}
-}
-
-//nolint:staticcheck // QF1002: can't use tagged switch - comparing to both constant and variable
-func (c *Compiler) utf8Cont1Hi3Byte(leadVal, hiLead, hiCont1 byte) byte {
-	switch {
-	case leadVal == hiLead:
-		return hiCont1
-	case leadVal == 0xED:
-		return 0x9F // Special case for ED (avoid surrogates)
-	default:
-		return 0xBF
-	}
-}
-
-func (c *Compiler) utf8Cont2LoFull(leadVal, cont1Val, loLead, loCont1, loCont2 byte) byte {
-	if leadVal == loLead && cont1Val == loCont1 {
-		return loCont2
-	}
-	return 0x80
-}
-
-func (c *Compiler) utf8Cont2HiFull(leadVal, cont1Val, hiLead, hiCont1, hiCont2 byte) byte {
-	if leadVal == hiLead && cont1Val == hiCont1 {
-		return hiCont2
-	}
-	return 0xBF
 }
 
 // compileAnyChar compiles '.' matching any character including newlines.
