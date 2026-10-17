@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+- Look-around assertions
+- ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))
+
+## [0.12.30] - 2026-10-17
+
 ### Fixed
 - **`(?s).*` prefix clipped to the suffix's line** ([#191](https://github.com/coregx/coregex/issues/191)):
   with the `s` flag, `(?s).*\.txt` on `"a\nb.txt"` returned `[2 7]` instead of
@@ -34,10 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   patterns takes the same code path as before. `ReverseSuffixSet` patterns
   without a `.*` prefix (e.g. `\w+\.(txt|log)`) now pay for the forward search in
   `FindAll`: local median +15%, equal minimums
-
-### Planned
-- Look-around assertions
-- ARM NEON SIMD support ([#120](https://github.com/coregx/coregex/issues/120))
 
 ## [0.12.29] - 2026-10-10
 
