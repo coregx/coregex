@@ -2111,13 +2111,22 @@ func (d *DFA) SearchReverseLimited(cache *DFACache, haystack []byte, start, end,
 		}
 	}
 
+	// The loop ended without a dead state. If minStart stopped it before start,
+	// the match could begin further left: any match recorded so far is clipped,
+	// so signal Quadratic even when one was found (Rust meta/limited.rs).
+	if lowerBound > start {
+		return SearchReverseLimitedQuadratic
+	}
+
 	// EOI for reverse: check delayed match at region start
 	eoi := cache.getState(sid)
 	if eoi != nil && containsNFAMatch(d.nfa, eoi.NFAStates()) {
 		lastMatch = lowerBound
 	}
 
-	if lowerBound > start && lastMatch < 0 {
+	// Reached start alive with a match that begins after start: Rust treats
+	// this as a potential false positive and retries with another engine.
+	if lastMatch > start {
 		return SearchReverseLimitedQuadratic
 	}
 

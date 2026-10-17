@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"q.txt\nz\nb.txt"` returned `[8 13]` instead of `[0 5]`. `Find` now uses the
   same leftmost search as `FindAll`. `ReverseSuffixSet` also takes the match end
   from a forward search instead of ending at the first suffix candidate
+- **Reverse scan stopped by the anti-quadratic guard returned a clipped start**:
+  when the reverse DFA of `ReverseSuffix`, `ReverseSuffixSet` or `ReverseInner`
+  reached the guard position (the end of the previous suffix candidate) still
+  alive, it returned the match start found so far instead of asking the caller
+  to retry: `\w+\.(txt|log)` on `"11@.logx.txtbar.txtt"` gave `[7 12]` instead
+  of `[4 12]`. It now signals the retry in that case and when it reaches the
+  search start alive with a match that begins later, as Rust's
+  `meta/limited.rs` does; callers fall back to the PikeVM
 - Performance on 1 MB of log text (local, noisy laptop): `Find` for
   `.*\.(txt|log|md)` and `\w+\.(txt|log)` drops from ~4 ms to under 1 µs, since it
   no longer scans every candidate; `(?s).*\.txt` `Find` now reads up to the last

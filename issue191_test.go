@@ -29,6 +29,10 @@ func TestIssue191_DotAllPrefixReverseSuffix(t *testing.T) {
 		// ReverseSuffixSet Find returned the rightmost match for any prefix
 		`\w+\.(txt|log)`,
 		`.+\.(txt|log)`,
+		// Reverse scan stopped by the anti-quadratic guard must not return a
+		// clipped start (SearchReverseLimited)
+		`(?s).*x.*\.(txt|log)`,
+		`(?i)\w+\.(txt|log)`,
 	}
 	inputs := []string{
 		"a\nb.txt",
@@ -41,6 +45,10 @@ func TestIssue191_DotAllPrefixReverseSuffix(t *testing.T) {
 		"\n.txt",
 		"a.txt\nb.log\nc",
 		"a.txt b.log",
+		" bar.txtx.logexample.coma",
+		"bazafoobaz",
+		"11@.logx.txtbar.txtt",
+		".txtl.txt.txtaXbbl",
 		"no match here",
 		"",
 	}
