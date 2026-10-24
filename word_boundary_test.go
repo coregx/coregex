@@ -209,6 +209,16 @@ func TestWordBoundaryVsStdlib(t *testing.T) {
 			"words",
 			"test word",
 		}},
+		{`word\B$`, []string{
+			"word",
+			"words",
+			"test word",
+		}},
+		{`\b$`, []string{
+			"word",
+			"word!",
+			"",
+		}},
 
 		// Multiple word boundaries
 		{`\bthe\b.*\bcat\b`, []string{
