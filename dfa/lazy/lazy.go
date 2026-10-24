@@ -2144,8 +2144,7 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 
 	currentState := d.getStartStateForReverse(cache, haystack, end)
 	if currentState == nil {
-		_, _, matched := d.fallbackPikeVM(cache).Search(haystack[start:end])
-		return matched
+		return d.nfaFallbackReverse(cache, haystack, start, end) >= 0
 	}
 
 	// With 1-byte match delay, start states are never match states.
@@ -2172,16 +2171,14 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 		case InvalidState:
 			currentState = cache.getState(sid)
 			if currentState == nil {
-				_, _, matched := d.fallbackPikeVM(cache).Search(haystack[start:end])
-				return matched
+				return d.nfaFallbackReverse(cache, haystack, start, end) >= 0
 			}
 			nextState, err := d.determinize(cache, currentState, b)
 			if err != nil {
 				if isCacheCleared(err) {
 					currentState = d.getStartStateForReverse(cache, haystack, at+1)
 					if currentState == nil {
-						_, _, matched := d.fallbackPikeVM(cache).Search(haystack[start:end])
-						return matched
+						return d.nfaFallbackReverse(cache, haystack, start, end) >= 0
 					}
 					sid = currentState.id
 					ft = cache.flatTrans
@@ -2189,8 +2186,7 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 					at++ // Will be decremented by for-loop
 					continue
 				}
-				_, _, matched := d.fallbackPikeVM(cache).Search(haystack[start:end])
-				return matched
+				return d.nfaFallbackReverse(cache, haystack, start, end) >= 0
 			}
 			if nextState == nil {
 				return false
@@ -2203,8 +2199,7 @@ func (d *DFA) IsMatchReverse(cache *DFACache, haystack []byte, start, end int) b
 			return false
 
 		case QuitState:
-			_, _, matched := d.fallbackPikeVM(cache).SearchBetween(haystack, start, end)
-			return matched
+			return d.nfaFallbackReverse(cache, haystack, start, end) >= 0
 
 		default:
 			sid = nextID
@@ -2261,12 +2256,21 @@ func (d *DFA) getStartStateForReverse(cache *DFACache, haystack []byte, end int)
 }
 
 // nfaFallbackReverse handles NFA fallback for reverse search.
-// Uses SearchBetween to preserve full haystack context (word boundaries,
-// LookInvalidUTF8 rune-boundary check need bytes before start).
+// d.nfa is a reverse NFA: it reads haystack[start:end] backward from end, so
+// the PikeVM runs on those bytes reversed. As in the DFA, the longest match
+// anchored at end gives the leftmost match start. A reverse NFA has no look
+// assertions, so no context outside [start, end) is needed.
 func (d *DFA) nfaFallbackReverse(cache *DFACache, haystack []byte, start, end int) int {
-	matchStart, _, matched := d.fallbackPikeVM(cache).SearchBetween(haystack, start, end)
-	if !matched {
+	reversed := make([]byte, end-start)
+	for i := range reversed {
+		reversed[i] = haystack[end-1-i]
+	}
+	pikevm := d.fallbackPikeVM(cache)
+	pikevm.SetLongest(true)
+	defer pikevm.SetLongest(false)
+	matchStart, matchEnd, matched := pikevm.Search(reversed)
+	if !matched || matchStart != 0 {
 		return -1
 	}
-	return matchStart
+	return end - matchEnd
 }
