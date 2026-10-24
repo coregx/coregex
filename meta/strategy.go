@@ -1372,11 +1372,13 @@ func SelectStrategy(n *nfa.NFA, re *syntax.Regexp, literals *literal.Seq, config
 	// Note: We must avoid UseReverseAnchored for patterns that contain any start
 	// anchor (^ or \A), even in alternations like `^a?$|^b?$`. The reverse DFA
 	// cannot properly handle start anchors and would produce false positives.
+	// The same goes for word boundaries (\b, \B), which the reverse NFA drops:
+	// `word\B$` would match "word".
 	isStartAnchored := n.IsAlwaysAnchored()
 	isEndAnchored := re != nil && nfa.IsPatternEndAnchored(re)
 	hasStartAnchor := re != nil && nfa.IsPatternStartAnchored(re)
 
-	if re != nil && config.EnableDFA && isEndAnchored && !isStartAnchored && !hasStartAnchor {
+	if re != nil && config.EnableDFA && isEndAnchored && !isStartAnchored && !hasStartAnchor && !hasWordBoundary(re) {
 		// Perfect candidate for reverse search
 		// Example: "pattern.*suffix$" on large haystack
 		// Forward: O(n*m) tries, Reverse: O(m) one try
