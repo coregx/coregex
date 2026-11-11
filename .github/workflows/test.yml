@@ -24,11 +24,17 @@ on:
       - main
       - develop
 
+permissions:
+  contents: read
+
 jobs:
   # Unit tests - Cross-platform
   unit-tests:
     name: Unit Tests - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write # Codecov OIDC — only this job needs it
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -62,7 +68,7 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       uses: codecov/codecov-action@v5
       with:
-        token: ${{ secrets.CODECOV_TOKEN }}
+        use_oidc: true
         file: ./coverage.txt
         flags: unittests
         name: codecov-unit
