@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the composite searcher scan greedily, so lazy patterns now use another
   strategy there. These lazy patterns are slower than before but still faster
   than stdlib (`\d+?` over 100 KB: ~1.6 ms vs ~6.3 ms for stdlib)
+- **Word boundaries ignored in `$`-anchored patterns**: `word\B$` matched `"word"`
+  and `\b$` matched `"word!"`. The `ReverseAnchored` strategy searches with a
+  reverse NFA that drops `\b` and `\B`, so patterns with word boundaries now use
+  another strategy, as `ReverseSuffix` and `ReverseInner` already do
 
 ### Planned
 - Look-around assertions
