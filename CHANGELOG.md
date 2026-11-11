@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the composite searcher scan greedily, so lazy patterns now use another
   strategy there. These lazy patterns are slower than before but still faster
   than stdlib (`\d+?` over 100 KB: ~1.6 ms vs ~6.3 ms for stdlib)
+- **Wrong results when a reverse DFA fell back to the NFA**: with a large Unicode
+  class, `\pL$` did not match `"é"` and returned `[0 3]` on `"bé"`. When the
+  reverse DFA gives up (here on its determinization limit), the PikeVM fallback
+  ran the reverse NFA forward over the input. It now runs it over the reversed
+  input and returns the leftmost start, as the DFA does
 
 ### Planned
 - Look-around assertions

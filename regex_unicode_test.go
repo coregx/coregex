@@ -427,6 +427,35 @@ func TestNegatedClassCountsRunes(t *testing.T) {
 	})
 }
 
+// TestLargeUnicodeClassAtEnd tests $-anchored patterns whose reverse DFA gives up
+// on a large Unicode class and falls back to the NFA, which must then read the
+// input backward like the DFA.
+func TestLargeUnicodeClassAtEnd(t *testing.T) {
+	tests := []struct {
+		pattern string
+		input   string
+	}{
+		{`\pL$`, "é"},
+		{`\pL$`, "bé"},
+		{`\pL+$`, "1αβγ"},
+		{`\pL\z`, "é1abé"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern+"_"+tt.input, func(t *testing.T) {
+			stdlibRe := regexp.MustCompile(tt.pattern)
+			re := MustCompile(tt.pattern)
+
+			if got, want := re.MatchString(tt.input), stdlibRe.MatchString(tt.input); got != want {
+				t.Errorf("MatchString(%q) = %v, stdlib = %v", tt.input, got, want)
+			}
+			if got, want := re.FindStringIndex(tt.input), stdlibRe.FindStringIndex(tt.input); fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Errorf("FindStringIndex(%q) = %v, stdlib = %v", tt.input, got, want)
+			}
+		})
+	}
+}
+
 // TestNegatedUnicodePropertyClass tests that negated Unicode property classes like \P{Han}
 // match complete UTF-8 codepoints, not individual bytes.
 // This is a regression test for issue #91.
